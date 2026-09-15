@@ -1,0 +1,68 @@
+:root {
+  --gb-ink: #0b1220;
+  --gb-ink-soft: #1a2436;
+  --gb-paper: #ffffff;
+  --gb-mist: #f3f5f8;
+  --gb-fog: #e7ebf2;
+  --gb-line: #d5dce8;
+  --gb-mute: #5a667a;
+  --gb-quiet: #8a94a6;
+  --gb-accent: #1f4bff;
+  --gb-accent-ink: #0f2db8;
+  --gb-accent-soft: #e8eeff;
+  --gb-ok: #0f7a4b;
+  --gb-ok-soft: #e4f6ee;
+  --gb-warn: #9a6700;
+  --gb-warn-soft: #fff4d6;
+  --gb-danger: #c81e1e;
+  --gb-danger-soft: #fde8e8;
+
+  --gb-radius-sm: 8px;
+  --gb-radius-md: 12px;
+  --gb-radius-lg: 18px;
+
+  --gb-font-brand: 'Sora', sans-serif;
+  --gb-font-ui: 'IBM Plex Sans', sans-serif;
+  --gb-font-mono: 'IBM Plex Mono', monospace;
+
+  --gb-shadow-soft: 0 10px 30px rgba(11, 18, 32, 0.06);
+  --gb-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--gb-ink);
+  font-family: var(--gb-font-ui);
+  background:
+    radial-gradient(1200px 600px at 12% -10%, rgba(31, 75, 255, 0.08), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, rgba(11, 18, 32, 0.05), transparent 45%),
+    linear-gradient(180deg, #f7f8fa 0%, #eef1f6 100%);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
