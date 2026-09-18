@@ -3,6 +3,10 @@
 Спецификация гибрида: **урезанный коннектом грибовидного тела Drosophila (FlyWire FAFB)** как индивидуальный контроллер выбора действия на Go2; внешняя система только задаёт условия среды и анализирует результаты.
 
 Связанные артефакты:
+- `artifacts/connectome_mb_v1.npz` — рабочий MB-подграф FlyWire FAFB-783
+- `artifacts/manifest.json` — counts, источники, sha256
+- `docs/fly_go2/physical_setup.md` — физические условия и оборудование
+- `docs/fly_go2/CITATIONS.md` — цитирование данных
 - `configs/examples/episode.schema.yaml` — поля конфига эпизода
 - `configs/examples/room_v1.yaml` — пример арены
 - `configs/examples/agent_local.yaml` — локальные флаги особи

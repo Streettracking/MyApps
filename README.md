@@ -2,9 +2,26 @@
 
 ## FlyWire MB × Unitree Go2
 
-Спецификация индивидуального контроллера на урезанном коннектоме грибовидного тела Drosophila и арены из нескольких Go2:
+Индивидуальный контроллер на **урезанном коннектоме грибовидного тела Drosophila (FAFB-783)** и арена из нескольких Go2.
 
-- [`docs/fly_go2/design_constraints.md`](docs/fly_go2/design_constraints.md) — принципы, запреты внешнего social coaching, локальный `r`, метрики анализа
-- [`configs/examples/`](configs/examples/) — схема и примеры конфигов эпизода
+### Данные мозга в репозитории
+
+| Файл | Содержание |
+|---|---|
+| [`artifacts/connectome_mb_v1.npz`](artifacts/connectome_mb_v1.npz) | PN/KC/MBON/DAN граф + маски пластичности |
+| [`artifacts/manifest.json`](artifacts/manifest.json) | метаданные, counts, sha256 |
+| [`artifacts/connectome_mb_v1_neurons.csv.gz`](artifacts/connectome_mb_v1_neurons.csv.gz) | нейроны subgraph |
+| [`artifacts/connectome_mb_v1_edges.csv.gz`](artifacts/connectome_mb_v1_edges.csv.gz) | рёбра syn≥5 |
+| [`data/flywire/raw/`](data/flywire/raw/) | аннотации + checksum полного connectivity |
+
+Полный `proofread_connections_783.feather` (~813MB) в git не кладётся — скачать:
+`python scripts/flywire/download_sources.py`
+
+### Документация
+
+- [`docs/fly_go2/design_constraints.md`](docs/fly_go2/design_constraints.md) — individuum-first, запреты, метрики
+- [`docs/fly_go2/physical_setup.md`](docs/fly_go2/physical_setup.md) — помещение, оборудование, безопасность
+- [`docs/fly_go2/CITATIONS.md`](docs/fly_go2/CITATIONS.md) — цитирование FlyWire
+- [`configs/examples/`](configs/examples/) — конфиги эпизода
 
 Кратко: внешнее задаёт условия и логирует; социальность учится только внутри особи.
