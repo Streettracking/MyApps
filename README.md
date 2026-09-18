@@ -17,6 +17,16 @@
 Полный `proofread_connections_783.feather` (~813MB) в git не кладётся — скачать:
 `python scripts/flywire/download_sources.py`
 
+### Симулятор (Windows OK)
+
+```powershell
+pip install -r requirements-sim.txt
+python -m sim.run_sim --seconds 120
+python -m sim.run_sim --headless --move-zones --seconds 90
+```
+
+См. [`sim/README.md`](sim/README.md).
+
 ### Документация
 
 - [`docs/fly_go2/design_constraints.md`](docs/fly_go2/design_constraints.md) — individuum-first, запреты, метрики

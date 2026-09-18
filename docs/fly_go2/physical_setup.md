@@ -122,7 +122,17 @@
 
 ---
 
-## 8. Бюджет комплекта (ориентир)
+## 9. Симулятор перед железом
+
+Перед комнатой с Go2 можно прогнать тот же процесс на Windows:
+
+```powershell
+pip install -r requirements-sim.txt
+python -m sim.run_sim --seconds 120
+python -m sim.run_sim --headless --move-zones --seconds 90
+```
+
+См. `sim/README.md`. Зоны в симе — виртуальные полигоны; флаг/`M` имитирует движущуюся проекцию.
 
 Не фиксированные цены, а состав:
 - 3× Go2 Pro/Edu + зарядки
