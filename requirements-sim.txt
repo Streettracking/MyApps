@@ -1,2 +1,4 @@
+# Arena simulator (Windows / macOS / Linux)
 numpy>=1.24
 pygame>=2.5
+PyYAML>=6.0

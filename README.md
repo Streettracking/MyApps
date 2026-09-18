@@ -4,6 +4,17 @@
 
 Индивидуальный контроллер на **урезанном коннектоме грибовидного тела Drosophila (FAFB-783)** и арена из нескольких Go2.
 
+### Симулятор (Windows)
+
+```powershell
+pip install -r requirements-sim.txt
+python -m sim.run_sim --seconds 180 --agents 3
+python -m sim.run_sim --move-zones
+python -m sim.run_sim --headless --seconds 90 --log-dir logs\sim_last
+```
+
+Или `sim\run_windows.bat`. Подробнее: [`sim/README.md`](sim/README.md), [`docs/fly_go2/simulator.md`](docs/fly_go2/simulator.md).
+
 ### Данные мозга в репозитории
 
 | Файл | Содержание |
@@ -14,23 +25,13 @@
 | [`artifacts/connectome_mb_v1_edges.csv.gz`](artifacts/connectome_mb_v1_edges.csv.gz) | рёбра syn≥5 |
 | [`data/flywire/raw/`](data/flywire/raw/) | аннотации + checksum полного connectivity |
 
-Полный `proofread_connections_783.feather` (~813MB) в git не кладётся — скачать:
-`python scripts/flywire/download_sources.py`
-
-### Симулятор (Windows OK)
-
-```powershell
-pip install -r requirements-sim.txt
-python -m sim.run_sim --seconds 120
-python -m sim.run_sim --headless --move-zones --seconds 90
-```
-
-См. [`sim/README.md`](sim/README.md).
+Полный feather связей (~813MB) не в git: `python scripts/flywire/download_sources.py`
 
 ### Документация
 
-- [`docs/fly_go2/design_constraints.md`](docs/fly_go2/design_constraints.md) — individuum-first, запреты, метрики
-- [`docs/fly_go2/physical_setup.md`](docs/fly_go2/physical_setup.md) — помещение, оборудование, безопасность
+- [`docs/fly_go2/design_constraints.md`](docs/fly_go2/design_constraints.md) — individuum-first
+- [`docs/fly_go2/physical_setup.md`](docs/fly_go2/physical_setup.md) — оборудование
+- [`docs/fly_go2/simulator.md`](docs/fly_go2/simulator.md) — симулятор
 - [`docs/fly_go2/CITATIONS.md`](docs/fly_go2/CITATIONS.md) — цитирование FlyWire
 - [`configs/examples/`](configs/examples/) — конфиги эпизода
 

@@ -1,55 +1,60 @@
 # FlyWire MB × Go2 Arena Simulator
 
-Кроссплатформенный симулятор (Windows / Linux / macOS): несколько агентов с
+Кроссплатформенный симулятор (**Windows** / Linux / macOS): несколько агентов с
 индивидуальным рантаймом `artifacts/connectome_mb_v1.npz`, виртуальные/проецируемые
 зоны A/B, локальный `r`, peer-cues только через «зрение» особи.
 
-## Windows (рекомендуется)
+## Windows
 
-1. Установите [Python 3.11+](https://www.python.org/downloads/) и отметьте **Add Python to PATH**.
-2. В PowerShell:
+1. Установите [Python 3.10+](https://www.python.org/downloads/) (**Add to PATH**).
+2. PowerShell:
 
 ```powershell
 cd path\to\MyApps
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements-sim.txt
-python -m sim.run_sim --seconds 120
+python -m sim.run_sim --seconds 180 --agents 3
 ```
 
-Окно pygame: арена, зоны, агенты, PI в боковой панели.
+Или двойной клик: `sim\run_windows.bat`
 
-### Клавиши
+### Клавиши GUI
 
 | Клавиша | Действие |
 |---|---|
 | `SPACE` | пауза |
-| `M` | вкл/выкл движение проекций зон |
-| `P` | вкл/выкл «проекцию» (видимость cue зон) |
+| `Z` | вкл/выкл движение проекций зон |
 | `ESC` | выход |
 
-### Headless (без окна, для тестов/логов)
+`--seconds 0` — окно без авто-выхода (пока не нажмёте Esc).
+
+### Движущиеся проекции
 
 ```powershell
-python -m sim.run_sim --headless --seconds 90 --move-zones --log logs\sim.csv --metrics-out logs\metrics.json
+python -m sim.run_sim --move-zones --seconds 180
 ```
 
-Контроль без соц. зрения:
+### Headless (логи)
 
 ```powershell
-python -m sim.run_sim --headless --blind-peers --seconds 90 --metrics-out logs\metrics_blind.json
+python -m sim.run_sim --headless --seconds 90 --move-zones --log-dir logs\sim_move
+python -m sim.run_sim --headless --blind-peers --seconds 90 --log-dir logs\sim_blind
 ```
 
-## Что моделируется
+Смотрите `logs\...\summary.json` → `mean_PI`.
 
-- PN→KC→MBON из FlyWire MB subgraph
-- пластичность KC→MBON по DAN-маскам (aversive/appetitive)
-- `r` только из локальной позы и полигонов зон
-- conspecific cues только если агент «видит» соседа (FOV + дистанция)
-- опционально движущиеся проекции зон (`--move-zones` / клавиша `M`)
+## Что внутри
 
-Не моделируется: полная динамика Unitree, лидарный SLAM, ROS2.
+| Компонент | Да/нет |
+|---|---|
+| FlyWire MB subgraph PN→KC→MBON | да |
+| Пластичность по DAN-маскам | да |
+| `r` из позы + полигонов | да |
+| Зоны-проекции / движение | да |
+| Сородичи только локальными cues | да |
+| Полная физика Unitree / ROS2 | нет (2D упрощение) |
 
 ## Требования
 
-См. `requirements-sim.txt` (`numpy`, `pygame`).
+`requirements-sim.txt` — `numpy`, `pygame`.
