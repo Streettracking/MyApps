@@ -1,0 +1,57 @@
+# Episode config schema (normative field list)
+# Full rules: docs/fly_go2/design_constraints.md
+
+episode:
+  id: string                 # required, e.g. "2026-09-18_042"
+  mode: enum                 # solo | multi_independent | multi_blind_peers | ablation_random_wiring
+  duration_s: number         # required
+  seed: integer              # required for reproducibility
+  map_frame: string          # default: "arena"
+
+connectome:
+  artifact: string           # path or URI to connectome_mb_v1.npz
+  manifest: string           # path to manifest.json
+  snapshot: string           # e.g. "FAFB-783"
+  citation: string           # short citation string
+  plasticity:
+    eta: number
+    r_min: number
+    r_max: number
+    r_collision: number
+    r_fall: number
+
+arena:
+  zones:
+    - name: string           # e.g. A, B
+      reward: number         # e.g. -1, +1
+      polygon: [[number, number], ...]
+  stimuli:
+    - name: string           # cue_A, cue_B
+      kind: enum             # color | apriltag | qr
+      zone: string | null
+      code: string | null    # tag id / qr payload
+  fence:
+    polygon: [[number, number], ...]
+
+agents:
+  - id: string               # go2_1
+    apriltag_id: integer
+    start_pose: {x: number, y: number, yaw: number}
+    sense_conspecifics: bool # false in multi_blind_peers
+    graph_override: string | null  # only for ablation_random_wiring
+
+safety:
+  max_speed_mps: number
+  robot_clearance_m: number
+  e_stop_topic: string
+
+analysis:
+  telemetry_hz: number
+  snapshot_weights_every_s: number
+  metrics:
+    - PI
+    - time_in_zones
+    - peer_exposure
+    - weight_drift
+    - blind_vs_sighted_delta
+    - flywire_vs_random
