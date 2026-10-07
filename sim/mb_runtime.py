@@ -65,6 +65,8 @@ class MushroomBodyRuntime:
 
         # Map each MBON to an action bucket by type hash / known valence stubs
         self.mbon_action = self._assign_mbon_actions()
+        self.last_forward: MBForward | None = None
+        self.last_cues: dict[str, float] = {}
 
     @staticmethod
     def _to_local(pre, post, w, map_pre, map_post):

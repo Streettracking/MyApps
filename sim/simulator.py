@@ -50,6 +50,8 @@ class Simulator:
             brain = self.brains[ag.agent_id]
             cues = self.world.cues_for(ag)
             fwd = brain.forward(cues)
+            brain.last_forward = fwd
+            brain.last_cues = cues
             ag.action = fwd.action
             # decaying random explore so agents sample zones before policy hardens
             eps = self.cfg.explore_eps * max(0.0, 1.0 - self.world.t / max(self.cfg.duration_s, 1.0))
