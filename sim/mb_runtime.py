@@ -25,6 +25,10 @@ class MushroomBodyRuntime:
         self.root_ids = z["root_ids"].astype(np.int64)
         self.roles = z["roles"]
         self.cell_types = z["cell_types"].astype(str)
+        if "sides" in z.files:
+            self.sides = z["sides"].astype(str)
+        else:
+            self.sides = np.array(["right"] * len(self.root_ids))
         self.pn_idx = z["pn_idx"].astype(np.int32)
         self.kc_idx = z["kc_idx"].astype(np.int32)
         self.mbon_idx = z["mbon_idx"].astype(np.int32)
@@ -70,6 +74,8 @@ class MushroomBodyRuntime:
         self.last_raw: np.ndarray | None = None
         # Per-KC occupancy for familiarity depression. Updated only by that rule.
         self.kc_fam = np.zeros(self.n_kc, dtype=np.float32)
+        self.n_dan_app = int(len(z["dan_appetitive_idx"])) if "dan_appetitive_idx" in z.files else 0
+        self.n_dan_av = int(len(z["dan_aversive_idx"])) if "dan_aversive_idx" in z.files else 0
         if self.mask_av.shape == self.kc_mbon_w.shape:
             self.novelty_posts = np.unique(self.kc_mbon_post[self.mask_av]).astype(np.int32)
         else:
@@ -141,17 +147,21 @@ class MushroomBodyRuntime:
         thr = np.quantile(kc, 0.95) if self.n_kc > 10 else 0.0
         kc = np.where(kc >= thr, kc, 0.0).astype(np.float32)
 
-        mbon = np.zeros(self.n_mbon, dtype=np.float32)
-        if len(self.kc_mbon_w):
-            np.add.at(mbon, self.kc_mbon_post, self.kc_mbon_w * kc[self.kc_mbon_pre])
-
-        scores = np.zeros(len(ACTIONS), dtype=np.float32)
-        for i, a_i in enumerate(self.mbon_action):
-            scores[a_i] += mbon[i]
+        mbon, scores = self.scores_of_kc(kc)
         scores[ACTIONS.index("Explore")] += 0.15 * (float(scores.max()) + 1.0)
         if float(scores.sum()) < 1e-6:
             scores[ACTIONS.index("Explore")] = 1.0
         return pn, kc, mbon, scores
+
+    def scores_of_kc(self, kc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """MBON rates and action buckets for an existing KC vector. Does not learn."""
+        mbon = np.zeros(self.n_mbon, dtype=np.float32)
+        if len(self.kc_mbon_w):
+            np.add.at(mbon, self.kc_mbon_post, self.kc_mbon_w * kc[self.kc_mbon_pre])
+        scores = np.zeros(len(ACTIONS), dtype=np.float32)
+        for i, a_i in enumerate(self.mbon_action):
+            scores[int(a_i)] += mbon[i]
+        return mbon, scores
 
     def forward(self, cues: dict[str, float], raw_pn: np.ndarray | None = None) -> MBForward:
         pn, kc, mbon, scores = self.readout(cues, raw_pn)

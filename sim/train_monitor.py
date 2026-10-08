@@ -37,6 +37,7 @@ class MonitorInput:
     beep_toggle: bool = False
     lidar_reset: bool = False
     lidar_toggle: bool = False
+    flash_toggle: bool = False
     focused: bool = True
 
 
@@ -96,6 +97,8 @@ class MonitorView:
     lidar_hold: str = ""
     lidar_warning: str = ""
     lidar_fresh_on: bool = True
+    learn_flash: object | None = None
+    mb_layout: object | None = None
 
 
 def _surf_from_rgb(rgb: np.ndarray):
@@ -173,6 +176,7 @@ class TrainMonitor:
         self.lidar_reset_rect = pygame.Rect(16, 588, 200, 34)
         self.lidar_fresh_rect = pygame.Rect(224, 588, 236, 34)
         self.beep_on = False
+        self.flash_open = False
         self.audio_ok: bool | None = None
         self._beep_sound = None
         self._prev_rec = False
@@ -218,6 +222,9 @@ class TrainMonitor:
                     inp.lidar_reset = True
                 elif event.key == pygame.K_v:
                     inp.lidar_toggle = True
+                elif event.key == pygame.K_g and not getattr(event, "repeat", False):
+                    self.flash_open = not self.flash_open
+                    inp.flash_toggle = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
@@ -275,7 +282,23 @@ class TrainMonitor:
             screen.blit(sm.render(view.lidar_warning[:78], True, (230, 176, 96)), (16, 626))
 
         rx = 492
-        if view.learner == "mb":
+        log_n = 6
+        if view.learner == "mb" and self.flash_open:
+            self._draw_mb_head(screen, view, rx)
+            from .learn_flash import draw_learn_panel
+
+            draw_learn_panel(
+                screen,
+                font,
+                sm,
+                pygame.Rect(rx, 88, WIN_W - rx - 16, 512),
+                view.mb_layout,
+                view.learn_flash,
+                view.t,
+            )
+            log_y = 608
+            log_n = 3
+        elif view.learner == "mb":
             self._draw_mb(screen, view, rx)
             log_y = 548
         else:
@@ -283,7 +306,7 @@ class TrainMonitor:
             log_y = 560
         screen.blit(sm.render("журнал", True, (200, 204, 214)), (rx, log_y))
         y = log_y + 18
-        for line in view.log_lines[-6:]:
+        for line in view.log_lines[-log_n:]:
             screen.blit(sm.render(line[:110], True, (186, 190, 200)), (rx, y))
             y += 16
 
@@ -421,9 +444,7 @@ class TrainMonitor:
             overlay.blit(tag, (tip[0] + 12, tip[1] - 18 + i * 16))
         screen.blit(overlay, inner.topleft)
 
-    def _draw_mb(self, screen, view: MonitorView, rx: int) -> None:
-        import pygame
-
+    def _draw_mb_head(self, screen, view: MonitorView, rx: int) -> None:
         sm = self.font_sm
         col_w = WIN_W - rx - 16
         if view.recognized:
@@ -437,6 +458,13 @@ class TrainMonitor:
             pct = "…"
         pct_s = self.font_big.render(pct, True, tone)
         screen.blit(pct_s, (rx + col_w - pct_s.get_width(), 46))
+
+    def _draw_mb(self, screen, view: MonitorView, rx: int) -> None:
+        import pygame
+
+        sm = self.font_sm
+        col_w = WIN_W - rx - 16
+        self._draw_mb_head(screen, view, rx)
         raw = f"сырой MBON {view.likeness:+.0f}    {view.readout_caption}"
         screen.blit(sm.render(raw[:88], True, (150, 156, 168)), (rx, 84))
         self._progress_box(screen, view, pygame.Rect(rx, 106, col_w, 78))

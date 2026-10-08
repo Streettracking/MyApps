@@ -40,8 +40,8 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "стрелки ход   T лакомство   X наказание   B звук   C сброс   V свежий   Space стоп   E E-STOP   "
-    "D/N   P R S L F12 Esc"
+    "стрелки ход  T лакомство  X наказание  G вспышка  B звук  C/V лидар  "
+    "Space  E-STOP  D/N P R S L F12"
 )
 
 
@@ -487,6 +487,12 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                 )
             if inp.lidar_toggle:
                 session.toggle_lidar_fresh(time.monotonic())
+            if inp.flash_toggle:
+                if session.learner_kind != "mb":
+                    mon.flash_open = False
+                    session._log("вспышка обучения только у грибовидного тела")
+                else:
+                    session._log("схема обучения открыта" if mon.flash_open else "схема обучения скрыта")
             if inp.save:
                 session.save()
             if inp.load:
@@ -582,6 +588,8 @@ def _live_view(session: LiveSession, camera, lidar, error: str, link: Go2Command
         lidar_hold=session.lidar_hold,
         lidar_warning=session.lidar_warning,
         lidar_fresh_on=session.lidar_fresh_on,
+        learn_flash=None if session.mb is None else session.mb.flash,
+        mb_layout=None if session.mb is None else session.mb.layout,
     )
     if session.mb is not None:
         caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"

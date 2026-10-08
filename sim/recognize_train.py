@@ -361,6 +361,8 @@ class RecognizeTrainSim:
                 lidar_mode=self._lidar_caption(),
                 lidar_warning=self.lidar_warning,
                 lidar_fresh_on=self.lidar_fresh_on,
+                learn_flash=self.mb.flash,
+                mb_layout=self.mb.layout,
             )
         assert self.recognizer is not None
         return MonitorView(
@@ -457,7 +459,7 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "стрелки ход   T лакомство   X наказание   B звук   C сброс   V свежий   D/N   P R S L F12 Esc"
+SIM_KEYS = "стрелки ход  T лакомство  X наказание  G вспышка  B звук  C сброс  V свежий  D/N  P R S L F12 Esc"
 HEBB_KEYS = "стрелки ход   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
 
 
@@ -504,6 +506,12 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
             session.reset_lidar()
         if inp.lidar_toggle:
             session.toggle_lidar_fresh()
+        if inp.flash_toggle:
+            if session.learner_kind != "mb":
+                mon.flash_open = False
+                session._log("вспышка обучения только у грибовидного тела")
+            else:
+                session._log("схема обучения открыта" if mon.flash_open else "схема обучения скрыта")
         if inp.save:
             session.save()
         if inp.load:

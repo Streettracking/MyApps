@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .learn_flash import LearnFlash, MbLayout, build_layout, record_teacher_step
 from .mb_confidence import Confidence, ConfidenceCalibrator, TrainProgress
 from .mb_runtime import MBForward, MushroomBodyRuntime
 from .raw_sense import RawProjector, probe_features
@@ -62,6 +63,8 @@ class MbTrainer:
         self.conf = Confidence()
         self.lidar_refresh = 0.0
         self.saved_lidar_refresh: float | None = None
+        self.layout: MbLayout = build_layout(self.brain)
+        self.flash: LearnFlash | None = None
 
     def forward(self, feat: np.ndarray) -> MBForward:
         pn = self.proj.project(feat)
@@ -93,11 +96,11 @@ class MbTrainer:
             return
         if self.dan == "teacher":
             if kind == "pam":
-                self.brain.plasticity(fwd, 1.0)
+                self.flash = record_teacher_step(self.brain, fwd, "pam", t)
                 self.dan_events.append((t, "PAM"))
                 self.n_pam += 1
             elif kind == "ppl1":
-                self.brain.plasticity(fwd, -1.0)
+                self.flash = record_teacher_step(self.brain, fwd, "ppl1", t)
                 self.dan_events.append((t, "PPL1"))
                 self.n_ppl1 += 1
         elif fwd.kc.sum() > 0:
@@ -135,6 +138,7 @@ class MbTrainer:
 
     def reset(self) -> None:
         self.brain.reset_plastic()
+        self.flash = None
         self.last_drift = 0.0
         self.n_pam = self.n_ppl1 = self.n_novelty = 0
         self.cal.reset()
@@ -155,6 +159,7 @@ class MbTrainer:
         if dan in ("teacher", "familiarity"):
             self.dan = dan
         self.last_drift = self.brain.weight_drift()
+        self.flash = None
         with np.load(path, allow_pickle=True) as z:
             self.progress.load_arrays(z)
             self.cal.load_arrays(z)
