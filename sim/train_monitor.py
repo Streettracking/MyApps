@@ -367,6 +367,7 @@ class TrainMonitor:
                 int(np.clip(ny, -0.05, 1.05) * inner.h),
             )
 
+        drawn = []
         for mark in marks:
             alpha = int(np.clip(float(getattr(mark, "alpha", 1.0)), 0.0, 1.0) * 210)
             if alpha < 8:
@@ -380,10 +381,12 @@ class TrainMonitor:
                 pygame.draw.line(overlay, (180, 255, 190, alpha), origin, tip, 2)
             else:
                 pygame.draw.line(overlay, (180, 255, 190, alpha), origin, tip, 2)
-                pygame.draw.circle(overlay, (70, 200, 110, alpha), tip, 8)
-                pygame.draw.circle(overlay, (230, 255, 230, alpha), tip, 8, 2)
+                pygame.draw.circle(overlay, (70, 200, 110, alpha), tip, 7)
+                pygame.draw.circle(overlay, (230, 255, 230, alpha), tip, 7, 2)
+            drawn.append((tip, alpha, mark))
+        for i, (tip, _alpha, mark) in enumerate(drawn):
             tag = self.font_sm.render(f"{mark.percent:.0f}%", True, (230, 255, 220))
-            overlay.blit(tag, (tip[0] + 10, tip[1] - 8))
+            overlay.blit(tag, (tip[0] + 12, tip[1] - 18 + i * 16))
         screen.blit(overlay, inner.topleft)
 
     def _draw_mb(self, screen, view: MonitorView, rx: int) -> None:
