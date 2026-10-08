@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .mb_confidence import fmt_duration
+
 WIN_W = 1280
 WIN_H = 760
 
@@ -32,6 +34,7 @@ class MonitorInput:
     label: str | None = None
     treat: bool = False
     punish: bool = False
+    beep_toggle: bool = False
     focused: bool = True
 
 
@@ -71,6 +74,21 @@ class MonitorView:
     readout_caption: str = ""
     n_pam: int = 0
     n_ppl1: int = 0
+    recognized: bool = False
+    confidence: float = 0.0
+    confidence_ready: bool = False
+    session_time: float = 0.0
+    total_time: float = 0.0
+    total_pam: int = 0
+    total_ppl1: int = 0
+    session_sep: float | None = None
+    total_sep: float | None = None
+    session_acc: float | None = None
+    total_acc: float | None = None
+    session_labeled: int = 0
+    total_labeled: int = 0
+    session_novelty: int = 0
+    total_novelty: int = 0
 
 
 def _surf_from_rgb(rgb: np.ndarray):
@@ -138,12 +156,17 @@ class TrainMonitor:
         pygame.init()
         pygame.display.set_caption(title)
         self.screen = pygame.display.set_mode((WIN_W, WIN_H))
-        self.font = pygame.font.SysFont("consolas", 16)
-        self.font_sm = pygame.font.SysFont("consolas", 14)
-        self.font_big = pygame.font.SysFont("consolas", 42)
+        self.font = pygame.font.SysFont("dejavusans", 16)
+        self.font_sm = pygame.font.SysFont("dejavusans", 15)
+        self.font_big = pygame.font.SysFont("dejavusans", 36)
+        self.font_ind = pygame.font.SysFont("dejavusans", 28)
         self.clock = pygame.time.Clock()
         self.estop_rect = pygame.Rect(WIN_W - 188, WIN_H - 56, 168, 40)
-        self.treat_rect = pygame.Rect(WIN_W - 420, WIN_H - 56, 210, 40)
+        self.treat_rect = pygame.Rect(WIN_W - 430, WIN_H - 56, 220, 40)
+        self.beep_on = False
+        self.audio_ok: bool | None = None
+        self._beep_sound = None
+        self._prev_rec = False
 
     def pump(self) -> MonitorInput:
         import pygame
@@ -177,6 +200,11 @@ class TrainMonitor:
                     inp.treat = True
                 elif event.key == pygame.K_x:
                     inp.punish = True
+                elif event.key == pygame.K_b:
+                    self.beep_on = not self.beep_on
+                    if self.beep_on:
+                        self._ensure_audio()
+                    inp.beep_toggle = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
@@ -213,13 +241,13 @@ class TrainMonitor:
         sm = self.font_sm
 
         screen.blit(font.render(view.title, True, (236, 236, 240)), (16, 10))
-        tag = "LEARNING PAUSED" if view.paused else "learning"
-        screen.blit(sm.render(f"t={view.t:6.1f}s   {tag}   {view.mode_label}", True, (180, 186, 198)), (16, 32))
+        tag = "обучение на паузе" if view.paused else "обучение"
+        screen.blit(sm.render(f"t={view.t:6.1f} с    {tag}    {view.mode_label}", True, (180, 186, 198)), (16, 32))
 
         cam_rect = pygame.Rect(16, 56, 460, 210)
         lid_rect = pygame.Rect(16, 278, 460, 300)
-        self._frame(screen, cam_rect, view.camera, "camera", view.sensor_error)
-        self._frame(screen, lid_rect, view.lidar, "lidar map", "")
+        self._frame(screen, cam_rect, view.camera, "камера", view.sensor_error)
+        self._frame(screen, lid_rect, view.lidar, "карта лидара", "")
 
         rx = 492
         if view.learner == "mb":
@@ -228,17 +256,17 @@ class TrainMonitor:
         else:
             self._draw_hebb(screen, view, rx)
             log_y = 560
-        screen.blit(sm.render("event log", True, (200, 204, 214)), (rx, log_y))
+        screen.blit(sm.render("журнал", True, (200, 204, 214)), (rx, log_y))
         y = log_y + 18
         for line in view.log_lines[-6:]:
             screen.blit(sm.render(line[:110], True, (186, 190, 200)), (rx, y))
             y += 16
 
         pygame.draw.rect(screen, (12, 12, 16), pygame.Rect(0, WIN_H - 72, WIN_W, 72))
-        focus = "window focused" if view.focused else "click the window — keys ignored"
+        focus = "окно в фокусе" if view.focused else "нажмите на окно — клавиши не читаются"
         screen.blit(sm.render(view.udp_status + "    " + focus, True, (220, 220, 220)), (16, WIN_H - 64))
         cmd = view.last_command or "—"
-        screen.blit(sm.render("last  " + cmd[:90], True, (170, 176, 188)), (16, WIN_H - 44))
+        screen.blit(sm.render("команда  " + cmd[:90], True, (170, 176, 188)), (16, WIN_H - 44))
         screen.blit(sm.render(view.keys_hint, True, (140, 146, 158)), (16, WIN_H - 24))
 
         mouse = pygame.mouse.get_pos()
@@ -249,8 +277,49 @@ class TrainMonitor:
         screen.blit(label, label.get_rect(center=self.estop_rect.center))
         if view.learner == "mb":
             self._treat_button(screen, view, mouse)
+            if view.recognized and not self._prev_rec and self.beep_on:
+                self._play_beep()
+            self._prev_rec = view.recognized
+        else:
+            self._prev_rec = False
         pygame.display.flip()
         self.clock.tick(30)
+
+    def _ensure_audio(self) -> bool:
+        if self.audio_ok is not None:
+            return self.audio_ok
+        try:
+            import pygame
+
+            if pygame.mixer.get_init() is None:
+                pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+            spec = pygame.mixer.get_init()
+            if not spec:
+                raise RuntimeError("mixer silent")
+            sr = int(spec[0])
+            channels = int(spec[2])
+            n = int(sr * 0.09)
+            t = np.arange(n, dtype=np.float32) / float(sr)
+            env = np.hanning(n).astype(np.float32)
+            mono = (0.35 * np.sin(2 * np.pi * 880 * t) * env * 32767).astype(np.int16)
+            if channels >= 2:
+                wave = np.column_stack([mono, mono])
+            else:
+                wave = mono
+            self._beep_sound = pygame.sndarray.make_sound(wave)
+            self.audio_ok = True
+        except Exception:
+            self.audio_ok = False
+            self._beep_sound = None
+        return self.audio_ok
+
+    def _play_beep(self) -> None:
+        if not self._ensure_audio() or self._beep_sound is None:
+            return
+        try:
+            self._beep_sound.play()
+        except Exception:
+            self.audio_ok = False
 
     def _treat_button(self, screen, view: MonitorView, mouse) -> None:
         import pygame
@@ -264,7 +333,7 @@ class TrainMonitor:
             color = (16, 92, 48)
         pygame.draw.rect(screen, color, self.treat_rect, border_radius=4)
         pygame.draw.rect(screen, (180, 255, 200), self.treat_rect, 2, border_radius=4)
-        label = self.font.render("TREAT   T", True, (245, 255, 248))
+        label = self.font.render("ЛАКОМСТВО  T", True, (245, 255, 248))
         screen.blit(label, label.get_rect(center=self.treat_rect.center))
 
     def _draw_mb(self, screen, view: MonitorView, rx: int) -> None:
@@ -272,40 +341,76 @@ class TrainMonitor:
 
         sm = self.font_sm
         col_w = WIN_W - rx - 16
-        tone = (120, 220, 140) if view.dan_mode == "teacher" else (150, 190, 230)
-        screen.blit(self.font_big.render(f"{view.likeness:+.2f}", True, tone), (rx, 50))
-        cap = view.readout_caption or "MBON readout"
-        screen.blit(sm.render(cap, True, (200, 206, 216)), (rx + 210, 56))
-        screen.blit(sm.render(view.operator_label[:86], True, (150, 156, 168)), (rx + 210, 76))
-        counts = f"PAM {view.n_pam}    PPL1 {view.n_ppl1}    KC {view.kc_on}/{view.kc_n}    drift {view.drift:.1f}"
-        screen.blit(sm.render(counts, True, (210, 214, 222)), (rx + 210, 98))
+        if view.recognized:
+            phrase, tone = "УЗНАЮ СОРОДИЧА", (90, 230, 130)
+        else:
+            phrase, tone = "НЕ УЗНАЮ", (150, 154, 162)
+        screen.blit(self.font_ind.render(phrase, True, tone), (rx, 48))
+        if view.confidence_ready:
+            pct = f"{view.confidence:.0f}%"
+        else:
+            pct = "…"
+        pct_s = self.font_big.render(pct, True, tone)
+        screen.blit(pct_s, (rx + col_w - pct_s.get_width(), 46))
+        raw = f"сырой MBON {view.likeness:+.0f}    {view.readout_caption}"
+        screen.blit(sm.render(raw[:88], True, (150, 156, 168)), (rx, 84))
+        self._progress_box(screen, view, pygame.Rect(rx, 106, col_w, 78))
 
         plot_w = (col_w - 8) // 2
-        _plot(screen, pygame.Rect(rx, 128, plot_w, 128), view.peer_curve, 0.0, 1.0, (80, 200, 120), sm, "dog in view")
+        _plot(screen, pygame.Rect(rx, 192, plot_w, 96), view.peer_curve, 0.0, 1.0, (80, 200, 120), sm, "собака в кадре")
         _plot(
             screen,
-            pygame.Rect(rx + plot_w + 8, 128, col_w - plot_w - 8, 128),
+            pygame.Rect(rx + plot_w + 8, 192, col_w - plot_w - 8, 96),
             view.other_curve,
             0.0, 1.0,
             (214, 164, 72),
             sm,
-            "no dog / distractor",
+            "нет собаки",
         )
         drift_hi = max((v for _, v in view.drift_curve), default=1.0)
         if drift_hi <= 0:
             drift_hi = 1.0
         _plot(
             screen,
-            pygame.Rect(rx, 264, col_w, 78),
+            pygame.Rect(rx, 294, col_w, 58),
             view.drift_curve,
             0.0,
             drift_hi,
             (120, 170, 220),
             sm,
-            f"KC→MBON weight drift    {view.drift:.1f}",
+            f"дрейф KC→MBON    {view.drift:.1f}",
         )
-        self._dan_timeline(screen, view, pygame.Rect(rx, 350, col_w, 100))
-        self._kc_row(screen, view, rx, 458, col_w)
+        self._dan_timeline(screen, view, pygame.Rect(rx, 358, col_w, 78))
+        self._kc_row(screen, view, rx, 442, col_w)
+
+    def _progress_box(self, screen, view: MonitorView, rect) -> None:
+        import pygame
+
+        pygame.draw.rect(screen, (20, 26, 24), rect)
+        pygame.draw.rect(screen, (60, 90, 70), rect, 1)
+        sm = self.font_sm
+        screen.blit(sm.render("насколько обучен", True, (190, 220, 196)), (rect.x + 8, rect.y + 4))
+        if view.dan_mode == "familiarity":
+            teach = f"знакомство {view.session_novelty} / всего {view.total_novelty}"
+        else:
+            teach = f"лакомств {view.n_pam} / всего {view.total_pam}    наказаний {view.n_ppl1} / {view.total_ppl1}"
+        line1 = f"сессия  {fmt_duration(view.session_time)}    {teach}"
+        line2 = f"всего    {fmt_duration(view.total_time)}    лакомств {view.total_pam}"
+        if view.session_labeled or view.total_labeled:
+            ses = _metric(view.session_sep, view.session_acc, view.session_labeled)
+            tot = _metric(view.total_sep, view.total_acc, view.total_labeled)
+            line3 = f"D−N  сессия {ses}    всего {tot}"
+        else:
+            line3 = "метки D/N нет — разделение и точность ждут клавиши D и N"
+        if self.beep_on and self.audio_ok is False:
+            sound = "звук недоступен"
+        elif self.beep_on:
+            sound = "звук вкл"
+        else:
+            sound = "звук выкл"
+        screen.blit(sm.render(line1[:96], True, (220, 224, 214)), (rect.x + 8, rect.y + 24))
+        screen.blit(sm.render((line2 + "    " + sound)[:96], True, (200, 206, 198)), (rect.x + 8, rect.y + 42))
+        screen.blit(sm.render(line3[:100], True, (176, 186, 178)), (rect.x + 8, rect.y + 58))
 
     def _dan_timeline(self, screen, view: MonitorView, rect) -> None:
         import pygame
@@ -313,7 +418,7 @@ class TrainMonitor:
         pygame.draw.rect(screen, (18, 28, 22), rect)
         pygame.draw.rect(screen, (70, 140, 90), rect, 2)
         sm = self.font_sm
-        title = "DAN timeline    T = PAM treat    X = PPL1"
+        title = "шкала DAN    T = лакомство PAM    X = наказание PPL1"
         screen.blit(sm.render(title, True, (190, 235, 200)), (rect.x + 8, rect.y + 4))
         if view.t <= 30.0:
             t0 = 0.0
@@ -339,7 +444,7 @@ class TrainMonitor:
                 pygame.draw.line(screen, (90, 150, 220), (x, inner.y + 8), (x, inner.bottom - 8), 1)
             shown += 1
         if shown == 0:
-            hint = "each treat lands here — hold a dog in view and press T"
+            hint = "каждое лакомство появится здесь — собака в кадре, клавиша T"
             screen.blit(sm.render(hint, True, (140, 170, 150)), (inner.x, inner.centery - 8))
         screen.blit(sm.render(span_label, True, (120, 140, 128)), (rect.right - 48, rect.bottom - 16))
 
@@ -347,7 +452,7 @@ class TrainMonitor:
         import pygame
 
         sm = self.font_sm
-        screen.blit(sm.render(f"KC activity    {view.kc_on} on / {view.kc_n}", True, (200, 204, 214)), (x, y))
+        screen.blit(sm.render(f"активность KC    {view.kc_on} из {view.kc_n}", True, (200, 204, 214)), (x, y))
         bins = view.kc_bins
         if bins is None or len(bins) == 0:
             bins = np.zeros(48)
@@ -372,14 +477,14 @@ class TrainMonitor:
         sm = self.font_sm
         col_w = WIN_W - rx - 16
         screen.blit(self.font_big.render(f"{view.likeness:.2f}", True, (230, 210, 120)), (rx, 50))
-        screen.blit(sm.render("likeness    comparison layer, not KC→MBON", True, (200, 204, 214)), (rx + 180, 58))
+        screen.blit(sm.render("похожесть    слой сравнения, не KC→MBON", True, (200, 204, 214)), (rx + 180, 58))
         screen.blit(
-            sm.render(f"learned match {view.learned_match:.2f}    self {view.n_self}    other {view.n_other}", True, (180, 186, 198)),
+            sm.render(f"к прототипу {view.learned_match:.2f}    свой {view.n_self}    прочее {view.n_other}", True, (180, 186, 198)),
             (rx + 180, 80),
         )
         screen.blit(sm.render(view.operator_label[:86], True, (150, 156, 168)), (rx + 180, 100))
         plot_w = (col_w - 8) // 2
-        _plot(screen, pygame.Rect(rx, 128, plot_w, 140), view.peer_curve, 0.0, 1.0, (80, 200, 120), sm, "dog in view")
+        _plot(screen, pygame.Rect(rx, 128, plot_w, 140), view.peer_curve, 0.0, 1.0, (80, 200, 120), sm, "собака в кадре")
         _plot(
             screen,
             pygame.Rect(rx + plot_w + 8, 128, col_w - plot_w - 8, 140),
@@ -387,16 +492,16 @@ class TrainMonitor:
             0.0, 1.0,
             (214, 164, 72),
             sm,
-            "no dog / distractor",
+            "нет собаки",
         )
         inv = [(float(row.get("t", 0.0)), float(row.get("invariance", 0.0))) for row in view.metric_curve]
-        _plot(screen, pygame.Rect(rx, 276, col_w, 88), inv, -1.0, 1.0, (180, 160, 230), sm, "invariance  dog-still − distractor-fast")
+        _plot(screen, pygame.Rect(rx, 276, col_w, 88), inv, -1.0, 1.0, (180, 160, 230), sm, "инвариантность  собака стоит − дистрактор быстрый")
         half = (col_w - 12) // 2
-        _bars(screen, sm, (rx, 376), view.proto_self, half, "prototype self", (90, 180, 120))
-        _bars(screen, sm, (rx + half + 12, 376), view.proto_other, half, "prototype other", (190, 140, 70))
+        _bars(screen, sm, (rx, 376), view.proto_self, half, "прототип сородича", (90, 180, 120))
+        _bars(screen, sm, (rx + half + 12, 376), view.proto_other, half, "прототип прочего", (190, 140, 70))
         purity = view.metric_curve[-1].get("purity") if view.metric_curve else None
         if purity is not None:
-            screen.blit(sm.render(f"purity {float(purity):.0f} / 3", True, (180, 186, 198)), (rx, 500))
+            screen.blit(sm.render(f"чистота {float(purity):.0f} / 3", True, (180, 186, 198)), (rx, 500))
 
     def _frame(self, screen, rect, image, title, error: str) -> None:
         import pygame
@@ -415,6 +520,12 @@ class TrainMonitor:
             for chunk in _wrap(error, 52):
                 screen.blit(self.font_sm.render(chunk, True, (230, 120, 110)), (rect.x + 10, y))
                 y += 16
+
+
+def _metric(sep: float | None, acc: float | None, n: int) -> str:
+    if sep is None or acc is None or n < 1:
+        return "—"
+    return f"{sep:+.0f}, точность {acc * 100:.0f}% ({n})"
 
 
 def _wrap(text: str, width: int) -> list[str]:

@@ -231,16 +231,18 @@ class MushroomBodyRuntime:
         self.kc_mbon_w = self.kc_mbon_w0.astype(np.float32).copy()
         self.kc_fam[:] = 0.0
 
-    def save_mb(self, path: str | Path, proj_seed: int, dan: str) -> None:
+    def save_mb(self, path: str | Path, proj_seed: int, dan: str, extra: dict | None = None) -> None:
         dest = Path(path)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(
-            dest,
+        payload = dict(
             kc_mbon_w=self.kc_mbon_w,
             kc_fam=self.kc_fam,
             proj_seed=np.int32(proj_seed),
             dan=np.array(dan),
         )
+        if extra:
+            payload.update(extra)
+        np.savez(dest, **payload)
 
     def load_mb(self, path: str | Path) -> tuple[int, str]:
         z = np.load(path, allow_pickle=True)

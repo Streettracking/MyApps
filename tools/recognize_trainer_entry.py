@@ -12,13 +12,13 @@ The Hebbian layer is ``--learner hebb``.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 # Static imports so PyInstaller traces the trainer and the connectome runtime.
 import sim.frame_sense  # noqa: F401
 import sim.go2_udp  # noqa: F401
+import sim.mb_confidence  # noqa: F401
 import sim.mb_runtime  # noqa: F401
 import sim.mb_train  # noqa: F401
 import sim.raw_sense  # noqa: F401
@@ -30,7 +30,8 @@ import sim.world  # noqa: F401
 
 
 def main(argv: list[str] | None = None) -> int:
-    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    # Audio is left on the system driver so the optional beep can play.
+    # A missing device is reported when B is pressed; the window still opens.
     p = argparse.ArgumentParser(description="Go2 conspecific recognition trainer")
     p.add_argument("--sim", action="store_true", help="Open the simulator training mode instead of the robot")
     p.add_argument("--robot-ip", default=recognize_train_live.DEFAULT_IP)
@@ -74,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if args.headless:
             forwarded.append("--headless")
-        if args.load:
+        if args.load or args.state.is_file():
             forwarded.append("--load")
         if args.screenshot:
             forwarded.extend(["--screenshot", str(args.screenshot)])
@@ -109,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if args.headless:
         forwarded.append("--headless")
-    if args.load:
+    if args.load or args.state.is_file():
         forwarded.append("--load")
     if args.reset_lidar:
         forwarded.append("--reset-lidar")

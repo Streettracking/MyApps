@@ -69,14 +69,17 @@ class RecognizeTrainSim:
         self.last_match = 0.0
         self.step_i = 0
         self.treat_flash = False
+        self.operator: str | None = None
+        self.scene_dog = False
+        self.saw_dog = False
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
         if learner == "mb":
             self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan)
-            self._log(f"MB training  DAN={dan}  no zones  KC→MBON only")
+            self._log("грибовидное тело  учитель — клавиша T  учатся только KC→MBON")
         else:
             self.recognizer = ConspecificRecognizer()
-            self._log("Hebbian comparison layer  no zones")
+            self._log("слой сравнения  без зон")
         self._record_metric()
 
     def _log(self, text: str) -> None:
@@ -133,9 +136,14 @@ class RecognizeTrainSim:
         feat, hit = render_view(self.learner, self.world, include_agents=True)
         speed = float(np.hypot(self.learner.vx, self.learner.vy))
         self.treat_flash = False
+        self.scene_dog = bool(hit.dog and not hit.distractor)
+        self.saw_dog = bool(hit.dog)
         if self.mb is not None:
             self.mb.learn = learn
             fwd = self.mb.forward(feat)
+            value = self.mb.last_readout
+            # Energy baseline only. Operator labels are applied after, for the panel.
+            conf = self.mb.observe(feat, value)
             # Auto-teach stands in for a human pressing T/X. It is a DAN, not a D/N label.
             kind = teach
             if kind is None and self.auto_teach and self.dan == "teacher":
@@ -146,11 +154,21 @@ class RecognizeTrainSim:
             if kind == "pam":
                 self.treat_flash = True
             self.mb.teach(fwd, kind if self.dan == "teacher" else None, float(self.world.t))
+            self.mb.progress.tick(self.world.cfg.dt, learn)
+            self.mb.progress.note_label(self.operator, value, conf.recognized, conf.ready)
             if kind == "pam" and (self.mb.n_pam <= 2 or self.mb.n_pam % 15 == 0):
-                self._log(f"DAN treat  PAM  #{self.mb.n_pam}")
+                self._log(f"лакомство PAM  #{self.mb.n_pam}")
             elif kind == "ppl1" and (self.mb.n_ppl1 <= 2 or self.mb.n_ppl1 % 15 == 0):
-                self._log(f"DAN punish  PPL1  #{self.mb.n_ppl1}")
-            value = self.mb.last_readout
+                self._log(f"наказание PPL1  #{self.mb.n_ppl1}")
+            if (
+                conf.ready
+                and conf.recognized
+                and not getattr(self, "_was_rec", False)
+                and self.world.t - getattr(self, "_last_rec_log", -10.0) > 2.0
+            ):
+                self._log(f"узнаю сородича  {conf.percent:.0f}%")
+                self._last_rec_log = float(self.world.t)
+            self._was_rec = bool(conf.recognized) if conf.ready else False
             self.last_like = value
             self.last_match = value
         else:
@@ -184,42 +202,47 @@ class RecognizeTrainSim:
                 self.mb.note_drift(float(self.world.t))
         if self.state_path and self.step_i % 300 == 0:
             self.save()
-            self._log(f"checkpoint saved  {self.state_path.name}")
+            self._log(f"сохранено  {self.state_path.name}")
 
     def save(self) -> Path:
         if self.mb is not None:
             self.mb.save(self.state_path)
         elif self.recognizer is not None:
             self.recognizer.save(self.state_path)
-        self._log(f"saved  {self.state_path.name}")
+        self._log(f"сохранено  {self.state_path.name}")
         return self.state_path
 
     def load(self) -> None:
+        if not Path(self.state_path).is_file():
+            raise FileNotFoundError(self.state_path)
         if self.mb is not None:
             self.mb.load(self.state_path)
             self.dan = self.mb.dan
-            self._log(f"loaded KC→MBON  drift={self.mb.last_drift:.1f}")
+            self._log(f"загружены веса KC→MBON  дрейф {self.mb.last_drift:.1f}  лакомств всего {self.mb.progress.base_pam}")
         elif self.recognizer is not None:
             self.recognizer.load(self.state_path)
-            self._log(f"loaded  n={self.recognizer.n_self}")
+            self._log(f"загружен прототип  n={self.recognizer.n_self}")
 
     def reset(self) -> None:
         if self.mb is not None:
             self.mb.reset()
-            self._log("KC→MBON weights reset")
+            self._was_rec = False
+            self._log("веса и счётчики обучения сброшены")
         elif self.recognizer is not None:
             self.recognizer.reset()
-            self._log("prototype reset")
+            self._log("прототип сброшен")
 
     def view(self, focused: bool, udp_status: str, last_command: str, keys_hint: str):
         from .train_monitor import MonitorView
 
         cam, lid = sim_previews(self.learner, self.world)
         if self.mb is not None:
-            caption = "appetitive MBON  (approach − avoid)" if self.dan == "teacher" else "familiarity  (− novelty MBON)"
-            mode = f"sim   MB DAN={self.dan}   no zones   MB does not drive"
+            caption = "сырой выход: подход − избегание" if self.dan == "teacher" else "сырой выход: минус новизна"
+            mode = "сим · лакомство T · без зон · мозг не рулит" if self.dan == "teacher" else "сим · знакомство · без зон · мозг не рулит"
+            prog = self.mb.progress
+            conf = self.mb.conf
             return MonitorView(
-                title=f"MB training   {self.learner.agent_id}",
+                title=f"тренировка узнавания   {self.learner.agent_id}",
                 camera=cam,
                 lidar=lid,
                 likeness=self.last_like,
@@ -232,7 +255,7 @@ class RecognizeTrainSim:
                 udp_status=udp_status,
                 last_command=last_command,
                 mode_label=mode,
-                operator_label="green = dog in view, amber = no dog. D/N are not used in the sim.",
+                operator_label="кривые по кадру симулятора. D и N только для панели точности.",
                 t=self.world.t,
                 focused=focused,
                 keys_hint=keys_hint,
@@ -248,10 +271,25 @@ class RecognizeTrainSim:
                 readout_caption=caption,
                 n_pam=self.mb.n_pam,
                 n_ppl1=self.mb.n_ppl1,
+                recognized=conf.recognized,
+                confidence=conf.percent,
+                confidence_ready=conf.ready,
+                session_time=prog.session_time,
+                total_time=prog.base_time + prog.session_time,
+                total_pam=prog.base_pam + self.mb.n_pam,
+                total_ppl1=prog.base_ppl1 + self.mb.n_ppl1,
+                session_sep=prog.session_sep(),
+                total_sep=prog.total_sep(),
+                session_acc=prog.session_acc(),
+                total_acc=prog.total_acc(),
+                session_labeled=prog.ses_scored,
+                total_labeled=prog.base_scored + prog.ses_scored,
+                session_novelty=self.mb.n_novelty,
+                total_novelty=prog.base_novelty + self.mb.n_novelty,
             )
         assert self.recognizer is not None
         return MonitorView(
-            title=f"recognition training   learner {self.learner.agent_id}",
+            title=f"тренировка узнавания   {self.learner.agent_id}",
             camera=cam,
             lidar=lid,
             likeness=self.last_like,
@@ -267,8 +305,8 @@ class RecognizeTrainSim:
             n_other=self.recognizer.n_other,
             udp_status=udp_status,
             last_command=last_command,
-            mode_label="sim   hebb comparison   no zones",
-            operator_label="curves use simulator ground truth, not a training label",
+            mode_label="сим · слой сравнения · без зон",
+            operator_label="кривые по кадру симулятора, не по ярлыку обучения",
             t=self.world.t,
             focused=focused,
             keys_hint=keys_hint,
@@ -336,23 +374,23 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "Arrows drive   T TREAT   X punish   P pause   R reset   S/L save   F12   Esc"
-HEBB_KEYS = "Arrows drive   P pause   R reset   S/L save   F12   Esc"
+SIM_KEYS = "стрелки ход   T лакомство   X наказание   B звук   D/N метка   P R S L F12 Esc"
+HEBB_KEYS = "стрелки ход   P пауза   R сброс   S/L   F12   Esc"
 
 
 def _command_name(steer_x: float, steer_z: float, hold: bool) -> str:
     if hold or (steer_x == 0 and steer_z == 0):
-        return "stop"
+        return "стоп"
     bits = []
     if steer_x > 0:
-        bits.append("forward")
+        bits.append("вперёд")
     elif steer_x < 0:
-        bits.append("back")
+        bits.append("назад")
     if steer_z > 0:
-        bits.append("left")
+        bits.append("влево")
     elif steer_z < 0:
-        bits.append("right")
-    return " ".join(bits) or "stop"
+        bits.append("вправо")
+    return " ".join(bits) or "стоп"
 
 
 def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: Path | None = None) -> dict:
@@ -366,9 +404,17 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
         inp = mon.pump()
         if inp.quit:
             break
+        if inp.label == "dog":
+            session.operator = "dog"
+            session._log("метка D — только для панели, в обучение не входит")
+        elif inp.label == "none":
+            session.operator = "none"
+            session._log("метка N — только для панели, в обучение не входит")
+        if inp.beep_toggle:
+            session._log("звук включён" if mon.beep_on else "звук выключен")
         if inp.pause_learn:
             session.learn = not session.learn
-            session._log("learning paused" if not session.learn else "learning resumed")
+            session._log("обучение на паузе" if not session.learn else "обучение продолжается")
         if inp.reset:
             session.reset()
         if inp.save:
@@ -377,11 +423,11 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
             try:
                 session.load()
             except FileNotFoundError:
-                session._log("no saved state")
+                session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
         if inp.estop:
             hold = True
             steer_x = steer_z = 0.0
-            session._log("sim halt")
+            session._log("стоп симулятора")
         if inp.stop:
             hold = True
             steer_x = steer_z = 0.0
@@ -400,7 +446,7 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
         session.step(steer_x, steer_z, teach=teach)
         view = session.view(
             focused=inp.focused,
-            udp_status="sim teleop — no UDP, mushroom body is not driving",
+            udp_status="симулятор, без UDP. Грибовидное тело собаку не ведёт",
             last_command=_command_name(steer_x, steer_z, hold),
             keys_hint=SIM_KEYS if session.learner_kind == "mb" else HEBB_KEYS,
         )
@@ -409,13 +455,24 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
             dest = ROOT / "logs" / "monitor_shot.png"
             dest.parent.mkdir(parents=True, exist_ok=True)
             mon.save_screenshot(str(dest))
-            session._log(f"screenshot  {dest.name}")
+            session._log(f"снимок  {dest.name}")
         if seconds > 0 and session.world.t >= seconds:
             if shot is not None:
                 shot.parent.mkdir(parents=True, exist_ok=True)
                 mon.save_screenshot(str(shot))
             break
     return session.summary()
+
+
+def try_load(session: RecognizeTrainSim) -> None:
+    path = Path(session.state_path)
+    if not path.is_file():
+        session._log(f"нет сохранённого состояния, старт с нуля ({path.name})")
+        return
+    try:
+        session.load()
+    except FileNotFoundError:
+        session._log(f"нет сохранённого состояния, старт с нуля ({path.name})")
 
 
 def run_headless(session: RecognizeTrainSim, seconds: float) -> dict:
@@ -455,8 +512,8 @@ def main(argv: list[str] | None = None) -> int:
         auto_teach=args.auto_teach or args.headless,
         punish=args.punish,
     )
-    if args.load:
-        session.load()
+    if args.load or Path(args.state).is_file():
+        try_load(session)
     if args.headless:
         summary = run_headless(session, args.seconds or 30.0)
     else:

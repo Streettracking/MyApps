@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .mb_confidence import Confidence, ConfidenceCalibrator, TrainProgress
 from .mb_runtime import MBForward, MushroomBodyRuntime
 from .raw_sense import RawProjector, probe_features
 
@@ -56,6 +57,9 @@ class MbTrainer:
         self.n_pam = 0
         self.n_ppl1 = 0
         self.n_novelty = 0
+        self.cal = ConfidenceCalibrator()
+        self.progress = TrainProgress()
+        self.conf = Confidence()
 
     def forward(self, feat: np.ndarray) -> MBForward:
         pn = self.proj.project(feat)
@@ -96,6 +100,12 @@ class MbTrainer:
         self.last_drift = self.brain.weight_drift()
         self.last_readout = self.readout_of(fwd)
 
+    def observe(self, feat: np.ndarray, readout: float) -> Confidence:
+        """Confidence from the readout and the frame's own energy. No labels."""
+        energy = float(np.mean(np.abs(np.asarray(feat, dtype=np.float32))))
+        self.conf = self.cal.update(readout, energy)
+        return self.conf
+
     def note_drift(self, t: float) -> None:
         self.drift_curve.append((t, self.last_drift))
 
@@ -118,10 +128,15 @@ class MbTrainer:
         self.brain.reset_plastic()
         self.last_drift = 0.0
         self.n_pam = self.n_ppl1 = self.n_novelty = 0
+        self.cal.reset()
+        self.progress.reset()
+        self.conf = Confidence()
         self.probe_init = self.probe()
 
     def save(self, path: Path) -> None:
-        self.brain.save_mb(path, self.seed, self.dan)
+        extra = self.progress.export_arrays(self.n_pam, self.n_ppl1, self.n_novelty)
+        extra.update(self.cal.export_arrays())
+        self.brain.save_mb(path, self.seed, self.dan, extra=extra)
 
     def load(self, path: Path) -> None:
         seed, dan = self.brain.load_mb(path)
@@ -130,4 +145,9 @@ class MbTrainer:
         if dan in ("teacher", "familiarity"):
             self.dan = dan
         self.last_drift = self.brain.weight_drift()
+        with np.load(path, allow_pickle=True) as z:
+            self.progress.load_arrays(z)
+            self.cal.load_arrays(z)
+        self.conf = self.cal.last
+        self.n_pam = self.n_ppl1 = self.n_novelty = 0
         self.probe_init = self.probe()

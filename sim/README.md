@@ -50,7 +50,7 @@ python -m sim.run_sim --percept recognize --seconds 180
 python -m sim.run_sim --mode recognize_train --agents 3
 ```
 
-`--mode recognize_train` — один ученик без зон и без `r`. По умолчанию учится KC→MBON: `T` даёт PAM, `X` даёт PPL1, шкала DAN показывает каждую подачу. `--dan familiarity` — второй учитель, `--learner hebb` — сравнение со слоем прототипа. Стрелки водят ученика и с `T` не пересекаются. Живой робот и сборка exe: `docs/fly_go2/simulator.md`.
+`--mode recognize_train` — один ученик без зон и без `r`. По умолчанию учится KC→MBON: `T` даёт PAM, `X` даёт PPL1. На мониторе «УЗНАЮ СОРОДИЧА» / «НЕ УЗНАЮ» и панель «насколько обучен»; уверенность считается по тихим кадрам сенсора, без D/N/T/X. `--dan familiarity` — второй учитель, `--learner hebb` — сравнение со слоем прототипа. Живой робот и сборка exe: `docs/fly_go2/simulator.md`.
 
 ### Движущиеся проекции
 

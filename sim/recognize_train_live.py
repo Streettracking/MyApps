@@ -38,8 +38,8 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "Arrows drive   T TREAT   X punish   Space stop   -/+ stand   E E-STOP   "
-    "D/N monitor only   P R S L F12 Esc"
+    "стрелки ход   T лакомство   X наказание   B звук   Space стоп   E E-STOP   "
+    "D/N метка   P R S L F12 Esc"
 )
 
 
@@ -172,6 +172,9 @@ class LiveSession:
         self.last_like = 0.0
         self.last_match = 0.0
         self.treat_flash = False
+        self._was_rec = False
+        self._last_rec_log = -10.0
+        self._last_tick = time.monotonic()
         self._prev_like = 0.0
         self._last_spike = -10.0
         self._last_metric = 0.0
@@ -182,10 +185,10 @@ class LiveSession:
         self.recognizer: ConspecificRecognizer | None = None
         if learner == "mb":
             self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan)
-            self._log(f"MB training  DAN={dan}  KC→MBON only  MB does not drive")
+            self._log("грибовидное тело  учитель — клавиша T  мозг собаку не ведёт")
         else:
             self.recognizer = ConspecificRecognizer()
-            self._log("Hebbian comparison  no zones  MB does not drive")
+            self._log("слой сравнения  мозг собаку не ведёт")
         self._record_metric()
 
     def now(self) -> float:
@@ -203,24 +206,51 @@ class LiveSession:
             snap["t"] = self.now()
         self.metric_curve.append(snap)
 
+    def teach_current(self, kind: str | None) -> None:
+        """PAM/PPL1 on the frame already shown. Does not move the confidence baseline."""
+        if self.mb is None or self.mb.last_fwd is None or kind is None:
+            return
+        self.treat_flash = kind == "pam"
+        self.mb.teach(self.mb.last_fwd, kind if self.dan == "teacher" else None, self.now())
+        self._log_teach(kind)
+
+    def _log_teach(self, kind: str | None) -> None:
+        if self.mb is None:
+            return
+        if kind == "pam" and (self.mb.n_pam <= 2 or self.mb.n_pam % 15 == 0):
+            self._log(f"лакомство PAM  #{self.mb.n_pam}")
+        elif kind == "ppl1" and (self.mb.n_ppl1 <= 2 or self.mb.n_ppl1 % 15 == 0):
+            self._log(f"наказание PPL1  #{self.mb.n_ppl1}")
+
     def on_frame(self, camera: np.ndarray, lidar: np.ndarray, teach: str | None = None) -> None:
         feat, ego, near = features_from_frames(camera, lidar, self._prev_camera, self._prev_near)
         self._prev_camera = camera
         self._prev_near = near
         self.treat_flash = False
-        # Operator D/N is intentionally not an argument of teaching.
+        # Operator D/N is intentionally not an argument of teaching or confidence.
         if self.mb is not None:
             self.mb.learn = self.learn
             fwd = self.mb.forward(feat)
+            value = self.mb.last_readout
+            conf = self.mb.observe(feat, value)
+            now_m = time.monotonic()
+            self.mb.progress.tick(now_m - self._last_tick, self.learn)
+            self._last_tick = now_m
+            self.mb.progress.note_label(self.operator, value, conf.recognized, conf.ready)
             kind = teach if self.dan == "teacher" else None
             if kind == "pam":
                 self.treat_flash = True
             self.mb.teach(fwd, kind, self.now())
-            if kind == "pam" and (self.mb.n_pam <= 2 or self.mb.n_pam % 15 == 0):
-                self._log(f"DAN treat  PAM  #{self.mb.n_pam}")
-            elif kind == "ppl1" and (self.mb.n_ppl1 <= 2 or self.mb.n_ppl1 % 15 == 0):
-                self._log(f"DAN punish  PPL1  #{self.mb.n_ppl1}")
-            value = self.mb.last_readout
+            self._log_teach(kind)
+            if (
+                conf.ready
+                and conf.recognized
+                and not self._was_rec
+                and self.now() - self._last_rec_log > 2.0
+            ):
+                self._log(f"узнаю сородича  {conf.percent:.0f}%")
+                self._last_rec_log = self.now()
+            self._was_rec = bool(conf.recognized) if conf.ready else False
             self.last_like = float(value)
             self.last_match = float(value)
             if self.now() - self._last_metric >= 1.0:
@@ -255,7 +285,7 @@ class LiveSession:
             self.other_curve.append(point)
         if self.now() - self._last_ckpt >= 30.0:
             self.save()
-            self._log(f"checkpoint saved  {self.state_path.name}")
+            self._log(f"сохранено  {self.state_path.name}")
             self._last_ckpt = self.now()
 
     def save(self) -> None:
@@ -263,33 +293,37 @@ class LiveSession:
             self.mb.save(self.state_path)
         elif self.recognizer is not None:
             self.recognizer.save(self.state_path)
-        self._log(f"saved  {self.state_path.name}")
+        self._log(f"сохранено  {self.state_path.name}")
 
     def load(self) -> None:
+        if not Path(self.state_path).is_file():
+            raise FileNotFoundError(self.state_path)
         if self.mb is not None:
             self.mb.load(self.state_path)
             self.dan = self.mb.dan
-            self._log(f"loaded KC→MBON  drift={self.mb.last_drift:.1f}")
+            self._was_rec = bool(self.mb.conf.recognized)
+            self._log(f"загружены веса KC→MBON  дрейф {self.mb.last_drift:.1f}  лакомств всего {self.mb.progress.base_pam}")
         elif self.recognizer is not None:
             self.recognizer.load(self.state_path)
-            self._log(f"loaded  n={self.recognizer.n_self}")
+            self._log(f"загружен прототип  n={self.recognizer.n_self}")
 
     def reset(self) -> None:
         if self.mb is not None:
             self.mb.reset()
-            self._log("KC→MBON weights reset")
+            self._was_rec = False
+            self._log("веса и счётчики обучения сброшены")
         elif self.recognizer is not None:
             self.recognizer.reset()
-            self._log("prototype reset")
+            self._log("прототип сброшен")
         self._prev_camera = None
         self._prev_near = None
 
     def label_text(self) -> str:
         if self.operator == "dog":
-            return "operator label D — monitor only, not used for learning"
+            return "метка D держится — только панель точности, не DAN"
         if self.operator == "none":
-            return "operator label N — monitor only, not used for learning"
-        return "press D when a dog is in view, N for distractor or empty — monitor only, not a DAN"
+            return "метка N держится — только панель точности, не DAN"
+        return "D — собака в кадре, N — нет. Метка только для панели."
 
 
 def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, seconds: float = 0.0) -> None:
@@ -306,13 +340,15 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                 break
             if inp.label == "dog":
                 session.operator = "dog"
-                session._log("monitor label: dog in view")
+                session._log("метка D — только для панели, в обучение не входит")
             elif inp.label == "none":
                 session.operator = "none"
-                session._log("monitor label: no dog")
+                session._log("метка N — только для панели, в обучение не входит")
+            if inp.beep_toggle:
+                session._log("звук включён" if mon.beep_on else "звук выключен")
             if inp.pause_learn:
                 session.learn = not session.learn
-                session._log("learning paused" if not session.learn else "learning resumed")
+                session._log("обучение на паузе" if not session.learn else "обучение продолжается")
             if inp.reset:
                 session.reset()
             if inp.save:
@@ -321,7 +357,7 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                 try:
                     session.load()
                 except FileNotFoundError:
-                    session._log("no saved state")
+                    session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
             apply_teleop(link, inp, tele, time.monotonic(), session._log)
             frame_id, camera, lidar, error = pull.latest()
             if error and not announced:
@@ -336,16 +372,18 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                 teach = "ppl1"
             new_frame = frame_id != seen_frame and camera is not None
             teach_now = teach and camera is not None and session.dan == "teacher"
-            if new_frame or teach_now:
+            if new_frame:
                 session.on_frame(camera, lidar, teach=teach)
                 seen_frame = frame_id
+            elif teach_now:
+                session.teach_current(teach)
             view = _live_view(session, camera, lidar, error, link, inp.focused)
             mon.draw(view)
             if inp.screenshot:
                 dest = ROOT / "logs" / "monitor_shot.png"
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 mon.save_screenshot(str(dest))
-                session._log(f"screenshot  {dest.name}")
+                session._log(f"снимок  {dest.name}")
             if seconds > 0 and session.now() >= seconds:
                 break
     finally:
@@ -388,12 +426,15 @@ def _live_view(session: LiveSession, camera, lidar, error: str, link: Go2Command
         ),
     )
     if session.mb is not None:
-        caption = "appetitive MBON  (approach − avoid)" if session.dan == "teacher" else "familiarity  (− novelty MBON)"
+        caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"
+        prog = session.mb.progress
+        conf = session.mb.conf
+        mode = "робот · лакомство T · мозг не рулит" if session.dan == "teacher" else "робот · знакомство · мозг не рулит"
         return MonitorView(
-            title="MB training   live dog",
+            title="тренировка узнавания   живая собака",
             peer_curve=_scaled(session, session.peer_curve),
             other_curve=_scaled(session, session.other_curve),
-            mode_label=f"robot   MB DAN={session.dan}   MB does not drive",
+            mode_label=mode,
             learner="mb",
             dan_mode=session.dan,
             kc_on=session.mb.last_kc_on,
@@ -406,19 +447,34 @@ def _live_view(session: LiveSession, camera, lidar, error: str, link: Go2Command
             readout_caption=caption,
             n_pam=session.mb.n_pam,
             n_ppl1=session.mb.n_ppl1,
+            recognized=conf.recognized,
+            confidence=conf.percent,
+            confidence_ready=conf.ready,
+            session_time=prog.session_time,
+            total_time=prog.base_time + prog.session_time,
+            total_pam=prog.base_pam + session.mb.n_pam,
+            total_ppl1=prog.base_ppl1 + session.mb.n_ppl1,
+            session_sep=prog.session_sep(),
+            total_sep=prog.total_sep(),
+            session_acc=prog.session_acc(),
+            total_acc=prog.total_acc(),
+            session_labeled=prog.ses_scored,
+            total_labeled=prog.base_scored + prog.ses_scored,
+            session_novelty=session.mb.n_novelty,
+            total_novelty=prog.base_novelty + session.mb.n_novelty,
             **common,
         )
     rec = session.recognizer
     assert rec is not None
     return MonitorView(
-        title="recognition training   live dog",
+        title="тренировка узнавания   живая собака",
         peer_curve=session.peer_curve[-400:],
         other_curve=session.other_curve[-400:],
         proto_self=rec.proto[0],
         proto_other=rec.proto[1],
         n_self=rec.n_self,
         n_other=rec.n_other,
-        mode_label="robot   hebb comparison   MB does not drive",
+        mode_label="робот · слой сравнения · мозг не рулит",
         learner="hebb",
         **common,
     )
@@ -460,6 +516,17 @@ def run_headless(session: LiveSession, base: str, frames: int) -> dict:
     return out
 
 
+def try_load_live(session: LiveSession) -> None:
+    path = Path(session.state_path)
+    if not path.is_file():
+        session._log(f"нет сохранённого состояния, старт с нуля ({path.name})")
+        return
+    try:
+        session.load()
+    except FileNotFoundError:
+        session._log(f"нет сохранённого состояния, старт с нуля ({path.name})")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Live Go2 recognition trainer (sensors + manual UDP teleop)")
     p.add_argument("--robot-ip", default=DEFAULT_IP)
@@ -495,8 +562,8 @@ def main(argv: list[str] | None = None) -> int:
         npz=args.npz,
         seed=args.seed,
     )
-    if args.load:
-        session.load()
+    if args.load or Path(args.state).is_file():
+        try_load_live(session)
     if args.headless:
         summary = run_headless(session, base, args.max_frames)
         print(json.dumps(summary, indent=2))

@@ -56,7 +56,9 @@ python -m sim.compare_percept --seconds 60 --seeds 5
 
 ## Тренировка узнавания без зон
 
-Один ученик, без полигонов A/B и без награды `r`. Другие агенты только ходят в кадре. По умолчанию учится грибовидное тело: сырые признаки → PN → KC → MBON, пластичность только KC→MBON. DAN по умолчанию — оператор: `T` и кнопка TREAT дают аппетитивный PAM, `X` даёт аверсивный PPL1. Каждая такая подача видна на шкале DAN. Знакомство — второй режим, `--dan familiarity`: повтор глушит MBON новизны, и это не признак «собака». Слой Хебба из раздела выше — `--learner hebb`. Клавиши `D` / `N` только красят кривую монитора.
+Один ученик, без полигонов A/B и без награды `r`. Другие агенты только ходят в кадре. По умолчанию учится грибовидное тело: сырые признаки → PN → KC → MBON, пластичность только KC→MBON. DAN по умолчанию — оператор: `T` и кнопка «ЛАКОМСТВО» дают аппетитивный PAM, `X` даёт аверсивный PPL1. Каждая такая подача видна на шкале DAN. Знакомство — второй режим, `--dan familiarity`: повтор глушит MBON новизны, и это не признак «собака». Слой Хебба из раздела выше — `--learner hebb`.
+
+Крупно на мониторе: «УЗНАЮ СОРОДИЧА» или «НЕ УЗНАЮ» и уверенность 0–100%. Формула — в §6.5 `design_constraints.md`: сравнение сырого выхода с тихими кадрами того же окна (низкая энергия сенсора), без клавиш D/N/T/X. Панель «насколько обучен» показывает время и лакомства этой сессии и всех прошлых. Разделение D−N и точность индикатора появляются, только когда оператор жмёт `D` или `N`; эти клавиши в узнавание не входят. `B` включает короткий звук на переход в «УЗНАЮ» (по умолчанию выключен). Если файла состояния нет, `--load` стартует с нуля и пишет это в журнал. Если файл уже есть, и `python -m`, и exe его загружают. Чистый прогон — другой `--state` или удалить `logs\mb_train_state.npz`.
 
 Симулятор:
 
@@ -67,7 +69,7 @@ python -m sim.recognize_train --headless --seconds 40
 python -m sim.recognize_train --dan familiarity --headless --seconds 40
 ```
 
-Стрелки водят ученика и не пересекаются с `T`. Если их отпустить, он сам идёт то к другой собаке, то к дистрактору. `Space` — стоп, `P` — пауза обучения, `R` — сброс весов KC→MBON, `S` / `L` — сохранить / загрузить `logs\mb_train_state.npz`, `F12` — снимок окна, `Esc` — выход. В headless скрипт сам жмёт `T`, когда в кадре только другая собака.
+Стрелки водят ученика и не пересекаются с `T`. Если их отпустить, он сам идёт то к другой собаке, то к дистрактору. `Space` — стоп, `P` — пауза обучения, `R` — сброс весов и счётчиков, `B` — звук узнавания, `S` / `L` — сохранить / загрузить `logs\mb_train_state.npz`, `F12` — снимок окна, `Esc` — выход. В headless скрипт сам жмёт `T`, когда в кадре только другая собака.
 
 Живой робот, одно окно и для вождения, и для обучения. Грибовидное тело собаку не ведёт. Порядок для Димы:
 
@@ -85,7 +87,7 @@ python tools\recognize_trainer_entry.py
 Сборка одного exe. Коннектом нужен внутри пакета (`--add-data`). На Windows разделитель `;`, на Linux `:`.
 
 ```powershell
-pyinstaller --onefile --noconfirm --name recognize_trainer --collect-all pygame --add-data "artifacts\connectome_mb_v1.npz;artifacts" --hidden-import sim.recognize --hidden-import sim.recognize_train --hidden-import sim.recognize_train_live --hidden-import sim.frame_sense --hidden-import sim.train_monitor --hidden-import sim.go2_udp --hidden-import sim.raw_sense --hidden-import sim.world --hidden-import sim.mb_runtime --hidden-import sim.mb_train --hidden-import numpy tools\recognize_trainer_entry.py
+pyinstaller --onefile --noconfirm --name recognize_trainer --collect-all pygame --add-data "artifacts\connectome_mb_v1.npz;artifacts" --hidden-import sim.recognize --hidden-import sim.recognize_train --hidden-import sim.recognize_train_live --hidden-import sim.frame_sense --hidden-import sim.train_monitor --hidden-import sim.go2_udp --hidden-import sim.raw_sense --hidden-import sim.world --hidden-import sim.mb_runtime --hidden-import sim.mb_train --hidden-import sim.mb_confidence --hidden-import numpy tools\recognize_trainer_entry.py
 ```
 
 `recognize_trainer.exe` — живой тренажёр, DAN по умолчанию `T`. `recognize_trainer.exe --sim` — симулятор без робота. `recognize_trainer.exe --dan familiarity` — знакомство вместо лакомства. Файл состояния по умолчанию `logs\mb_train_state.npz` рядом с текущим каталогом. Для `--learner hebb` состояние — `logs\recognizer_state.json`.
