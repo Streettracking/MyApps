@@ -78,6 +78,13 @@ class MbTrainer:
             return -self.brain.novelty_drive(fwd.mbon)
         return self.brain.appetitive_drive(fwd.action_scores)
 
+    def score_feature(self, feat: np.ndarray) -> float:
+        """Readout only. Does not teach and does not replace the full-frame state."""
+        pn = self.proj.project(feat)
+        pn_o, kc, mbon, scores = self.brain.readout({}, pn)
+        fwd = MBForward(pn=pn_o, kc=kc, mbon=mbon, action="Freeze", action_scores=scores)
+        return self.readout_of(fwd)
+
     def teach(self, fwd: MBForward, kind: str | None, t: float) -> None:
         """Apply a DAN. ``kind`` is pam / ppl1 / None. Never a dog/no-dog label."""
         if not self.learn:

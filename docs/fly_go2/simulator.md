@@ -69,7 +69,9 @@ python -m sim.recognize_train --headless --seconds 40
 python -m sim.recognize_train --dan familiarity --headless --seconds 40
 ```
 
-Стрелки водят ученика и не пересекаются с `T`. Если их отпустить, он сам идёт то к другой собаке, то к дистрактору. `Space` — стоп, `P` — пауза обучения, `R` — сброс весов и счётчиков, `B` — звук узнавания, `S` / `L` — сохранить / загрузить `logs\mb_train_state.npz`, `F12` — снимок окна, `Esc` — выход. В headless скрипт сам жмёт `T`, когда в кадре только другая собака.
+Стрелки водят ученика и не пересекаются с `T`. Если их отпустить, он сам идёт то к другой собаке, то к дистрактору. `Space` — стоп, `P` — пауза обучения, `R` — сброс весов и счётчиков, `B` — звук узнавания, `C` и кнопка «СБРОС ЛИДАРА» — стереть накопленный след точек на карте симулятора (тела в кадре остаются), `S` / `L` — сохранить / загрузить `logs\mb_train_state.npz`, `F12` — снимок окна, `Esc` — выход. В headless скрипт сам жмёт `T`, когда в кадре только другая собака.
+
+Пока полный кадр говорит «УЗНАЮ СОРОДИЧА», на карте лидара рисуется метка: тот же KC→MBON, без обучения, на окне из трёх секторов. Процент на метке — уверенность этого окна по формуле §6.5, не отдельный детектор. Окно гаснет за 2,5 с. На двух из трёх семян метка попадала в сектор собаки или соседний примерно в 70% кадров, где слово уже было включено; на слабом разделении она смотрит мимо. Один сектор не лучше случайного угадывания, потому что кроп не равен паттерну, с которым давали лакомство.
 
 Живой робот, одно окно и для вождения, и для обучения. Грибовидное тело собаку не ведёт. Порядок для Димы:
 
@@ -82,12 +84,25 @@ python -m sim.recognize_train_live --robot-ip 192.168.35.213 --preview-port 8088
 python tools\recognize_trainer_entry.py
 ```
 
-Пока окно в фокусе: стрелки шлют `{"method":"Move","params":{"x":±0.5,"y":0.0,"z":±1}}` примерно каждые 100 мс (влево `z=+1`, вправо `z=-1`), отпускание и `Space` — `StopMove`, `-` — `StandDown`, `+` — `StandUp`, клавиша `E` и кнопка E-STOP — `{"method":"emergency_stop"}`. Закрытие окна тоже шлёт `StopMove`. `T` шлёт PAM в KC→MBON и не шлёт `Move`. Если превью недоступно, окно пишет адрес, по которому не достучалось, и кадры в обучение не идут; headless в этом случае завершается с ненулевым кодом и тем же текстом.
+Пока окно в фокусе: стрелки шлют `{"method":"Move","params":{"x":±0.5,"y":0.0,"z":±1}}` примерно каждые 100 мс (влево `z=+1`, вправо `z=-1`), отпускание и `Space` — `StopMove`, `-` — `StandDown`, `+` — `StandUp`, клавиша `E` и кнопка E-STOP — `{"method":"emergency_stop"}`. Закрытие окна тоже шлёт `StopMove`. `T` шлёт PAM в KC→MBON и не шлёт `Move`. `C` и кнопка «СБРОС ЛИДАРА» делают `GET http://<robot_ip>:8088/lidar/reset` в фоне и пишут в журнал «лидар сброшен» или текст ошибки; стрелки при этом не нажимаются. Если превью недоступно, окно пишет адрес, по которому не достучалось, и кадры в обучение не идут; headless в этом случае завершается с ненулевым кодом и тем же текстом.
+
+Метка на живой карте использует тот же выход, что и слово на полном кадре. Старый сервер отдаёт только JPEG: робот там не в центре (линейка, оси мира), поэтому без `scan.json` тренажёр рисует конус так, будто робот в центре кадра и нос вверх. Этот конус может сесть мимо настоящего возврата. Сервер v2 в `robot/robot_preview_server_v2.py` совместим со старыми `/camera.jpg`, `/lidar.jpg` и `/lidar/reset` и добавляет `/lidar/scan.json` (пиксель робота, курс, метры на пиксель, дальность по восьми секторам). Тогда метка — точка на этой дальности. Если JSON нет, остаётся конус, тренажёр не падает.
+
+Выкладка v2 на собаку, пароль только из окружения:
+
+```powershell
+pip install paramiko
+$env:GO2_SSH_PASS = "<пароль root>"
+$env:GO2_HOST = "192.168.35.213"
+python robot\deploy_preview_server.py
+```
+
+Скрипт кладёт файл в `/tmp/robot_preview_server_v2.py`, гасит предыдущий превью-процесс и поднимает его с `PYTHONPATH=/unitree/module/pet_go:/root/go2_flask_api`. В репозитории пароля нет.
 
 Сборка одного exe. Коннектом нужен внутри пакета (`--add-data`). На Windows разделитель `;`, на Linux `:`.
 
 ```powershell
-pyinstaller --onefile --noconfirm --name recognize_trainer --collect-all pygame --add-data "artifacts\connectome_mb_v1.npz;artifacts" --hidden-import sim.recognize --hidden-import sim.recognize_train --hidden-import sim.recognize_train_live --hidden-import sim.frame_sense --hidden-import sim.train_monitor --hidden-import sim.go2_udp --hidden-import sim.raw_sense --hidden-import sim.world --hidden-import sim.mb_runtime --hidden-import sim.mb_train --hidden-import sim.mb_confidence --hidden-import numpy tools\recognize_trainer_entry.py
+pyinstaller --onefile --noconfirm --name recognize_trainer --collect-all pygame --add-data "artifacts\connectome_mb_v1.npz;artifacts" --hidden-import sim.recognize --hidden-import sim.recognize_train --hidden-import sim.recognize_train_live --hidden-import sim.frame_sense --hidden-import sim.train_monitor --hidden-import sim.go2_udp --hidden-import sim.raw_sense --hidden-import sim.world --hidden-import sim.mb_runtime --hidden-import sim.mb_train --hidden-import sim.mb_confidence --hidden-import sim.map_marks --hidden-import numpy tools\recognize_trainer_entry.py
 ```
 
 `recognize_trainer.exe` — живой тренажёр, DAN по умолчанию `T`. `recognize_trainer.exe --sim` — симулятор без робота. `recognize_trainer.exe --dan familiarity` — знакомство вместо лакомства. Файл состояния по умолчанию `logs\mb_train_state.npz` рядом с текущим каталогом. Для `--learner hebb` состояние — `logs\recognizer_state.json`.

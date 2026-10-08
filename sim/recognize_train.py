@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from .frame_sense import sim_previews
+from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
 from .raw_sense import render_view
 from .recognize import ConspecificRecognizer
@@ -72,6 +73,8 @@ class RecognizeTrainSim:
         self.operator: str | None = None
         self.scene_dog = False
         self.saw_dog = False
+        self.lidar_trail: list[tuple[float, float, tuple[int, int, int]]] = []
+        self.marks = MarkLayer()
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
         if learner == "mb":
@@ -171,6 +174,13 @@ class RecognizeTrainSim:
             self._was_rec = bool(conf.recognized) if conf.ready else False
             self.last_like = value
             self.last_match = value
+            self.marks.consider(
+                self.mb,
+                feat,
+                float(self.world.t),
+                recognized=bool(conf.ready and conf.recognized),
+                mode="sim",
+            )
         else:
             rec = self.recognizer
             assert rec is not None
@@ -196,6 +206,8 @@ class RecognizeTrainSim:
         else:
             self.other_curve.append(point)
         self.step_i += 1
+        if self.step_i % 3 == 0:
+            self._remember_lidar()
         if self.step_i % 10 == 0:
             self._record_metric()
             if self.mb is not None:
@@ -223,10 +235,25 @@ class RecognizeTrainSim:
             self.recognizer.load(self.state_path)
             self._log(f"загружен прототип  n={self.recognizer.n_self}")
 
+    def _remember_lidar(self) -> None:
+        for other in self.peers:
+            self.lidar_trail.append((float(other.x), float(other.y), tuple(int(c) for c in other.color)))
+        for obj in self.world.distractors:
+            rgb = tuple(int(c * 255) for c in obj.color)
+            self.lidar_trail.append((float(obj.x), float(obj.y), rgb))
+        if len(self.lidar_trail) > 500:
+            self.lidar_trail = self.lidar_trail[-500:]
+
+    def reset_lidar(self) -> None:
+        """Drop the simulated point trail. Current bodies are drawn again next frame."""
+        self.lidar_trail.clear()
+        self._log("карта лидара симулятора очищена")
+
     def reset(self) -> None:
         if self.mb is not None:
             self.mb.reset()
             self._was_rec = False
+            self.marks.alive.clear()
             self._log("веса и счётчики обучения сброшены")
         elif self.recognizer is not None:
             self.recognizer.reset()
@@ -235,7 +262,7 @@ class RecognizeTrainSim:
     def view(self, focused: bool, udp_status: str, last_command: str, keys_hint: str):
         from .train_monitor import MonitorView
 
-        cam, lid = sim_previews(self.learner, self.world)
+        cam, lid = sim_previews(self.learner, self.world, self.lidar_trail)
         if self.mb is not None:
             caption = "сырой выход: подход − избегание" if self.dan == "teacher" else "сырой выход: минус новизна"
             mode = "сим · лакомство T · без зон · мозг не рулит" if self.dan == "teacher" else "сим · знакомство · без зон · мозг не рулит"
@@ -286,6 +313,7 @@ class RecognizeTrainSim:
                 total_labeled=prog.base_scored + prog.ses_scored,
                 session_novelty=self.mb.n_novelty,
                 total_novelty=prog.base_novelty + self.mb.n_novelty,
+                marks=self.marks.visible(float(self.world.t)),
             )
         assert self.recognizer is not None
         return MonitorView(
@@ -374,8 +402,8 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "стрелки ход   T лакомство   X наказание   B звук   D/N метка   P R S L F12 Esc"
-HEBB_KEYS = "стрелки ход   P пауза   R сброс   S/L   F12   Esc"
+SIM_KEYS = "стрелки ход   T лакомство   X наказание   B звук   C лидар   D/N метка   P R S L F12 Esc"
+HEBB_KEYS = "стрелки ход   C лидар   P пауза   R сброс   S/L   F12   Esc"
 
 
 def _command_name(steer_x: float, steer_z: float, hold: bool) -> str:
@@ -417,6 +445,8 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
             session._log("обучение на паузе" if not session.learn else "обучение продолжается")
         if inp.reset:
             session.reset()
+        if inp.lidar_reset:
+            session.reset_lidar()
         if inp.save:
             session.save()
         if inp.load:

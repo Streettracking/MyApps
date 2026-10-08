@@ -47,13 +47,9 @@ class ConfidenceCalibrator:
         self.recognized = False
         self.last = Confidence()
 
-    def update(self, readout: float, energy: float) -> Confidence:
-        self.readouts.append(float(readout))
-        self.energies.append(float(energy))
+    def _baseline(self) -> tuple[float, float, float, bool] | None:
         if len(self.readouts) < WARMUP:
-            self.recognized = False
-            self.last = Confidence(percent=0.0, recognized=False, ready=False)
-            return self.last
+            return None
         values = np.asarray(self.readouts, dtype=np.float64)
         energies = np.asarray(self.energies, dtype=np.float64)
         lo_cut = float(np.quantile(energies, QUIET_Q))
@@ -71,10 +67,17 @@ class ConfidenceCalibrator:
         # Busy frames must clear the quiet jitter by two MADs. A smaller gap is
         # the untrained brain's own scatter, so the indicator stays «НЕ УЗНАЮ».
         learned = gap > max(2.0 * mad_lo, 1.0)
+        return mu_lo, gap, mad_lo, learned
+
+    def _map(self, readout: float, *, latch: bool) -> Confidence:
+        base = self._baseline()
+        if base is None:
+            return Confidence(percent=0.0, recognized=False, ready=False)
+        mu_lo, gap, mad_lo, learned = base
         if learned:
             z = (float(readout) - mu_lo) / gap
             percent = float(np.clip(z, 0.0, 1.0) * 100.0)
-            if self.recognized:
+            if latch and self.recognized:
                 recognized = z >= Z_OFF
             else:
                 recognized = z >= Z_ON
@@ -82,8 +85,7 @@ class ConfidenceCalibrator:
             z = gap / max(mad_lo, 1.0)
             percent = 0.0
             recognized = False
-        self.recognized = recognized
-        self.last = Confidence(
+        return Confidence(
             z=float(z),
             percent=percent,
             recognized=recognized,
@@ -91,7 +93,22 @@ class ConfidenceCalibrator:
             floor=mu_lo,
             scale=float(gap if learned else max(mad_lo, 1.0)),
         )
+
+    def update(self, readout: float, energy: float) -> Confidence:
+        self.readouts.append(float(readout))
+        self.energies.append(float(energy))
+        mapped = self._map(readout, latch=True)
+        self.recognized = mapped.recognized
+        self.last = mapped
         return self.last
+
+    def score(self, readout: float) -> Confidence:
+        """Map a readout through the current full-frame floor and gap.
+
+        Used for bearing crops. Does not append to the window and does not
+        move the latched full-frame «УЗНАЮ» flag.
+        """
+        return self._map(readout, latch=False)
 
     def export_arrays(self) -> dict[str, np.ndarray]:
         return {

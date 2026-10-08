@@ -35,6 +35,7 @@ class MonitorInput:
     treat: bool = False
     punish: bool = False
     beep_toggle: bool = False
+    lidar_reset: bool = False
     focused: bool = True
 
 
@@ -89,6 +90,7 @@ class MonitorView:
     total_labeled: int = 0
     session_novelty: int = 0
     total_novelty: int = 0
+    marks: list = field(default_factory=list)
 
 
 def _surf_from_rgb(rgb: np.ndarray):
@@ -163,6 +165,7 @@ class TrainMonitor:
         self.clock = pygame.time.Clock()
         self.estop_rect = pygame.Rect(WIN_W - 188, WIN_H - 56, 168, 40)
         self.treat_rect = pygame.Rect(WIN_W - 430, WIN_H - 56, 220, 40)
+        self.lidar_reset_rect = pygame.Rect(16, 588, 210, 34)
         self.beep_on = False
         self.audio_ok: bool | None = None
         self._beep_sound = None
@@ -205,6 +208,8 @@ class TrainMonitor:
                     if self.beep_on:
                         self._ensure_audio()
                     inp.beep_toggle = True
+                elif event.key == pygame.K_c:
+                    inp.lidar_reset = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
@@ -214,6 +219,8 @@ class TrainMonitor:
                     inp.estop = True
                 elif self.treat_rect.collidepoint(event.pos):
                     inp.treat = True
+                elif self.lidar_reset_rect.collidepoint(event.pos):
+                    inp.lidar_reset = True
         inp.focused = bool(pygame.key.get_focused())
         if inp.focused:
             keys = pygame.key.get_pressed()
@@ -247,7 +254,10 @@ class TrainMonitor:
         cam_rect = pygame.Rect(16, 56, 460, 210)
         lid_rect = pygame.Rect(16, 278, 460, 300)
         self._frame(screen, cam_rect, view.camera, "камера", view.sensor_error)
-        self._frame(screen, lid_rect, view.lidar, "карта лидара", "")
+        inner = self._frame(screen, lid_rect, view.lidar, "карта лидара", "")
+        if inner is not None and view.marks:
+            self._draw_marks(screen, inner, view.marks)
+        self._lidar_reset_button(screen)
 
         rx = 492
         if view.learner == "mb":
@@ -335,6 +345,46 @@ class TrainMonitor:
         pygame.draw.rect(screen, (180, 255, 200), self.treat_rect, 2, border_radius=4)
         label = self.font.render("ЛАКОМСТВО  T", True, (245, 255, 248))
         screen.blit(label, label.get_rect(center=self.treat_rect.center))
+
+    def _lidar_reset_button(self, screen) -> None:
+        import pygame
+
+        hot = self.lidar_reset_rect.collidepoint(pygame.mouse.get_pos())
+        color = (52, 78, 112) if hot else (32, 48, 72)
+        pygame.draw.rect(screen, color, self.lidar_reset_rect, border_radius=4)
+        pygame.draw.rect(screen, (170, 200, 230), self.lidar_reset_rect, 1, border_radius=4)
+        label = self.font_sm.render("СБРОС ЛИДАРА  C", True, (230, 236, 244))
+        screen.blit(label, label.get_rect(center=self.lidar_reset_rect.center))
+
+    def _draw_marks(self, screen, inner, marks) -> None:
+        import pygame
+
+        overlay = pygame.Surface((inner.w, inner.h), pygame.SRCALPHA)
+
+        def pt(nx: float, ny: float) -> tuple[int, int]:
+            return (
+                int(np.clip(nx, -0.05, 1.05) * inner.w),
+                int(np.clip(ny, -0.05, 1.05) * inner.h),
+            )
+
+        for mark in marks:
+            alpha = int(np.clip(float(getattr(mark, "alpha", 1.0)), 0.0, 1.0) * 210)
+            if alpha < 8:
+                continue
+            origin = pt(mark.ox, mark.oy)
+            tip = pt(mark.nx, mark.ny)
+            if mark.kind == "cone":
+                left = pt(mark.nx_l, mark.ny_l)
+                right = pt(mark.nx_r, mark.ny_r)
+                pygame.draw.polygon(overlay, (80, 210, 120, alpha // 3), (origin, left, right))
+                pygame.draw.line(overlay, (180, 255, 190, alpha), origin, tip, 2)
+            else:
+                pygame.draw.line(overlay, (180, 255, 190, alpha), origin, tip, 2)
+                pygame.draw.circle(overlay, (70, 200, 110, alpha), tip, 8)
+                pygame.draw.circle(overlay, (230, 255, 230, alpha), tip, 8, 2)
+            tag = self.font_sm.render(f"{mark.percent:.0f}%", True, (230, 255, 220))
+            overlay.blit(tag, (tip[0] + 10, tip[1] - 8))
+        screen.blit(overlay, inner.topleft)
 
     def _draw_mb(self, screen, view: MonitorView, rx: int) -> None:
         import pygame
@@ -503,12 +553,13 @@ class TrainMonitor:
         if purity is not None:
             screen.blit(sm.render(f"чистота {float(purity):.0f} / 3", True, (180, 186, 198)), (rx, 500))
 
-    def _frame(self, screen, rect, image, title, error: str) -> None:
+    def _frame(self, screen, rect, image, title, error: str):
         import pygame
 
         pygame.draw.rect(screen, (10, 12, 16), rect)
         pygame.draw.rect(screen, (48, 52, 64), rect, 1)
         screen.blit(self.font_sm.render(title, True, (180, 186, 198)), (rect.x + 8, rect.y + 4))
+        inner = None
         if image is not None and getattr(image, "size", 0):
             surf = _surf_from_rgb(image)
             inner = rect.inflate(-8, -24)
@@ -520,6 +571,7 @@ class TrainMonitor:
             for chunk in _wrap(error, 52):
                 screen.blit(self.font_sm.render(chunk, True, (230, 120, 110)), (rect.x + 10, y))
                 y += 16
+        return inner
 
 
 def _metric(sep: float | None, acc: float | None, n: int) -> str:

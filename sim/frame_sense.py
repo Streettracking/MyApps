@@ -144,7 +144,7 @@ def features_from_frames(
     return feat, ego, near
 
 
-def sim_previews(agent, world) -> tuple[np.ndarray, np.ndarray]:
+def sim_previews(agent, world, trail=None) -> tuple[np.ndarray, np.ndarray]:
     """Synthetic camera and lidar pictures for the sim monitor. Not the feature vector."""
     cw, ch = PREVIEW_CAM
     cam = np.zeros((ch, cw, 3), dtype=np.uint8)
@@ -190,8 +190,18 @@ def sim_previews(agent, world) -> tuple[np.ndarray, np.ndarray]:
         r = ring * scale
         mask = np.abs(np.hypot(xx - cx, yy - cy) - r) < 1.1
         lid[mask] = (36, 42, 52)
-    # forward wedge
     yaw = float(agent.yaw)
+    if trail:
+        for tx, ty, color in trail:
+            dx, dy = tx - agent.x, ty - agent.y
+            c, s = float(np.cos(yaw)), float(np.sin(yaw))
+            forward = c * dx + s * dy
+            left = -s * dx + c * dy
+            px = int(cx - left * scale)
+            py = int(cy - forward * scale)
+            if 1 <= px < side - 1 and 1 <= py < side - 1:
+                dim = tuple(max(28, int(c) // 3) for c in color)
+                lid[py - 1 : py + 2, px - 1 : px + 2] = dim
     for other in list(world.agents) + list(world.distractors):
         if getattr(other, "agent_id", None) == agent.agent_id:
             continue

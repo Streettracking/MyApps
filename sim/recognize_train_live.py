@@ -27,6 +27,7 @@ import numpy as np
 
 from .frame_sense import decode_image_bytes, features_from_frames
 from .go2_udp import Go2CommandLink
+from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
 from .recognize import ConspecificRecognizer
 
@@ -38,7 +39,7 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "стрелки ход   T лакомство   X наказание   B звук   Space стоп   E E-STOP   "
+    "стрелки ход   T лакомство   X наказание   B звук   C лидар   Space стоп   E E-STOP   "
     "D/N метка   P R S L F12 Esc"
 )
 
@@ -73,6 +74,7 @@ class PreviewPull:
         self.error = ""
         self.camera = None
         self.lidar = None
+        self.scan = None
         self.frame_id = 0
         self._lock = threading.Lock()
         self._stop = False
@@ -97,16 +99,43 @@ class PreviewPull:
                     self.error = offline_message(self.base, exc)
                 time.sleep(0.4)
                 continue
+            scan = _fetch_scan(self.base)
             with self._lock:
                 self.camera = cam
                 self.lidar = lid
+                self.scan = scan
                 self.error = ""
                 self.frame_id += 1
             time.sleep(0.05)
 
     def latest(self):
         with self._lock:
-            return self.frame_id, self.camera, self.lidar, self.error
+            return self.frame_id, self.camera, self.lidar, self.scan, self.error
+
+
+def _fetch_scan(base: str):
+    """Optional v2 map geometry. A missing endpoint leaves the JPEG cones."""
+    try:
+        raw = fetch_bytes(f"{base}/lidar/scan.json", timeout=0.35)
+        scan = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    return scan if isinstance(scan, dict) else None
+
+
+def request_lidar_reset(base: str, log) -> None:
+    """GET /lidar/reset off the teleop thread. The log line arrives when it returns."""
+    log("сброс лидара…")
+
+    def work() -> None:
+        try:
+            fetch_bytes(f"{base}/lidar/reset", timeout=2.0)
+        except Exception as exc:
+            log(f"сброс лидара не удался ({exc})")
+            return
+        log("лидар сброшен")
+
+    threading.Thread(target=work, name="lidar-reset", daemon=True).start()
 
 
 def apply_teleop(link: Go2CommandLink, inp, state: dict, now: float, log) -> None:
@@ -181,6 +210,8 @@ class LiveSession:
         self._last_ckpt = 0.0
         self._prev_camera = None
         self._prev_near = None
+        self._last_feat = None
+        self.marks = MarkLayer()
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
         if learner == "mb":
@@ -222,10 +253,12 @@ class LiveSession:
         elif kind == "ppl1" and (self.mb.n_ppl1 <= 2 or self.mb.n_ppl1 % 15 == 0):
             self._log(f"наказание PPL1  #{self.mb.n_ppl1}")
 
-    def on_frame(self, camera: np.ndarray, lidar: np.ndarray, teach: str | None = None) -> None:
+    def on_frame(self, camera: np.ndarray, lidar: np.ndarray, teach: str | None = None, scan: dict | None = None) -> None:
         feat, ego, near = features_from_frames(camera, lidar, self._prev_camera, self._prev_near)
         self._prev_camera = camera
         self._prev_near = near
+        self._last_feat = feat
+        self._last_scan = scan
         self.treat_flash = False
         # Operator D/N is intentionally not an argument of teaching or confidence.
         if self.mb is not None:
@@ -253,6 +286,14 @@ class LiveSession:
             self._was_rec = bool(conf.recognized) if conf.ready else False
             self.last_like = float(value)
             self.last_match = float(value)
+            self.marks.consider(
+                self.mb,
+                feat,
+                self.now(),
+                recognized=bool(conf.ready and conf.recognized),
+                mode="live",
+                scan=scan,
+            )
             if self.now() - self._last_metric >= 1.0:
                 self.mb.note_drift(self.now())
                 self._record_metric()
@@ -311,6 +352,7 @@ class LiveSession:
         if self.mb is not None:
             self.mb.reset()
             self._was_rec = False
+            self.marks.alive.clear()
             self._log("веса и счётчики обучения сброшены")
         elif self.recognizer is not None:
             self.recognizer.reset()
@@ -351,6 +393,8 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                 session._log("обучение на паузе" if not session.learn else "обучение продолжается")
             if inp.reset:
                 session.reset()
+            if inp.lidar_reset:
+                request_lidar_reset(pull.base, session._log)
             if inp.save:
                 session.save()
             if inp.load:
@@ -359,7 +403,7 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                 except FileNotFoundError:
                     session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
             apply_teleop(link, inp, tele, time.monotonic(), session._log)
-            frame_id, camera, lidar, error = pull.latest()
+            frame_id, camera, lidar, scan, error = pull.latest()
             if error and not announced:
                 print(error, file=sys.stderr)
                 announced = True
@@ -373,7 +417,7 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
             new_frame = frame_id != seen_frame and camera is not None
             teach_now = teach and camera is not None and session.dan == "teacher"
             if new_frame:
-                session.on_frame(camera, lidar, teach=teach)
+                session.on_frame(camera, lidar, teach=teach, scan=scan)
                 seen_frame = frame_id
             elif teach_now:
                 session.teach_current(teach)
@@ -422,7 +466,7 @@ def _live_view(session: LiveSession, camera, lidar, error: str, link: Go2Command
         t=session.now(),
         focused=focused,
         keys_hint=LIVE_KEYS if session.learner_kind == "mb" else (
-            "Arrows drive   Space stop   -/+ stand   E E-STOP   D/N monitor only   P R S L F12 Esc"
+            "Arrows drive   C lidar   Space stop   -/+ stand   E E-STOP   D/N monitor only   P R S L F12 Esc"
         ),
     )
     if session.mb is not None:
@@ -462,6 +506,7 @@ def _live_view(session: LiveSession, camera, lidar, error: str, link: Go2Command
             total_labeled=prog.base_scored + prog.ses_scored,
             session_novelty=session.mb.n_novelty,
             total_novelty=prog.base_novelty + session.mb.n_novelty,
+            marks=session.marks.visible(session.now()),
             **common,
         )
     rec = session.recognizer
