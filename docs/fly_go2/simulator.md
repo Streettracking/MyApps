@@ -53,3 +53,39 @@ python -m sim.compare_percept --seconds 60 --seeds 5
 ```
 
 Кривая разделимости в отчёте: `sep_moving` (собака − движущийся дистрактор), `sep_static` (собака − неподвижный), `invariance` (остановившаяся собака − быстрый маленький объект), `purity` (0–3). Рост `invariance` из отрицательных значений означает, что слой перестал отвечать одной только скоростью.
+
+## Тренировка узнавания без зон
+
+Один ученик, без полигонов A/B и без награды `r`. Другие агенты только ходят в кадре. По умолчанию учится грибовидное тело: сырые признаки → PN → KC → MBON, пластичность только KC→MBON. DAN по умолчанию — оператор: `T` и кнопка TREAT дают аппетитивный PAM, `X` даёт аверсивный PPL1. Каждая такая подача видна на шкале DAN. Знакомство — второй режим, `--dan familiarity`: повтор глушит MBON новизны, и это не признак «собака». Слой Хебба из раздела выше — `--learner hebb`. Клавиши `D` / `N` только красят кривую монитора.
+
+Симулятор:
+
+```powershell
+python -m sim.run_sim --mode recognize_train --agents 3
+python tools\recognize_trainer_entry.py --sim
+python -m sim.recognize_train --headless --seconds 40
+python -m sim.recognize_train --dan familiarity --headless --seconds 40
+```
+
+Стрелки водят ученика и не пересекаются с `T`. Если их отпустить, он сам идёт то к другой собаке, то к дистрактору. `Space` — стоп, `P` — пауза обучения, `R` — сброс весов KC→MBON, `S` / `L` — сохранить / загрузить `logs\mb_train_state.npz`, `F12` — снимок окна, `Esc` — выход. В headless скрипт сам жмёт `T`, когда в кадре только другая собака.
+
+Живой робот, одно окно и для вождения, и для обучения. Грибовидное тело собаку не ведёт. Порядок для Димы:
+
+1. Превью робота на порту 8088 (`/camera.jpg`, `/lidar.jpg`).
+2. По желанию мост управления: `python main.py` в `go2_wr_server_v2-v2` (UDP JSON на `127.0.0.1:5451`). Без него клавиши покажут ошибку UDP, сенсоры при живом превью всё равно учатся.
+3. Тренажёр:
+
+```powershell
+python -m sim.recognize_train_live --robot-ip 192.168.35.213 --preview-port 8088 --udp-host 127.0.0.1 --udp-port 5451
+python tools\recognize_trainer_entry.py
+```
+
+Пока окно в фокусе: стрелки шлют `{"method":"Move","params":{"x":±0.5,"y":0.0,"z":±1}}` примерно каждые 100 мс (влево `z=+1`, вправо `z=-1`), отпускание и `Space` — `StopMove`, `-` — `StandDown`, `+` — `StandUp`, клавиша `E` и кнопка E-STOP — `{"method":"emergency_stop"}`. Закрытие окна тоже шлёт `StopMove`. `T` шлёт PAM в KC→MBON и не шлёт `Move`. Если превью недоступно, окно пишет адрес, по которому не достучалось, и кадры в обучение не идут; headless в этом случае завершается с ненулевым кодом и тем же текстом.
+
+Сборка одного exe. Коннектом нужен внутри пакета (`--add-data`). На Windows разделитель `;`, на Linux `:`.
+
+```powershell
+pyinstaller --onefile --noconfirm --name recognize_trainer --collect-all pygame --add-data "artifacts\connectome_mb_v1.npz;artifacts" --hidden-import sim.recognize --hidden-import sim.recognize_train --hidden-import sim.recognize_train_live --hidden-import sim.frame_sense --hidden-import sim.train_monitor --hidden-import sim.go2_udp --hidden-import sim.raw_sense --hidden-import sim.world --hidden-import sim.mb_runtime --hidden-import sim.mb_train --hidden-import numpy tools\recognize_trainer_entry.py
+```
+
+`recognize_trainer.exe` — живой тренажёр, DAN по умолчанию `T`. `recognize_trainer.exe --sim` — симулятор без робота. `recognize_trainer.exe --dan familiarity` — знакомство вместо лакомства. Файл состояния по умолчанию `logs\mb_train_state.npz` рядом с текущим каталогом. Для `--learner hebb` состояние — `logs\recognizer_state.json`.

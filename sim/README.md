@@ -47,7 +47,10 @@ python -m sim.compare_percept --seconds 60 --seeds 5
 
 ```powershell
 python -m sim.run_sim --percept recognize --seconds 180
+python -m sim.run_sim --mode recognize_train --agents 3
 ```
+
+`--mode recognize_train` — один ученик без зон и без `r`. По умолчанию учится KC→MBON: `T` даёт PAM, `X` даёт PPL1, шкала DAN показывает каждую подачу. `--dan familiarity` — второй учитель, `--learner hebb` — сравнение со слоем прототипа. Стрелки водят ученика и с `T` не пересекаются. Живой робот и сборка exe: `docs/fly_go2/simulator.md`.
 
 ### Движущиеся проекции
 

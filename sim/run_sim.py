@@ -23,12 +23,39 @@ def main() -> int:
     p.add_argument("--log-dir", type=Path, default=None)
     p.add_argument("--eta", type=float, default=0.05)
     p.add_argument(
+        "--mode",
+        choices=("arena", "recognize_train"),
+        default="arena",
+        help="arena: zone episode. recognize_train: one learner, no zones, no reward, monitor GUI",
+    )
+    p.add_argument("--state", type=Path, default=None, help="Recognition state file for --mode recognize_train")
+    p.add_argument("--load", action="store_true", help="Load --state at the start of recognize_train")
+    p.add_argument(
         "--percept",
         choices=("fixed", "raw", "recognize"),
         default="fixed",
         help="fixed: labeled peer cue. raw: camera+lidar. recognize: unsupervised conspecific layer before PN",
     )
     args = p.parse_args()
+
+    if args.mode == "recognize_train":
+        from sim.recognize_train import main as train_main
+
+        forwarded = [
+            "--agents",
+            str(args.agents),
+            "--seconds",
+            str(args.seconds),
+            "--seed",
+            str(args.seed),
+        ]
+        if args.headless:
+            forwarded.append("--headless")
+        if args.state:
+            forwarded.extend(["--state", str(args.state)])
+        if args.load:
+            forwarded.append("--load")
+        return train_main(forwarded)
 
     if not args.npz.exists():
         raise SystemExit(f"Missing connectome artifact: {args.npz}")

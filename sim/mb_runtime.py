@@ -68,6 +68,12 @@ class MushroomBodyRuntime:
         self.last_forward: MBForward | None = None
         self.last_cues: dict[str, float] = {}
         self.last_raw: np.ndarray | None = None
+        # Per-KC occupancy for familiarity depression. Updated only by that rule.
+        self.kc_fam = np.zeros(self.n_kc, dtype=np.float32)
+        if self.mask_av.shape == self.kc_mbon_w.shape:
+            self.novelty_posts = np.unique(self.kc_mbon_post[self.mask_av]).astype(np.int32)
+        else:
+            self.novelty_posts = np.arange(self.n_mbon, dtype=np.int32)
 
     @staticmethod
     def _to_local(pre, post, w, map_pre, map_post):
@@ -185,6 +191,69 @@ class MushroomBodyRuntime:
             self.kc_mbon_w[dec] -= self.eta * r * pre_act[dec]
 
         np.clip(self.kc_mbon_w, 0.0, None, out=self.kc_mbon_w)
+
+    def appetitive_drive(self, scores: np.ndarray) -> float:
+        """Approach MBON sum minus avoid MBON sum. PAM pushes this up for the paired pattern."""
+        ap = ACTIONS.index("Approach_A")
+        av = ACTIONS.index("Avoid_A")
+        bp = ACTIONS.index("Approach_B")
+        bv = ACTIONS.index("Avoid_B")
+        return float(scores[ap] + scores[bp] - scores[av] - scores[bv])
+
+    def novelty_drive(self, mbon: np.ndarray) -> float:
+        """Mean activity of MBONs that receive aversive-masked KC synapses."""
+        if len(self.novelty_posts) == 0:
+            return 0.0
+        return float(mbon[self.novelty_posts].mean())
+
+    def plasticity_familiarity(self, kc: np.ndarray) -> float:
+        """Depress KC→novelty-MBON synapses for KCs that have fired before.
+
+        The first glimpse does not depress: the occupancy trace is read first
+        and updated after. Returns novelty in [0, 1] (1 = these KCs are new).
+        No class label and no zone reward enter this rule.
+        """
+        active = kc > 0
+        if not np.any(active) or len(self.kc_mbon_w) == 0:
+            return 0.0
+        fam = self.kc_fam[active]
+        novelty = float(np.clip(1.0 - float(fam.mean()), 0.0, 1.0))
+        pre = kc[self.kc_mbon_pre]
+        post_ok = np.isin(self.kc_mbon_post, self.novelty_posts)
+        mask = self.mask_av & post_ok & (pre > 0) & (self.kc_fam[self.kc_mbon_pre] > 0.05)
+        if np.any(mask):
+            self.kc_mbon_w[mask] -= self.eta * self.kc_fam[self.kc_mbon_pre][mask] * pre[mask]
+            np.clip(self.kc_mbon_w, 0.0, None, out=self.kc_mbon_w)
+        self.kc_fam = 0.985 * self.kc_fam + 0.015 * active.astype(np.float32)
+        return novelty
+
+    def reset_plastic(self) -> None:
+        self.kc_mbon_w = self.kc_mbon_w0.astype(np.float32).copy()
+        self.kc_fam[:] = 0.0
+
+    def save_mb(self, path: str | Path, proj_seed: int, dan: str) -> None:
+        dest = Path(path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            dest,
+            kc_mbon_w=self.kc_mbon_w,
+            kc_fam=self.kc_fam,
+            proj_seed=np.int32(proj_seed),
+            dan=np.array(dan),
+        )
+
+    def load_mb(self, path: str | Path) -> tuple[int, str]:
+        z = np.load(path, allow_pickle=True)
+        w = np.asarray(z["kc_mbon_w"], dtype=np.float32)
+        if w.shape != self.kc_mbon_w.shape:
+            raise ValueError(f"KC→MBON shape {w.shape} does not match this brain {self.kc_mbon_w.shape}")
+        self.kc_mbon_w = w
+        fam = np.asarray(z["kc_fam"], dtype=np.float32) if "kc_fam" in z.files else None
+        if fam is not None and fam.shape == self.kc_fam.shape:
+            self.kc_fam = fam
+        seed = int(z["proj_seed"]) if "proj_seed" in z.files else 0
+        dan = str(z["dan"]) if "dan" in z.files else "teacher"
+        return seed, dan
 
     def weight_drift(self) -> float:
         return float(np.linalg.norm(self.kc_mbon_w - self.kc_mbon_w0))

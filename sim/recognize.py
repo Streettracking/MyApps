@@ -11,6 +11,9 @@ The scalar conspecific-likeness is what replaces a fixed detector.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 
 from .raw_sense import (
@@ -67,10 +70,14 @@ def extract_blobs(feat: np.ndarray) -> list[dict]:
     blobs = []
     for group in groups:
         g = np.array(group)
-        bsum = float(body_e[g].mean())
-        fsum = float(floor_e[g].mean())
-        near_m = float(near[g].mean())
-        mot = float(motion[g].mean())
+        # Lit bins dominate. Uniform sim blobs are unchanged because every bin matches.
+        w = body_e[g] + floor_e[g] + motion[g]
+        if float(w.sum()) < 1e-4:
+            w = np.ones(len(g), dtype=np.float32)
+        bsum = float(np.average(body_e[g], weights=w))
+        fsum = float(np.average(floor_e[g], weights=w))
+        near_m = float(np.average(near[g], weights=w))
+        mot = float(np.average(motion[g], weights=w))
         dist = float(np.clip((1.0 - near_m) * SEE_M, 0.35, SEE_M))
         est_speed = (mot / max(near_m, 0.15)) * 0.8
         desc = np.array(
@@ -81,7 +88,7 @@ def extract_blobs(feat: np.ndarray) -> list[dict]:
                 mot,
                 near_m,
                 len(group) / N_AZ,
-                float(closing[g].mean()),
+                float(np.average(closing[g], weights=w)),
             ],
             dtype=np.float32,
         )
@@ -134,6 +141,61 @@ class ConspecificRecognizer:
         if self.n_self < 4:
             return gate
         return float(np.clip(_cosine(desc, self.proto[0]), 0.0, 1.0))
+
+    def reset(self) -> None:
+        """Drop learned prototypes. Gait prior returns to the walking default."""
+        self.proto[:] = 0.0
+        self.n_self = 0
+        self.n_other = 0
+        self.prev_az = None
+        self.prev_desc = None
+        self.last_likeness = 0.0
+        self.last_gate = 0.0
+        self.self_speed = 0.40
+
+    def state_dict(self) -> dict:
+        return {
+            "version": 1,
+            "lr": self.lr,
+            "self_speed": self.self_speed,
+            "proto": self.proto.astype(float).tolist(),
+            "n_self": int(self.n_self),
+            "n_other": int(self.n_other),
+        }
+
+    def load_state_dict(self, data: dict) -> None:
+        proto = np.asarray(data["proto"], dtype=np.float32)
+        if proto.shape != (2, FEAT_DIM):
+            raise ValueError(f"recognizer proto shape {proto.shape}, expected (2, {FEAT_DIM})")
+        self.lr = float(data.get("lr", self.lr))
+        self.self_speed = float(data.get("self_speed", self.self_speed))
+        self.proto = proto
+        self.n_self = int(data.get("n_self", 0))
+        self.n_other = int(data.get("n_other", 0))
+        self.prev_az = None
+        self.prev_desc = None
+
+    def save(self, path: str | Path) -> Path:
+        dest = Path(path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(self.state_dict(), indent=2), encoding="utf-8")
+        return dest
+
+    def load(self, path: str | Path) -> None:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.load_state_dict(data)
+
+    def learned_match(self, feat: np.ndarray) -> float:
+        """Cosine to the conspecific prototype. Zero until that prototype exists.
+
+        This is the score the monitor plots. It is not a class label.
+        """
+        if float(np.linalg.norm(self.proto[0])) < 1e-6:
+            return 0.0
+        blobs = extract_blobs(feat)
+        if not blobs:
+            return 0.0
+        return max(float(np.clip(_cosine(b["desc"], self.proto[0]), 0.0, 1.0)) for b in blobs)
 
     def note_speed(self, speed: float) -> None:
         """Proprioception. Only walking updates the gait prior, not sitting still."""
