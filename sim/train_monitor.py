@@ -36,6 +36,7 @@ class MonitorInput:
     punish: bool = False
     beep_toggle: bool = False
     lidar_reset: bool = False
+    lidar_toggle: bool = False
     focused: bool = True
 
 
@@ -91,6 +92,10 @@ class MonitorView:
     session_novelty: int = 0
     total_novelty: int = 0
     marks: list = field(default_factory=list)
+    lidar_mode: str = ""
+    lidar_hold: str = ""
+    lidar_warning: str = ""
+    lidar_fresh_on: bool = True
 
 
 def _surf_from_rgb(rgb: np.ndarray):
@@ -165,7 +170,8 @@ class TrainMonitor:
         self.clock = pygame.time.Clock()
         self.estop_rect = pygame.Rect(WIN_W - 188, WIN_H - 56, 168, 40)
         self.treat_rect = pygame.Rect(WIN_W - 430, WIN_H - 56, 220, 40)
-        self.lidar_reset_rect = pygame.Rect(16, 588, 210, 34)
+        self.lidar_reset_rect = pygame.Rect(16, 588, 200, 34)
+        self.lidar_fresh_rect = pygame.Rect(224, 588, 236, 34)
         self.beep_on = False
         self.audio_ok: bool | None = None
         self._beep_sound = None
@@ -210,6 +216,8 @@ class TrainMonitor:
                     inp.beep_toggle = True
                 elif event.key == pygame.K_c:
                     inp.lidar_reset = True
+                elif event.key == pygame.K_v:
+                    inp.lidar_toggle = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
@@ -221,6 +229,8 @@ class TrainMonitor:
                     inp.treat = True
                 elif self.lidar_reset_rect.collidepoint(event.pos):
                     inp.lidar_reset = True
+                elif self.lidar_fresh_rect.collidepoint(event.pos):
+                    inp.lidar_toggle = True
         inp.focused = bool(pygame.key.get_focused())
         if inp.focused:
             keys = pygame.key.get_pressed()
@@ -254,10 +264,15 @@ class TrainMonitor:
         cam_rect = pygame.Rect(16, 56, 460, 210)
         lid_rect = pygame.Rect(16, 278, 460, 300)
         self._frame(screen, cam_rect, view.camera, "камера", view.sensor_error)
-        inner = self._frame(screen, lid_rect, view.lidar, "карта лидара", "")
+        lid_title = view.lidar_mode or "карта лидара"
+        lid_msg = "" if view.lidar is not None else view.lidar_hold
+        inner = self._frame(screen, lid_rect, view.lidar, lid_title, lid_msg)
         if inner is not None and view.marks:
             self._draw_marks(screen, inner, view.marks)
         self._lidar_reset_button(screen)
+        self._lidar_fresh_button(screen, view)
+        if view.lidar_warning:
+            screen.blit(sm.render(view.lidar_warning[:78], True, (230, 176, 96)), (16, 626))
 
         rx = 492
         if view.learner == "mb":
@@ -355,6 +370,23 @@ class TrainMonitor:
         pygame.draw.rect(screen, (170, 200, 230), self.lidar_reset_rect, 1, border_radius=4)
         label = self.font_sm.render("СБРОС ЛИДАРА  C", True, (230, 236, 244))
         screen.blit(label, label.get_rect(center=self.lidar_reset_rect.center))
+
+    def _lidar_fresh_button(self, screen, view: MonitorView) -> None:
+        import pygame
+
+        hot = self.lidar_fresh_rect.collidepoint(pygame.mouse.get_pos())
+        if view.lidar_fresh_on:
+            color = (24, 92, 64) if not hot else (36, 130, 88)
+            ink = (220, 255, 230)
+            caption = view.lidar_mode or "свежий лидар"
+        else:
+            color = (72, 56, 32) if not hot else (110, 82, 40)
+            ink = (255, 228, 190)
+            caption = "лидар копится"
+        pygame.draw.rect(screen, color, self.lidar_fresh_rect, border_radius=4)
+        pygame.draw.rect(screen, (190, 210, 190), self.lidar_fresh_rect, 1, border_radius=4)
+        label = self.font_sm.render(f"{caption}  V", True, ink)
+        screen.blit(label, label.get_rect(center=self.lidar_fresh_rect.center))
 
     def _draw_marks(self, screen, inner, marks) -> None:
         import pygame

@@ -60,6 +60,8 @@ class MbTrainer:
         self.cal = ConfidenceCalibrator()
         self.progress = TrainProgress()
         self.conf = Confidence()
+        self.lidar_refresh = 0.0
+        self.saved_lidar_refresh: float | None = None
 
     def forward(self, feat: np.ndarray) -> MBForward:
         pn = self.proj.project(feat)
@@ -143,6 +145,7 @@ class MbTrainer:
     def save(self, path: Path) -> None:
         extra = self.progress.export_arrays(self.n_pam, self.n_ppl1, self.n_novelty)
         extra.update(self.cal.export_arrays())
+        extra["lidar_refresh"] = np.float32(self.lidar_refresh)
         self.brain.save_mb(path, self.seed, self.dan, extra=extra)
 
     def load(self, path: Path) -> None:
@@ -155,6 +158,10 @@ class MbTrainer:
         with np.load(path, allow_pickle=True) as z:
             self.progress.load_arrays(z)
             self.cal.load_arrays(z)
+            if "lidar_refresh" in z.files:
+                self.saved_lidar_refresh = float(np.asarray(z["lidar_refresh"]).ravel()[0])
+            else:
+                self.saved_lidar_refresh = None
         self.conf = self.cal.last
         self.n_pam = self.n_ppl1 = self.n_novelty = 0
         self.probe_init = self.probe()

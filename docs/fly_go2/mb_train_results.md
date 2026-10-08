@@ -31,3 +31,17 @@ Readout is minus the mean of MBONs on the aversive mask, so a higher number is a
 | 3 | 342 | 115 | −45.2 → −37.1 | −42.7 → −36.1 | +1.59 |
 
 Both probes get slightly quieter. The gap between them stays about where it started. Familiarity here is repetition of KC patterns, not a conspecific label.
+
+## Fresh lidar window vs an accumulating cloud
+
+The tables above used the simulator's instantaneous view. The robot's `/lidar.jpg` instead keeps every return until `/lidar/reset`. `--lidar-refresh 1.5` (the new default) commits one 1.5 s world-point window to the lidar channels and then clears it. The empty moment after a clear is not fed to the mushroom body. `--lidar-refresh 0` keeps the cloud for the whole run.
+
+Same 25 s teacher walk, frames after 8 s, seeds 1–3. Readout gap is the mean approach−avoid with a dog in view minus the mean with no dog. PAM counts match across the pair (115, 111, 114), so the walks lined up. Mean lidar-near on the no-dog frames is the leftover trace: walls are in both, old tracks only in the accumulating cloud.
+
+| seed | fresh 1.5 s gap | accumulate gap | fresh no-dog near | accumulate no-dog near |
+|---|---:|---:|---:|---:|
+| 1 | +150 | +108 | 0.79 | 0.88 |
+| 2 | +464 | +336 | 0.72 | 0.86 |
+| 3 | +452 | +289 | 0.76 | 0.85 |
+
+The short window separated dog-in-view from no-dog more on every seed. The accumulating cloud left a higher near-field on frames with no dog in the camera.

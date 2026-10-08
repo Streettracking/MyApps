@@ -16,9 +16,10 @@ from pathlib import Path
 import numpy as np
 
 from .frame_sense import sim_previews
+from .lidar_fresh import DEFAULT_LIDAR_REFRESH, SimLidarBank, mismatch_warning
 from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
-from .raw_sense import render_view
+from .raw_sense import N_AZ, OFF_LIDAR, render_view
 from .recognize import ConspecificRecognizer
 from .world import AgentState, ArenaConfig, ArenaWorld, default_agents
 
@@ -43,6 +44,7 @@ class RecognizeTrainSim:
         eta: float = 0.2,
         auto_teach: bool = False,
         punish: bool = False,
+        lidar_refresh: float = DEFAULT_LIDAR_REFRESH,
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -73,16 +75,27 @@ class RecognizeTrainSim:
         self.operator: str | None = None
         self.scene_dog = False
         self.saw_dog = False
-        self.lidar_trail: list[tuple[float, float, tuple[int, int, int]]] = []
+        self.lidar_interval = float(lidar_refresh) if lidar_refresh > 0 else DEFAULT_LIDAR_REFRESH
+        self.lidar_fresh_on = float(lidar_refresh) > 0
+        self.lidar_bank = SimLidarBank(self.lidar_interval if self.lidar_fresh_on else 0.0)
+        self.lidar_bank.enabled = self.lidar_fresh_on
+        self.lidar_warning = ""
+        self._lidar_warning_full = ""
+        self._lidar_warn_logged = ""
+        self._weights_from_disk = False
+        self._lidar_saved: float | None = None
+        self.last_near_max = 0.0
         self.marks = MarkLayer()
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
         if learner == "mb":
             self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan)
             self._log("грибовидное тело  учитель — клавиша T  учатся только KC→MBON")
+            self._log(self._lidar_intro())
         else:
             self.recognizer = ConspecificRecognizer()
             self._log("слой сравнения  без зон")
+            self._log(self._lidar_intro())
         self._record_metric()
 
     def _log(self, text: str) -> None:
@@ -137,6 +150,9 @@ class RecognizeTrainSim:
         self._wander_peers()
         self._move_body(self.learner, steer_x, steer_z)
         feat, hit = render_view(self.learner, self.world, include_agents=True)
+        self.lidar_bank.update(self.learner, self.world, float(self.world.t))
+        self.lidar_bank.apply(self.learner, feat)
+        self.last_near_max = float(np.max(feat[OFF_LIDAR : OFF_LIDAR + N_AZ]))
         speed = float(np.hypot(self.learner.vx, self.learner.vy))
         self.treat_flash = False
         self.scene_dog = bool(hit.dog and not hit.distractor)
@@ -206,8 +222,6 @@ class RecognizeTrainSim:
         else:
             self.other_curve.append(point)
         self.step_i += 1
-        if self.step_i % 3 == 0:
-            self._remember_lidar()
         if self.step_i % 10 == 0:
             self._record_metric()
             if self.mb is not None:
@@ -216,8 +230,41 @@ class RecognizeTrainSim:
             self.save()
             self._log(f"сохранено  {self.state_path.name}")
 
+    def _effective_refresh(self) -> float:
+        return self.lidar_interval if self.lidar_fresh_on else 0.0
+
+    def _lidar_intro(self) -> str:
+        if self.lidar_fresh_on:
+            return (
+                f"свежий лидар каждые {self.lidar_interval:.1f} с: "
+                "в мозг идёт кадр перед очисткой, пустой кадр после неё не идёт"
+            )
+        return "лидар копится, как карта без сброса"
+
+    def _sync_lidar_warning(self) -> None:
+        if not self._weights_from_disk:
+            self.lidar_warning = ""
+            self._lidar_warning_full = ""
+            return
+        full = mismatch_warning(self._lidar_saved, self._effective_refresh())
+        self._lidar_warning_full = full or ""
+        self.lidar_warning = "веса с другой карты лидара — R сброс, файл не стираю" if full else ""
+        if full and full != self._lidar_warn_logged:
+            self._log(full)
+            self._lidar_warn_logged = full
+
+    def toggle_lidar_fresh(self) -> None:
+        self.lidar_fresh_on = not self.lidar_fresh_on
+        if self.lidar_fresh_on and self.lidar_interval <= 0:
+            self.lidar_interval = DEFAULT_LIDAR_REFRESH
+        self.lidar_bank.interval = self.lidar_interval
+        self.lidar_bank.set_enabled(self.lidar_fresh_on, float(self.world.t))
+        self._log(self._lidar_intro())
+        self._sync_lidar_warning()
+
     def save(self) -> Path:
         if self.mb is not None:
+            self.mb.lidar_refresh = self._effective_refresh()
             self.mb.save(self.state_path)
         elif self.recognizer is not None:
             self.recognizer.save(self.state_path)
@@ -230,23 +277,17 @@ class RecognizeTrainSim:
         if self.mb is not None:
             self.mb.load(self.state_path)
             self.dan = self.mb.dan
+            self._weights_from_disk = True
+            self._lidar_saved = self.mb.saved_lidar_refresh
+            self._sync_lidar_warning()
             self._log(f"загружены веса KC→MBON  дрейф {self.mb.last_drift:.1f}  лакомств всего {self.mb.progress.base_pam}")
         elif self.recognizer is not None:
             self.recognizer.load(self.state_path)
             self._log(f"загружен прототип  n={self.recognizer.n_self}")
 
-    def _remember_lidar(self) -> None:
-        for other in self.peers:
-            self.lidar_trail.append((float(other.x), float(other.y), tuple(int(c) for c in other.color)))
-        for obj in self.world.distractors:
-            rgb = tuple(int(c * 255) for c in obj.color)
-            self.lidar_trail.append((float(obj.x), float(obj.y), rgb))
-        if len(self.lidar_trail) > 500:
-            self.lidar_trail = self.lidar_trail[-500:]
-
     def reset_lidar(self) -> None:
-        """Drop the simulated point trail. Current bodies are drawn again next frame."""
-        self.lidar_trail.clear()
+        """Drop the simulated cloud. Current bodies are drawn again next frame."""
+        self.lidar_bank.clear(float(self.world.t))
         self._log("карта лидара симулятора очищена")
 
     def reset(self) -> None:
@@ -254,6 +295,9 @@ class RecognizeTrainSim:
             self.mb.reset()
             self._was_rec = False
             self.marks.alive.clear()
+            self._weights_from_disk = False
+            self.lidar_warning = ""
+            self._lidar_warning_full = ""
             self._log("веса и счётчики обучения сброшены")
         elif self.recognizer is not None:
             self.recognizer.reset()
@@ -262,7 +306,7 @@ class RecognizeTrainSim:
     def view(self, focused: bool, udp_status: str, last_command: str, keys_hint: str):
         from .train_monitor import MonitorView
 
-        cam, lid = sim_previews(self.learner, self.world, self.lidar_trail)
+        cam, lid = sim_previews(self.learner, self.world, self.lidar_bank.display)
         if self.mb is not None:
             caption = "сырой выход: подход − избегание" if self.dan == "teacher" else "сырой выход: минус новизна"
             mode = "сим · лакомство T · без зон · мозг не рулит" if self.dan == "teacher" else "сим · знакомство · без зон · мозг не рулит"
@@ -314,6 +358,9 @@ class RecognizeTrainSim:
                 session_novelty=self.mb.n_novelty,
                 total_novelty=prog.base_novelty + self.mb.n_novelty,
                 marks=self.marks.visible(float(self.world.t)),
+                lidar_mode=self._lidar_caption(),
+                lidar_warning=self.lidar_warning,
+                lidar_fresh_on=self.lidar_fresh_on,
             )
         assert self.recognizer is not None
         return MonitorView(
@@ -339,7 +386,15 @@ class RecognizeTrainSim:
             focused=focused,
             keys_hint=keys_hint,
             learner="hebb",
+            lidar_mode=self._lidar_caption(),
+            lidar_warning=self.lidar_warning,
+            lidar_fresh_on=self.lidar_fresh_on,
         )
+
+    def _lidar_caption(self) -> str:
+        if self.lidar_fresh_on:
+            return f"свежий лидар {self.lidar_interval:.1f} с"
+        return "лидар копится"
 
     def _scaled(self, rows: list[tuple[float, float]]) -> list[tuple[float, float]]:
         """Map MBON scores into 0..1 for the shared plot, using this run's own range."""
@@ -402,8 +457,8 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "стрелки ход   T лакомство   X наказание   B звук   C лидар   D/N метка   P R S L F12 Esc"
-HEBB_KEYS = "стрелки ход   C лидар   P пауза   R сброс   S/L   F12   Esc"
+SIM_KEYS = "стрелки ход   T лакомство   X наказание   B звук   C сброс   V свежий   D/N   P R S L F12 Esc"
+HEBB_KEYS = "стрелки ход   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
 
 
 def _command_name(steer_x: float, steer_z: float, hold: bool) -> str:
@@ -447,6 +502,8 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
             session.reset()
         if inp.lidar_reset:
             session.reset_lidar()
+        if inp.lidar_toggle:
+            session.toggle_lidar_fresh()
         if inp.save:
             session.save()
         if inp.load:
@@ -530,6 +587,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--npz", type=Path, default=None)
     p.add_argument("--auto-teach", action="store_true", help="Headless-style T when a peer is alone in view")
     p.add_argument("--punish", action="store_true", help="With --auto-teach, also send PPL1 on distractor-only views")
+    p.add_argument(
+        "--lidar-refresh",
+        type=float,
+        default=DEFAULT_LIDAR_REFRESH,
+        help="Seconds between fresh lidar windows. 0 keeps the accumulating map.",
+    )
     args = p.parse_args(argv)
     session = RecognizeTrainSim(
         n_agents=args.agents,
@@ -541,6 +604,7 @@ def main(argv: list[str] | None = None) -> int:
         eta=args.eta,
         auto_teach=args.auto_teach or args.headless,
         punish=args.punish,
+        lidar_refresh=args.lidar_refresh,
     )
     if args.load or Path(args.state).is_file():
         try_load(session)

@@ -27,6 +27,7 @@ import numpy as np
 
 from .frame_sense import decode_image_bytes, features_from_frames
 from .go2_udp import Go2CommandLink
+from .lidar_fresh import DEFAULT_LIDAR_REFRESH, FreshWindow, mismatch_warning
 from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
 from .recognize import ConspecificRecognizer
@@ -39,8 +40,8 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "стрелки ход   T лакомство   X наказание   B звук   C лидар   Space стоп   E E-STOP   "
-    "D/N метка   P R S L F12 Esc"
+    "стрелки ход   T лакомство   X наказание   B звук   C сброс   V свежий   Space стоп   E E-STOP   "
+    "D/N   P R S L F12 Esc"
 )
 
 
@@ -123,19 +124,45 @@ def _fetch_scan(base: str):
     return scan if isinstance(scan, dict) else None
 
 
-def request_lidar_reset(base: str, log) -> None:
-    """GET /lidar/reset off the teleop thread. The log line arrives when it returns."""
-    log("сброс лидара…")
+def request_lidar_reset(base: str, log, fresh: FreshWindow | None = None, quiet: bool = False) -> None:
+    """GET /lidar/reset off the teleop thread. Quiet calls are the periodic refresh."""
+    if not quiet:
+        log("сброс лидара…")
 
     def work() -> None:
+        now = time.monotonic()
         try:
             fetch_bytes(f"{base}/lidar/reset", timeout=2.0)
         except Exception as exc:
-            log(f"сброс лидара не удался ({exc})")
+            tell = True if fresh is None else fresh.ack(False, now)
+            if tell or not quiet:
+                log(f"сброс лидара не удался ({exc})")
             return
-        log("лидар сброшен")
+        if fresh is not None:
+            fresh.ack(True, now)
+        if not quiet:
+            log("лидар сброшен")
 
     threading.Thread(target=work, name="lidar-reset", daemon=True).start()
+
+
+def service_lidar(session: "LiveSession", lidar, scan, now: float, base: str):
+    """Pick the lidar image for the brain and the one to draw.
+
+    Returns ``(brain_lidar, brain_scan, display, hold_message)``.
+    """
+    window = session.fresh
+    if not session.lidar_fresh_on:
+        return lidar, scan, lidar, ""
+    if window.phase == "idle":
+        window.configure(session.lidar_interval)
+        window.start(now)
+    window.push(lidar, now, scan)
+    if window.poll_reset(now):
+        request_lidar_reset(base, session._log, window, quiet=True)
+    if window.committed is None:
+        return None, None, None, "набор свежего лидара, мозг ждёт первый полный кадр"
+    return window.committed, window.committed_scan, window.committed, ""
 
 
 def apply_teleop(link: Go2CommandLink, inp, state: dict, now: float, log) -> None:
@@ -185,6 +212,7 @@ class LiveSession:
         eta: float = 0.2,
         npz: Path | None = None,
         seed: int = 1,
+        lidar_refresh: float = DEFAULT_LIDAR_REFRESH,
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -211,15 +239,26 @@ class LiveSession:
         self._prev_camera = None
         self._prev_near = None
         self._last_feat = None
+        self.pending_teach: str | None = None
+        self.lidar_interval = float(lidar_refresh) if float(lidar_refresh) > 0 else DEFAULT_LIDAR_REFRESH
+        self.lidar_fresh_on = float(lidar_refresh) > 0
+        self.fresh = FreshWindow(self.lidar_interval if self.lidar_fresh_on else 0.0)
+        self.lidar_warning = ""
+        self.lidar_hold = ""
+        self._lidar_warn_logged = ""
+        self._weights_from_disk = False
+        self._lidar_saved: float | None = None
         self.marks = MarkLayer()
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
         if learner == "mb":
             self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan)
             self._log("грибовидное тело  учитель — клавиша T  мозг собаку не ведёт")
+            self._log(self._lidar_intro())
         else:
             self.recognizer = ConspecificRecognizer()
             self._log("слой сравнения  мозг собаку не ведёт")
+            self._log(self._lidar_intro())
         self._record_metric()
 
     def now(self) -> float:
@@ -329,8 +368,47 @@ class LiveSession:
             self._log(f"сохранено  {self.state_path.name}")
             self._last_ckpt = self.now()
 
+    def _effective_refresh(self) -> float:
+        return self.lidar_interval if self.lidar_fresh_on else 0.0
+
+    def _lidar_intro(self) -> str:
+        if self.lidar_fresh_on:
+            return (
+                f"свежий лидар каждые {self.lidar_interval:.1f} с: "
+                "в мозг идёт кадр перед сбросом, пустые кадры после сброса не идут"
+            )
+        return "лидар копится на карте сервера"
+
+    def _lidar_caption(self) -> str:
+        if self.lidar_fresh_on:
+            return f"свежий лидар {self.lidar_interval:.1f} с"
+        return "лидар копится"
+
+    def _sync_lidar_warning(self) -> None:
+        if not self._weights_from_disk:
+            self.lidar_warning = ""
+            return
+        full = mismatch_warning(self._lidar_saved, self._effective_refresh())
+        self.lidar_warning = "веса с другой карты лидара — R сброс, файл не стираю" if full else ""
+        if full and full != self._lidar_warn_logged:
+            self._log(full)
+            self._lidar_warn_logged = full
+
+    def toggle_lidar_fresh(self, now: float) -> None:
+        self.lidar_fresh_on = not self.lidar_fresh_on
+        if self.lidar_fresh_on and self.lidar_interval <= 0:
+            self.lidar_interval = DEFAULT_LIDAR_REFRESH
+        if self.lidar_fresh_on:
+            self.fresh.configure(self.lidar_interval)
+            self.fresh.start(now)
+        else:
+            self.fresh.configure(0.0)
+        self._log(self._lidar_intro())
+        self._sync_lidar_warning()
+
     def save(self) -> None:
         if self.mb is not None:
+            self.mb.lidar_refresh = self._effective_refresh()
             self.mb.save(self.state_path)
         elif self.recognizer is not None:
             self.recognizer.save(self.state_path)
@@ -343,6 +421,9 @@ class LiveSession:
             self.mb.load(self.state_path)
             self.dan = self.mb.dan
             self._was_rec = bool(self.mb.conf.recognized)
+            self._weights_from_disk = True
+            self._lidar_saved = self.mb.saved_lidar_refresh
+            self._sync_lidar_warning()
             self._log(f"загружены веса KC→MBON  дрейф {self.mb.last_drift:.1f}  лакомств всего {self.mb.progress.base_pam}")
         elif self.recognizer is not None:
             self.recognizer.load(self.state_path)
@@ -353,6 +434,8 @@ class LiveSession:
             self.mb.reset()
             self._was_rec = False
             self.marks.alive.clear()
+            self._weights_from_disk = False
+            self.lidar_warning = ""
             self._log("веса и счётчики обучения сброшены")
         elif self.recognizer is not None:
             self.recognizer.reset()
@@ -394,7 +477,16 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
             if inp.reset:
                 session.reset()
             if inp.lidar_reset:
-                request_lidar_reset(pull.base, session._log)
+                if session.lidar_fresh_on:
+                    session.fresh.manual_clear()
+                request_lidar_reset(
+                    pull.base,
+                    session._log,
+                    session.fresh if session.lidar_fresh_on else None,
+                    quiet=False,
+                )
+            if inp.lidar_toggle:
+                session.toggle_lidar_fresh(time.monotonic())
             if inp.save:
                 session.save()
             if inp.load:
@@ -404,6 +496,10 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                     session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
             apply_teleop(link, inp, tele, time.monotonic(), session._log)
             frame_id, camera, lidar, scan, error = pull.latest()
+            brain_lidar, brain_scan, disp_lidar, hold = service_lidar(
+                session, lidar, scan, time.monotonic(), pull.base
+            )
+            session.lidar_hold = hold
             if error and not announced:
                 print(error, file=sys.stderr)
                 announced = True
@@ -416,12 +512,26 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                 teach = "ppl1"
             new_frame = frame_id != seen_frame and camera is not None
             teach_now = teach and camera is not None and session.dan == "teacher"
+            waiting = session.lidar_fresh_on and brain_lidar is None
             if new_frame:
-                session.on_frame(camera, lidar, teach=teach, scan=scan)
+                if waiting:
+                    if teach:
+                        session.pending_teach = teach
+                else:
+                    teach_frame = teach or session.pending_teach
+                    session.pending_teach = None
+                    session.on_frame(
+                        camera,
+                        brain_lidar if brain_lidar is not None else lidar,
+                        teach=teach_frame,
+                        scan=brain_scan if session.lidar_fresh_on else scan,
+                    )
                 seen_frame = frame_id
-            elif teach_now:
+            elif teach_now and not waiting:
                 session.teach_current(teach)
-            view = _live_view(session, camera, lidar, error, link, inp.focused)
+            elif teach_now and waiting:
+                session.pending_teach = teach
+            view = _live_view(session, camera, disp_lidar, error, link, inp.focused)
             mon.draw(view)
             if inp.screenshot:
                 dest = ROOT / "logs" / "monitor_shot.png"
@@ -466,8 +576,12 @@ def _live_view(session: LiveSession, camera, lidar, error: str, link: Go2Command
         t=session.now(),
         focused=focused,
         keys_hint=LIVE_KEYS if session.learner_kind == "mb" else (
-            "Arrows drive   C lidar   Space stop   -/+ stand   E E-STOP   D/N monitor only   P R S L F12 Esc"
+            "Arrows drive   C reset   V fresh   Space stop   -/+ stand   E E-STOP   D/N   P R S L F12 Esc"
         ),
+        lidar_mode=session._lidar_caption(),
+        lidar_hold=session.lidar_hold,
+        lidar_warning=session.lidar_warning,
+        lidar_fresh_on=session.lidar_fresh_on,
     )
     if session.mb is not None:
         caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"
@@ -534,7 +648,9 @@ def run_headless(session: LiveSession, base: str, frames: int) -> dict:
     camera = decode_image_bytes(cam_b)
     lidar = decode_image_bytes(lid_b)
     for _ in range(max(1, frames)):
-        session.on_frame(camera, lidar)
+        brain_lidar, brain_scan, _, _ = service_lidar(session, lidar, None, time.monotonic(), base)
+        if not (session.lidar_fresh_on and brain_lidar is None):
+            session.on_frame(camera, brain_lidar if brain_lidar is not None else lidar, scan=brain_scan)
         cam_b = fetch_bytes(f"{base}/camera.jpg", timeout=3.0)
         lid_b = fetch_bytes(f"{base}/lidar.jpg", timeout=3.0)
         camera = decode_image_bytes(cam_b)
@@ -589,6 +705,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--eta", type=float, default=0.2)
     p.add_argument("--npz", type=Path, default=None)
     p.add_argument("--seed", type=int, default=1)
+    p.add_argument(
+        "--lidar-refresh",
+        type=float,
+        default=DEFAULT_LIDAR_REFRESH,
+        help="Seconds between GET /lidar/reset. 0 feeds the accumulating map.",
+    )
     args = p.parse_args(argv)
     if args.headless:
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -606,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:
         eta=args.eta,
         npz=args.npz,
         seed=args.seed,
+        lidar_refresh=args.lidar_refresh,
     )
     if args.load or Path(args.state).is_file():
         try_load_live(session)

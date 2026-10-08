@@ -17,6 +17,7 @@ from pathlib import Path
 
 # Static imports so PyInstaller traces the trainer and the connectome runtime.
 import sim.frame_sense  # noqa: F401
+import sim.lidar_fresh  # noqa: F401
 import sim.map_marks  # noqa: F401
 import sim.go2_udp  # noqa: F401
 import sim.mb_confidence  # noqa: F401
@@ -53,6 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--eta", type=float, default=0.2)
     p.add_argument("--auto-teach", action="store_true")
     p.add_argument("--punish", action="store_true", help="With --auto-teach in the sim, PPL1 on distractor-only views")
+    p.add_argument(
+        "--lidar-refresh",
+        type=float,
+        default=recognize_train_live.DEFAULT_LIDAR_REFRESH,
+        help="Seconds between fresh lidar windows. 0 keeps the accumulating map.",
+    )
     args = p.parse_args(argv)
     if args.state is None:
         name = "mb_train_state.npz" if args.learner == "mb" else "recognizer_state.json"
@@ -84,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             forwarded.append("--auto-teach")
         if args.punish:
             forwarded.append("--punish")
+        forwarded.extend(["--lidar-refresh", str(args.lidar_refresh)])
         return recognize_train.main(forwarded)
     forwarded = [
         "--robot-ip",
@@ -115,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         forwarded.append("--load")
     if args.reset_lidar:
         forwarded.append("--reset-lidar")
+    forwarded.extend(["--lidar-refresh", str(args.lidar_refresh)])
     return recognize_train_live.main(forwarded)
 
 
