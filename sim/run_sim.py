@@ -24,9 +24,9 @@ def main() -> int:
     p.add_argument("--eta", type=float, default=0.05)
     p.add_argument(
         "--percept",
-        choices=("fixed", "raw"),
+        choices=("fixed", "raw", "recognize"),
         default="fixed",
-        help="fixed: labeled peer cue. raw: camera+lidar features, no dog label",
+        help="fixed: labeled peer cue. raw: camera+lidar. recognize: unsupervised conspecific layer before PN",
     )
     args = p.parse_args()
 

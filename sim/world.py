@@ -175,7 +175,8 @@ class ArenaWorld:
         if len(ag.trail) > 400:
             ag.trail = ag.trail[-400:]
 
-    def spawn_distractors(self, seed: int, n: int = 2) -> None:
+    def spawn_distractors(self, seed: int, n: int = 2, n_static: int = 1) -> None:
+        """Moving blobs plus stationary ones. Neither carries a class label."""
         rng = np.random.default_rng(seed)
         self.distractors = []
         for _ in range(n):
@@ -187,6 +188,16 @@ class ArenaWorld:
                     y=float(rng.uniform(0.8, self.cfg.height - 0.8)),
                     vx=speed * float(np.cos(ang)),
                     vy=speed * float(np.sin(ang)),
+                )
+            )
+        for _ in range(n_static):
+            self.distractors.append(
+                Distractor(
+                    x=float(rng.uniform(0.8, self.cfg.width - 0.8)),
+                    y=float(rng.uniform(0.8, self.cfg.height - 0.8)),
+                    vx=0.0,
+                    vy=0.0,
+                    color=(0.42, 0.42, 0.40),
                 )
             )
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from .mb_runtime import ACTIONS, MushroomBodyRuntime
+from .recognize import ConspecificRecognizer
 
 
 def _learned_shift(init: dict, final: dict) -> dict:
@@ -41,7 +42,7 @@ class SimConfig:
     eta: float = 0.05
     seed: int = 42
     explore_eps: float = 0.25  # random Explore overrides early on
-    percept: str = "fixed"  # fixed labeled peer cues | raw camera+lidar
+    percept: str = "fixed"  # fixed | raw | recognize
     log_dir: Path | None = None
 
 
@@ -51,20 +52,27 @@ class Simulator:
         self.rng = np.random.default_rng(cfg.seed)
         arena_cfg = ArenaConfig(move_zones=cfg.move_zones)
         self.world = ArenaWorld(arena_cfg, default_zones(), default_agents(cfg.n_agents, cfg.sense_conspecifics))
-        if cfg.percept not in ("fixed", "raw"):
+        if cfg.percept not in ("fixed", "raw", "recognize"):
             raise ValueError(f"unknown percept {cfg.percept}")
-        if cfg.percept == "raw":
+        self._uses_raw = cfg.percept in ("raw", "recognize")
+        if self._uses_raw:
             self.world.spawn_distractors(cfg.seed)
         self.brains: dict[str, MushroomBodyRuntime] = {}
         self.projectors: dict[str, RawProjector] = {}
+        self.recognizers: dict[str, ConspecificRecognizer] = {}
         for i, ag in enumerate(self.world.agents):
             brain = MushroomBodyRuntime(cfg.npz_path, eta=cfg.eta, seed=cfg.seed + i + 1)
             self.brains[ag.agent_id] = brain
-            if cfg.percept == "raw":
+            if self._uses_raw:
                 # Per individuum: its own random glomerulus map, not a shared label.
                 self.projectors[ag.agent_id] = RawProjector(brain.n_pn, seed=cfg.seed + 100 + i)
+            if cfg.percept == "recognize":
+                self.recognizers[ag.agent_id] = ConspecificRecognizer()
         self.history: list[dict] = []
         self.step_i = 0
+        self._recog_curve: list[dict] = []
+        if cfg.percept == "recognize":
+            self._record_recognition()
         self._ctx = {
             ag.agent_id: {"dog_only": 0, "dist_only": 0, "both": 0, "neither": 0,
                           "dog_only_approach": 0, "dist_only_approach": 0,
@@ -84,13 +92,20 @@ class Simulator:
             cues = self.world.cues_for(ag)
             raw_feat = None
             raw_pn = None
-            if self.cfg.percept == "raw":
+            if self._uses_raw:
                 # Labeled peer channels are not used. Blind peers omit other dogs
                 # from the raw view; distractors stay so the control still sees motion.
                 cues = {"A": cues["A"], "B": cues["B"], "peer": 0.0, "peer_at_B": 0.0}
                 raw_feat, hit = render_view(ag, self.world, include_agents=ag.sense_conspecifics)
                 raw_pn = self.projectors[ag.agent_id].project(raw_feat)
                 brain.last_raw = raw_feat
+                if self.cfg.percept == "recognize":
+                    # Own gait only. Zone reward never enters this layer.
+                    speed = float(np.hypot(ag.vx, ag.vy))
+                    like = self.recognizers[ag.agent_id].observe(raw_feat, speed)
+                    raw_pn = np.clip(raw_pn + like * brain.patterns["peer"], 0.0, 1.0)
+                    brain.last_likeness = like
+                    brain.last_recog = self.recognizers[ag.agent_id].proto[0].copy()
             else:
                 hit = None
                 brain.last_raw = None
@@ -124,11 +139,33 @@ class Simulator:
             }
         self.history.append(snap)
         self.step_i += 1
+        if self.cfg.percept == "recognize" and self.step_i % 50 == 0:
+            self._record_recognition()
         return snap
+
+    def _record_recognition(self) -> None:
+        """Mean held-out separability. Labels exist only inside snapshot()."""
+        keys = (
+            "like_dog",
+            "like_dist",
+            "like_static",
+            "like_dog_still",
+            "like_dist_fast",
+            "sep_moving",
+            "sep_static",
+            "invariance",
+            "purity",
+            "n_self",
+        )
+        snaps = [rec.snapshot() for rec in self.recognizers.values()]
+        row = {"t": float(self.world.t)}
+        for key in keys:
+            row[key] = float(np.mean([s[key] for s in snaps]))
+        self._recog_curve.append(row)
 
     def _tally_context(self, ag, cues, hit, r: float, action: str) -> None:
         box = self._ctx[ag.agent_id]
-        if self.cfg.percept == "raw" and hit is not None:
+        if self._uses_raw and hit is not None:
             dog, dist = hit.dog, hit.distractor
         else:
             dog = ag.sense_conspecifics and cues.get("peer", 0.0) > 0.2
@@ -161,17 +198,18 @@ class Simulator:
         out = {}
         for ag in self.world.agents:
             brain = self.brains[ag.agent_id]
-            if self.cfg.percept == "raw":
+            if self._uses_raw:
                 proj = self.projectors[ag.agent_id]
-                packs = {
-                    name: proj.project(probe_features(name))
-                    for name in ("empty", "dog", "distractor")
-                }
                 cues = {"A": 0.0, "B": 0.0}
-                scored = {
-                    name: brain.readout(cues, pn)[3].astype(float).tolist()
-                    for name, pn in packs.items()
-                }
+                scored = {}
+                for name in ("empty", "dog", "distractor"):
+                    feat = probe_features(name)
+                    pn = proj.project(feat)
+                    if self.cfg.percept == "recognize":
+                        # Score only. Probes must not train the recognizer.
+                        like = self.recognizers[ag.agent_id].likeness(feat)
+                        pn = np.clip(pn + like * brain.patterns["peer"], 0.0, 1.0)
+                    scored[name] = brain.readout(cues, pn)[3].astype(float).tolist()
             else:
                 scored = {}
                 for name, cues in (
@@ -223,6 +261,11 @@ class Simulator:
             "mean_PI": float(np.mean([a["PI"] for a in agents.values()])),
             "mean_shift_l2_dog_minus_dist": float(np.mean([s["diff_l2"] for s in shifts])),
         }
+        if self.cfg.percept == "recognize":
+            out["recognition"] = {
+                "curve": self._recog_curve,
+                "final": self._recog_curve[-1] if self._recog_curve else None,
+            }
         if self.cfg.log_dir:
             self._write_logs(out)
         return out

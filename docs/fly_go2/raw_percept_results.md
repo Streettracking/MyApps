@@ -37,3 +37,31 @@ Why the raw effect is absent:
 1. The only teacher is "I am inside a zone". Dog pixels are reinforced only when a dog happens to be in the egocentric view at that moment, and distractors are in view on 37% of those steps too.
 2. The sparse KC threshold keeps the strongest zone-driven cells. Object features ride along and share Kenyon cells with each other, so the weight update is not object-specific.
 3. With `r=0`, the policy is already "go to B". Approach counts then do not mean "approach the thing I see".
+
+## Recognition layer
+
+Same episode length and seeds, with one change to the arena: `raw` and `recognize` now also place one **static** distractor beside the two moving ones. The table above is the earlier run without that object. The numbers below are the new comparison (`recognize_compare.json`). `fixed` and `blind` still have no distractors.
+
+`--percept recognize` inserts one unsupervised layer per agent between the camera/lidar vector and PN. It never reads zone reward `r` and never receives a class label. Until four self-similar blobs have been stored, its output is the speed-and-size gate, so a fast small object scores like a walking dog and a stopped dog scores low (`invariance` at t=0 is −0.85). After that the output is cosine similarity to the Hebbian prototype.
+
+| t (s) | dog | dog still | moving distractor | fast distractor | static | sep moving | sep static | invariance | purity |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0.96 | 0.11 | 0.30 | 0.96 | 0.09 | 0.66 | 0.88 | −0.85 | 3.00 |
+| 5 | 0.96 | 0.87 | 0.32 | 0.42 | 0.28 | 0.64 | 0.68 | +0.46 | 2.73 |
+| 60 | 0.97 | 0.91 | 0.27 | 0.34 | 0.23 | 0.70 | 0.73 | +0.57 | 2.87 |
+
+Mean over 3 agents × seeds 0–4. Purity is out of 3 (dog assigned to the conspecific prototype, both distractor kinds assigned away from it). By 5 s a stopped dog outscores a fast distractor, and that gap holds through 60 s. The layer is doing its own job.
+
+Downstream KC→MBON behavior does not pick up a clean dog-versus-distractor policy.
+
+| condition | mean PI | plastic updates | weight drift | dog shift L2 | distractor shift L2 | diff L2 | approach dog | approach distractor | reward steps with dog | reward steps with distractor |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| fixed | 0.982 | 570 | 221 | 385 | 0 | 385 | 0.83 | — | 1.00 | 0 |
+| raw | 0.983 | 493 | 184 | 200 | 182 | 71 | 0.86 | 0.94 | 0.68 | 0.49 |
+| recognize | 0.983 | 494 | 189 | 376 | 361 | 100 | 0.85 | 0.70 | 0.67 | 0.48 |
+| blind | 0.853 | 461 | 158 | 106 | 0 | 106 | — | — | 0 | 0 |
+| raw_blind | 0.982 | 497 | 185 | 137 | 154 | 75 | — | 0.79 | 0 | 0.49 |
+
+Zone learning is intact (PI near +0.98 except the same blind seed as before). Recognize `diff_l2` (100) sits only a little above raw (71) and raw-blind (75). Per seed the recognize values are 81, 72, 59, 191, 99, so the mean is pulled by one run and the rest overlap raw (45–88). Both probes move by ~360 because the distractor probe still carries likeness 0.27, and the random PN map still lets zone plasticity leak into object probes. Approach counts stay sparse and do not split cleanly (several seeds approach on every distractor-only step).
+
+What the layer learned is the likeness score. What to do about a dog is still left to own-`r` plasticity, and that teacher remains "I am in a zone".

@@ -1,4 +1,4 @@
-"""Headless comparison: fixed peer detector vs raw features vs blind peers.
+"""Headless comparison: fixed detector, raw features, recognition layer, blind peers.
 
 Usage:
     python -m sim.compare_percept --seconds 60 --seeds 5
@@ -20,6 +20,7 @@ DEFAULT_NPZ = ROOT / "artifacts" / "connectome_mb_v1.npz"
 CONDITIONS = (
     ("fixed", "fixed", True),
     ("raw", "raw", True),
+    ("recognize", "recognize", True),
     ("blind", "fixed", False),
     ("raw_blind", "raw", False),
 )
@@ -60,7 +61,7 @@ def run_one(percept: str, sense: bool, seed: int, seconds: float, npz: Path) -> 
         diffs.append(ag["learned_shift"]["diff_l2"])
         dog_l2.append(ag["learned_shift"]["learned_dog_l2"])
         dist_l2.append(ag["learned_shift"]["learned_dist_l2"])
-    return {
+    row = {
         "seed": seed,
         "mean_PI": summary["mean_PI"],
         "plastic_updates": float(np.mean(plastics)),
@@ -75,6 +76,23 @@ def run_one(percept: str, sense: bool, seed: int, seconds: float, npz: Path) -> 
         "frac_reward_with_dog": _rate(r_dog, r_steps),
         "frac_reward_with_dist": _rate(r_dist, r_steps),
     }
+    final = (summary.get("recognition") or {}).get("final") or {}
+    curve = (summary.get("recognition") or {}).get("curve")
+    for key in (
+        "sep_moving",
+        "sep_static",
+        "invariance",
+        "purity",
+        "like_dog",
+        "like_dist",
+        "like_static",
+        "like_dog_still",
+        "like_dist_fast",
+        "n_self",
+    ):
+        row[key] = final.get(key)
+    row["recognition_curve"] = curve
+    return row
 
 
 def _mean(rows: list[dict], key: str) -> float | None:
@@ -96,8 +114,33 @@ def aggregate(rows: list[dict]) -> dict:
         "approach_dist",
         "frac_reward_with_dog",
         "frac_reward_with_dist",
+        "sep_moving",
+        "sep_static",
+        "invariance",
+        "purity",
+        "like_dog",
+        "like_dist",
+        "like_static",
+        "like_dog_still",
+        "like_dist_fast",
+        "n_self",
     )
     return {k: _mean(rows, k) for k in keys}
+
+
+def mean_curve(rows: list[dict]) -> list[dict] | None:
+    curves = [r["recognition_curve"] for r in rows if r.get("recognition_curve")]
+    if not curves:
+        return None
+    n = min(len(c) for c in curves)
+    keys = [k for k in curves[0][0] if k != "t"]
+    out = []
+    for i in range(n):
+        point = {"t": float(curves[0][i]["t"])}
+        for key in keys:
+            point[key] = float(np.mean([c[i][key] for c in curves]))
+        out.append(point)
+    return out
 
 
 def main() -> int:
@@ -114,7 +157,11 @@ def main() -> int:
             row = run_one(percept, sense, seed, args.seconds, args.npz)
             rows.append(row)
             print(f"{name} seed={seed} PI={row['mean_PI']:+.3f} diff_l2={row['diff_l2']:.3f}")
-        report["conditions"][name] = {"runs": rows, "mean": aggregate(rows)}
+        block = {"runs": rows, "mean": aggregate(rows)}
+        curve = mean_curve(rows)
+        if curve is not None:
+            block["curve"] = curve
+        report["conditions"][name] = block
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps({k: v["mean"] for k, v in report["conditions"].items()}, indent=2))

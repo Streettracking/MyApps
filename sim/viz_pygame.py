@@ -91,18 +91,27 @@ def draw_mb_panel(screen, rect, brain, agent, font, font_sm) -> None:
     if raw is not None:
         cursor_y = _draw_raw_strip(screen, font_sm, raw, x + 14, cursor_y, w - 28)
         cursor_y += 6
-    kc_rows = 8 if raw is not None else 12
+    like = getattr(brain, "last_likeness", None)
+    if like is not None:
+        cursor_y = _draw_recognition(
+            screen, font_sm, float(like), getattr(brain, "last_recog", None), x + 14, cursor_y, w - 28
+        )
+        cursor_y += 6
+    tight = like is not None
+    kc_rows = 5 if tight else (8 if raw is not None else 12)
     cursor_y = _draw_heat_block(
         screen, font_sm, fwd.pn, x + 14, cursor_y, w - 28, cols=40, rows=3, label="PN"
     )
-    cursor_y += 8
+    cursor_y += 6 if tight else 8
     cursor_y = _draw_heat_block(
         screen, font_sm, fwd.kc, x + 14, cursor_y, w - 28, cols=32, rows=kc_rows, label="KC"
     )
-    cursor_y += 8
-    cursor_y = _draw_mbon_block(screen, font_sm, brain, fwd, x + 14, cursor_y, w - 28)
-    cursor_y += 10
-    _draw_scores(screen, font_sm, fwd, agent.action, x + 14, cursor_y, w - 28)
+    cursor_y += 6 if tight else 8
+    cursor_y = _draw_mbon_block(
+        screen, font_sm, brain, fwd, x + 14, cursor_y, w - 28, max_cell=12 if tight else 16
+    )
+    cursor_y += 8 if tight else 10
+    _draw_scores(screen, font_sm, fwd, agent.action, x + 14, cursor_y, w - 28, step=14 if tight else 16)
 
 
 def _draw_raw_strip(screen, font, raw, x, y, width) -> int:
@@ -127,6 +136,40 @@ def _draw_raw_strip(screen, font, raw, x, y, width) -> int:
     return y + 42
 
 
+def _draw_recognition(screen, font, likeness: float, proto, x, y, width) -> int:
+    """Learned conspecific-likeness, drawn before PN. Not a zone reward."""
+    import pygame
+
+    screen.blit(
+        font.render(f"recognition   likeness {likeness:.2f}", True, (176, 214, 186)),
+        (x, y),
+    )
+    y += 16
+    pygame.draw.rect(screen, (32, 34, 42), pygame.Rect(x, y, width, 12))
+    pygame.draw.rect(
+        screen,
+        (88, 196, 140),
+        pygame.Rect(x, y, max(1, int(width * float(np.clip(likeness, 0.0, 1.0)))), 12),
+    )
+    y += 16
+    if proto is not None and len(proto):
+        vmax = float(np.max(np.abs(proto)))
+        if vmax < 1e-6:
+            vmax = 1.0
+        gap = 4
+        cell = max(10, (width - gap * (len(proto) - 1)) // len(proto))
+        base = y + 14
+        for i, value in enumerate(proto):
+            h = int(14 * max(float(value) / vmax, 0.0))
+            pygame.draw.rect(
+                screen,
+                (70, 150, 120),
+                pygame.Rect(x + i * (cell + gap), base - h, cell, max(h, 1)),
+            )
+        y = base + 4
+    return y
+
+
 def _draw_heat_block(screen, font, values, x, y, width, cols, rows, label) -> int:
     import pygame
 
@@ -149,7 +192,7 @@ def _draw_heat_block(screen, font, values, x, y, width, cols, rows, label) -> in
     return y + rows * (cell_h + gap)
 
 
-def _draw_mbon_block(screen, font, brain, fwd, x, y, width) -> int:
+def _draw_mbon_block(screen, font, brain, fwd, x, y, width, max_cell: int = 16) -> int:
     import pygame
 
     screen.blit(font.render("MBON", True, (200, 204, 214)), (x, y))
@@ -158,7 +201,7 @@ def _draw_mbon_block(screen, font, brain, fwd, x, y, width) -> int:
     n = len(fwd.mbon)
     rows = int(np.ceil(n / cols)) if n else 1
     gap = 2
-    cell = max(8, min(16, (width - gap * (cols - 1)) // cols))
+    cell = max(8, min(max_cell, (width - gap * (cols - 1)) // cols))
     vmax = float(fwd.mbon.max()) if n else 0.0
     for i in range(n):
         r, c = divmod(i, cols)
@@ -173,7 +216,7 @@ def _draw_mbon_block(screen, font, brain, fwd, x, y, width) -> int:
     return y + rows * (cell + gap)
 
 
-def _draw_scores(screen, font, fwd, executed: str, x, y, width) -> None:
+def _draw_scores(screen, font, fwd, executed: str, x, y, width, step: int = 16) -> None:
     import pygame
 
     screen.blit(
@@ -194,7 +237,7 @@ def _draw_scores(screen, font, fwd, executed: str, x, y, width) -> None:
         )
         mark = ">" if name == fwd.action else " "
         screen.blit(font.render(f"{mark}{name}", True, (210, 210, 216)), (x, y - 1))
-        y += 16
+        y += step
 
 
 def run_pygame(
@@ -282,7 +325,12 @@ def run_pygame(
 
         for obj in sim.world.distractors:
             ox, oy = to_px(obj.x, obj.y)
-            pygame.draw.rect(screen, (150, 100, 48), pygame.Rect(ox - 5, oy - 5, 10, 10))
+            still = abs(obj.vx) + abs(obj.vy) < 1e-6
+            box = pygame.Rect(ox - 5, oy - 5, 10, 10)
+            if still:
+                pygame.draw.rect(screen, (150, 150, 146), box, 2)
+            else:
+                pygame.draw.rect(screen, (150, 100, 48), box)
 
         for ag in sim.world.agents:
             pts = [to_px(px, py) for px, py in ag.trail[::2]]

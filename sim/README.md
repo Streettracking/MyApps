@@ -43,7 +43,11 @@ python -m sim.run_sim --percept raw --seconds 180
 python -m sim.compare_percept --seconds 60 --seeds 5
 ```
 
-`fixed` (по умолчанию) подаёт готовый cue «peer». `raw` подаёт камеру и лидар без ярлыка класса; на панели видна полоска raw camera + lidar. `--blind-peers` по-прежнему выключает других собак.
+`fixed` (по умолчанию) подаёт готовый cue «peer». `raw` подаёт камеру и лидар без ярлыка класса; на панели видна полоска raw camera + lidar. `recognize` ставит перед PN свой слой узнавания сородичей (без `r` и без ярлыка); на панели перед PN — полоса likeness. `--blind-peers` по-прежнему выключает других собак.
+
+```powershell
+python -m sim.run_sim --percept recognize --seconds 180
+```
 
 ### Движущиеся проекции
 
