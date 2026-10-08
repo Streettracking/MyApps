@@ -52,11 +52,25 @@ class ArenaConfig:
 
 
 @dataclass
+class Distractor:
+    """Moving non-dog blob. No class label is written into the sensor vector."""
+
+    x: float
+    y: float
+    vx: float
+    vy: float
+    radius: float = 0.12
+    color: tuple[float, float, float] = (0.55, 0.38, 0.16)
+
+
+@dataclass
 class AgentState:
     agent_id: str
     x: float
     y: float
     yaw: float = 0.0
+    vx: float = 0.0
+    vy: float = 0.0
     sense_conspecifics: bool = True
     color: tuple[int, int, int] = (80, 160, 255)
     action: str = "Explore"
@@ -72,6 +86,7 @@ class ArenaWorld:
         self.cfg = cfg
         self.zones = {z.name: z for z in zones}
         self.agents = agents
+        self.distractors: list[Distractor] = []
         self.t = 0.0
         self._zone_vel = {
             "A": np.array([cfg.zone_speed, 0.1 * cfg.zone_speed]),
@@ -153,13 +168,44 @@ class ArenaWorld:
         # integrate
         ag.x = float(np.clip(ag.x + vx * cfg.dt, 0.15, cfg.width - 0.15))
         ag.y = float(np.clip(ag.y + vy * cfg.dt, 0.15, cfg.height - 0.15))
+        ag.vx, ag.vy = float(vx), float(vy)
+        if abs(vx) + abs(vy) > 0.05:
+            ag.yaw = float(np.arctan2(vy, vx))
         ag.trail.append((ag.x, ag.y))
         if len(ag.trail) > 400:
             ag.trail = ag.trail[-400:]
 
+    def spawn_distractors(self, seed: int, n: int = 2) -> None:
+        rng = np.random.default_rng(seed)
+        self.distractors = []
+        for _ in range(n):
+            ang = float(rng.uniform(0, 2 * np.pi))
+            speed = 0.12
+            self.distractors.append(
+                Distractor(
+                    x=float(rng.uniform(0.8, self.cfg.width - 0.8)),
+                    y=float(rng.uniform(0.8, self.cfg.height - 0.8)),
+                    vx=speed * float(np.cos(ang)),
+                    vy=speed * float(np.sin(ang)),
+                )
+            )
+
+    def _move_distractors(self) -> None:
+        dt = self.cfg.dt
+        for obj in self.distractors:
+            obj.x += obj.vx * dt
+            obj.y += obj.vy * dt
+            if obj.x < 0.3 or obj.x > self.cfg.width - 0.3:
+                obj.vx *= -1
+                obj.x = float(np.clip(obj.x, 0.3, self.cfg.width - 0.3))
+            if obj.y < 0.3 or obj.y > self.cfg.height - 0.3:
+                obj.vy *= -1
+                obj.y = float(np.clip(obj.y, 0.3, self.cfg.height - 0.3))
+
     def step_environment(self) -> None:
-        """External conditions only: optional moving projected zones."""
+        """External conditions only: optional moving projected zones, distractor motion."""
         self.t += self.cfg.dt
+        self._move_distractors()
         if not self.cfg.move_zones:
             return
         for name, vel in self._zone_vel.items():

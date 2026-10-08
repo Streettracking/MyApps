@@ -36,6 +36,15 @@ python -m sim.run_sim --seconds 180 --agents 3
 
 `--seconds 0` — окно без авто-выхода (пока не нажмёте Esc).
 
+### Сырое восприятие других собак
+
+```powershell
+python -m sim.run_sim --percept raw --seconds 180
+python -m sim.compare_percept --seconds 60 --seeds 5
+```
+
+`fixed` (по умолчанию) подаёт готовый cue «peer». `raw` подаёт камеру и лидар без ярлыка класса; на панели видна полоска raw camera + lidar. `--blind-peers` по-прежнему выключает других собак.
+
 ### Движущиеся проекции
 
 ```powershell

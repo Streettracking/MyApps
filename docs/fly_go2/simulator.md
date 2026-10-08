@@ -26,3 +26,17 @@ python -m sim.run_sim --headless --seconds 90 --log-dir logs\sim_last
 
 Клавиши: `1`/`2`/`3` — агент на панели, `Space` — пауза, `Z` — движение зон, `Esc` — выход.
 Headless (`--headless`) окно не открывает и панель не считает.
+
+## Сырые сенсоры (`--percept raw`)
+
+По умолчанию `--percept fixed`: другие собаки входят в PN уже подписанным cue `peer`.
+
+`--percept raw` этот ярлык убирает. Каждая особь видит грубую эгоцентрическую камеру и сектора лидара (пол, тела, движение, близость) и проецирует их своей фиксированной случайной картой на PN. Квадраты на арене — дистракторы, не собаки. На панели мозга над PN рисуется полоска raw camera + lidar. Слепой контроль: `--blind-peers` (в raw собаки пропадают из кадра, дистракторы остаются).
+
+```powershell
+python -m sim.run_sim --percept raw --seconds 180
+python -m sim.run_sim --headless --percept raw --seconds 60 --log-dir logs\sim_raw
+python -m sim.compare_percept --seconds 60 --seeds 5
+```
+
+Сравнение пишет `logs/percept_compare.json`. Метрика `diff_l2` — насколько сдвиг action scores на пробник «собака» отличается от сдвига на пробник «дистрактор» после пластичности. Единственное подкрепление — собственный `r` зоны.

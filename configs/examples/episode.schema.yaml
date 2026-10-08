@@ -4,6 +4,7 @@
 episode:
   id: string                 # required, e.g. "2026-09-18_042"
   mode: enum                 # solo | multi_independent | multi_blind_peers | ablation_random_wiring
+  percept: enum              # fixed (labeled peer cue) | raw (camera+lidar, no dog label)
   duration_s: number         # required
   seed: integer              # required for reproducibility
   map_frame: string          # default: "arena"

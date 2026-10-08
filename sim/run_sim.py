@@ -22,6 +22,12 @@ def main() -> int:
     p.add_argument("--npz", type=Path, default=DEFAULT_NPZ)
     p.add_argument("--log-dir", type=Path, default=None)
     p.add_argument("--eta", type=float, default=0.05)
+    p.add_argument(
+        "--percept",
+        choices=("fixed", "raw"),
+        default="fixed",
+        help="fixed: labeled peer cue. raw: camera+lidar features, no dog label",
+    )
     args = p.parse_args()
 
     if not args.npz.exists():
@@ -38,6 +44,7 @@ def main() -> int:
             n_agents=args.agents,
             move_zones=args.move_zones,
             sense=not args.blind_peers,
+            percept=args.percept,
         )
         # if unlimited, still return last summary
     else:
@@ -52,6 +59,7 @@ def main() -> int:
             move_zones=args.move_zones,
             eta=args.eta,
             seed=args.seed,
+            percept=args.percept,
             log_dir=log_dir,
         )
         summary = Simulator(cfg).run()

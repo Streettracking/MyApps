@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from .mb_runtime import ACTIONS
+from .raw_sense import N_AZ, OFF_BODY, OFF_LIDAR
 from .simulator import SimConfig, Simulator
 
 PANEL_W = 460
@@ -85,18 +86,45 @@ def draw_mb_panel(screen, rect, brain, agent, font, font_sm) -> None:
     )
     screen.blit(stats, (x + 14, y + 56))
 
-    cursor_y = y + 82
+    cursor_y = y + 78
+    raw = getattr(brain, "last_raw", None)
+    if raw is not None:
+        cursor_y = _draw_raw_strip(screen, font_sm, raw, x + 14, cursor_y, w - 28)
+        cursor_y += 6
+    kc_rows = 8 if raw is not None else 12
     cursor_y = _draw_heat_block(
         screen, font_sm, fwd.pn, x + 14, cursor_y, w - 28, cols=40, rows=3, label="PN"
     )
     cursor_y += 8
     cursor_y = _draw_heat_block(
-        screen, font_sm, fwd.kc, x + 14, cursor_y, w - 28, cols=32, rows=12, label="KC"
+        screen, font_sm, fwd.kc, x + 14, cursor_y, w - 28, cols=32, rows=kc_rows, label="KC"
     )
     cursor_y += 8
     cursor_y = _draw_mbon_block(screen, font_sm, brain, fwd, x + 14, cursor_y, w - 28)
     cursor_y += 10
     _draw_scores(screen, font_sm, fwd, agent.action, x + 14, cursor_y, w - 28)
+
+
+def _draw_raw_strip(screen, font, raw, x, y, width) -> int:
+    """Egocentric camera row and lidar bins. Not a class label."""
+    import pygame
+
+    screen.blit(font.render("raw camera + lidar", True, (200, 204, 214)), (x, y))
+    y += 16
+    gap = 4
+    cell = max(10, (width - gap * (N_AZ - 1)) // N_AZ)
+    for i in range(N_AZ):
+        r = int(np.clip(raw[OFF_BODY + i * 3 + 0], 0, 1) * 255)
+        g = int(np.clip(raw[OFF_BODY + i * 3 + 1], 0, 1) * 255)
+        b = int(np.clip(raw[OFF_BODY + i * 3 + 2], 0, 1) * 255)
+        if r + g + b < 8:
+            color = (28, 32, 40)
+        else:
+            color = (r, g, b)
+        pygame.draw.rect(screen, color, pygame.Rect(x + i * (cell + gap), y, cell, 16))
+        h = int(np.clip(raw[OFF_LIDAR + i], 0, 1) * 18)
+        pygame.draw.rect(screen, (70, 150, 170), pygame.Rect(x + i * (cell + gap), y + 20, cell, h))
+    return y + 42
 
 
 def _draw_heat_block(screen, font, values, x, y, width, cols, rows, label) -> int:
@@ -176,6 +204,7 @@ def run_pygame(
     move_zones: bool = False,
     sense: bool = True,
     scale: int = 120,
+    percept: str = "fixed",
 ) -> dict:
     import pygame
 
@@ -187,6 +216,7 @@ def run_pygame(
         n_agents=n_agents,
         sense_conspecifics=sense,
         move_zones=move_zones,
+        percept=percept,
         log_dir=None,
     )
     # For unlimited GUI, still step indefinitely until quit
@@ -250,6 +280,10 @@ def run_pygame(
             label = font.render(f"{z.name} r={z.reward:+.0f}", True, (240, 240, 240))
             screen.blit(label, to_px(cx - 0.3, cy))
 
+        for obj in sim.world.distractors:
+            ox, oy = to_px(obj.x, obj.y)
+            pygame.draw.rect(screen, (150, 100, 48), pygame.Rect(ox - 5, oy - 5, 10, 10))
+
         for ag in sim.world.agents:
             pts = [to_px(px, py) for px, py in ag.trail[::2]]
             if len(pts) >= 2:
@@ -280,13 +314,16 @@ def run_pygame(
             )
         )
         hud = (
-            f"t={sim.world.t:6.1f}s  mean_PI={mean_pi:+.3f}  "
+            f"t={sim.world.t:5.1f}s  PI={mean_pi:+.3f}  "
             f"zones={'MOVE' if sim.world.cfg.move_zones else 'STATIC'}  "
-            f"peers={'ON' if sense else 'BLIND'}  brain={focused.agent_id}  "
-            f"[1][2][3] brain  [Space] pause  [Z] zones  [Esc] quit"
+            f"peers={'ON' if sense else 'BLIND'}  percept={sim.cfg.percept}  brain={focused.agent_id}"
         )
-        screen.blit(font.render(hud, True, (220, 220, 220)), (12, arena_h + 8))
-        y = arena_h + 32
+        screen.blit(font.render(hud, True, (220, 220, 220)), (12, arena_h + 6))
+        screen.blit(
+            font.render("[1][2][3] brain    [Space] pause    [Z] zones    [Esc] quit", True, (170, 174, 184)),
+            (12, arena_h + 24),
+        )
+        y = arena_h + 46
         for i, ag in enumerate(sim.world.agents):
             pi = (ag.time_in_B - ag.time_in_A) / (ag.time_in_A + ag.time_in_B + 1e-6)
             mark = ">" if i == focus else " "

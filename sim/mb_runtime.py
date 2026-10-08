@@ -67,6 +67,7 @@ class MushroomBodyRuntime:
         self.mbon_action = self._assign_mbon_actions()
         self.last_forward: MBForward | None = None
         self.last_cues: dict[str, float] = {}
+        self.last_raw: np.ndarray | None = None
 
     @staticmethod
     def _to_local(pre, post, w, map_pre, map_post):
@@ -119,12 +120,16 @@ class MushroomBodyRuntime:
         u = np.clip(u, 0.0, 1.0)
         return u
 
-    def forward(self, cues: dict[str, float]) -> MBForward:
+    def readout(
+        self, cues: dict[str, float], raw_pn: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Deterministic PN → KC → MBON scores. Does not consume the policy RNG."""
         pn = self.encode_cues(cues)
+        if raw_pn is not None:
+            pn = np.clip(pn + raw_pn, 0.0, 1.0)
         kc = np.zeros(self.n_kc, dtype=np.float32)
         if len(self.pn_kc_w):
             np.add.at(kc, self.pn_kc_post, self.pn_kc_w * pn[self.pn_kc_pre])
-        # normalize + sparse threshold ~ top activity
         if kc.max() > 0:
             kc /= kc.max()
         thr = np.quantile(kc, 0.95) if self.n_kc > 10 else 0.0
@@ -137,11 +142,13 @@ class MushroomBodyRuntime:
         scores = np.zeros(len(ACTIONS), dtype=np.float32)
         for i, a_i in enumerate(self.mbon_action):
             scores[a_i] += mbon[i]
-        # mild Explore prior so agents do not freeze on one readout at t0
         scores[ACTIONS.index("Explore")] += 0.15 * (float(scores.max()) + 1.0)
         if float(scores.sum()) < 1e-6:
             scores[ACTIONS.index("Explore")] = 1.0
-        # softmax sample for stochastic policy (still driven by MBON scores)
+        return pn, kc, mbon, scores
+
+    def forward(self, cues: dict[str, float], raw_pn: np.ndarray | None = None) -> MBForward:
+        pn, kc, mbon, scores = self.readout(cues, raw_pn)
         logits = scores - scores.max()
         probs = np.exp(logits / 0.5)
         probs /= probs.sum()
