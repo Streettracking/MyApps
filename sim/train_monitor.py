@@ -41,6 +41,7 @@ class MonitorInput:
     flash_toggle: bool = False
     autonomy_toggle: bool = False
     steer_toggle: bool = False
+    record_toggle: bool = False
     takeover: bool = False
     treat_down: bool = False
     punish_down: bool = False
@@ -116,6 +117,9 @@ class MonitorView:
     learning_on: bool = True
     autonomy_on: bool = False
     onboard: bool = False
+    record_on: bool = False
+    record_saved: int = 0
+    record_bytes: int = 0
 
 
 def _surf_from_rgb(rgb: np.ndarray):
@@ -196,6 +200,7 @@ class TrainMonitor:
         self.auto_rect = pygame.Rect(236, WIN_H - 148, 230, 46)
         self.take_rect = pygame.Rect(476, WIN_H - 148, 230, 46)
         self.steer_rect = pygame.Rect(980, WIN_H - 148, 284, 46)
+        self.record_rect = pygame.Rect(888, 8, 376, 34)
         self.stand_up_rect = pygame.Rect(720, 676, 150, 32)
         self.stand_down_rect = pygame.Rect(878, 676, 130, 32)
         self.recovery_rect = pygame.Rect(1016, 676, 150, 32)
@@ -256,6 +261,8 @@ class TrainMonitor:
                     inp.takeover = True
                 elif event.key == pygame.K_y and not getattr(event, "repeat", False):
                     inp.steer_toggle = True
+                elif event.key == pygame.K_u and not getattr(event, "repeat", False):
+                    inp.record_toggle = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
@@ -277,6 +284,8 @@ class TrainMonitor:
                     inp.takeover = True
                 elif self.steer_rect.collidepoint(event.pos):
                     inp.steer_toggle = True
+                elif self.record_rect.collidepoint(event.pos):
+                    inp.record_toggle = True
                 elif self.show_stand and self.stand_up_rect.collidepoint(event.pos):
                     inp.stand_up = True
                 elif self.show_stand and self.stand_down_rect.collidepoint(event.pos):
@@ -312,6 +321,7 @@ class TrainMonitor:
         sm = self.font_sm
 
         screen.blit(font.render(view.title, True, (236, 236, 240)), (16, 10))
+        self._record_button(screen, view)
         tag = "обучение на паузе" if view.paused else "обучение"
         screen.blit(sm.render(f"t={view.t:6.1f} с    {tag}    {view.mode_label}", True, (180, 186, 198)), (16, 32))
 
@@ -455,6 +465,20 @@ class TrainMonitor:
         self._pill(screen, self.stand_up_rect, "ВСТАТЬ +", (46, 92, 64), self.stand_up_rect.collidepoint(mouse))
         self._pill(screen, self.stand_down_rect, "ЛЕЧЬ −", (72, 64, 58), self.stand_down_rect.collidepoint(mouse))
         self._pill(screen, self.recovery_rect, "ПОДЪЁМ", (58, 72, 96), self.recovery_rect.collidepoint(mouse))
+
+    def _record_button(self, screen, view: MonitorView) -> None:
+        import pygame
+
+        from .frame_record import format_disk
+
+        hot = self.record_rect.collidepoint(pygame.mouse.get_pos())
+        if view.record_on:
+            color = (150, 48, 42) if not hot else (190, 64, 52)
+            text = "ЗАПИСЬ %s · %s  U" % (int(view.record_saved), format_disk(view.record_bytes))
+        else:
+            color = (58, 62, 72) if not hot else (78, 84, 96)
+            text = "ЗАПИСЬ КАДРОВ  U"
+        self._pill(screen, self.record_rect, text, color, hot)
 
     def _pill(self, screen, rect, text: str, color: tuple[int, int, int], hot: bool) -> None:
         import pygame

@@ -10,6 +10,7 @@ Scene labels and the D/N keys only choose which monitor curve a sample joins.
 from __future__ import annotations
 
 import argparse
+import sys
 from collections import deque
 from pathlib import Path
 
@@ -534,8 +535,8 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "T/X учить  A авто  M перехват  Y руль  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
-HEBB_KEYS = "стрелки ход   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
+SIM_KEYS = "T/X учить  A авто  M перехват  Y руль  U запись  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
+HEBB_KEYS = "стрелки ход   U запись   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
 
 
 def _command_name(steer_x: float, steer_z: float, hold: bool) -> str:
@@ -632,14 +633,30 @@ def _phase_name(phase: str) -> str:
 
 
 def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: Path | None = None) -> dict:
+    from .frame_record import FrameRecorder, OperatorMarks
     from .train_monitor import TrainMonitor
 
     mon = TrainMonitor("Go2 recognition trainer — sim")
     shot = Path(screenshot_path) if screenshot_path else None
+    rec = FrameRecorder(ROOT / "logs" / "yolo_frames", fps=float(getattr(session, "rec_fps", 2.0)))
+    marks = OperatorMarks()
+    try:
+        return _run_gui(session, mon, shot, seconds, rec, marks)
+    finally:
+        rec.close()
+
+
+def _run_gui(session, mon, shot, seconds, rec, marks):
+    from .frame_record import note_operator
+
     while True:
         inp = mon.pump()
         if inp.quit:
             break
+        if inp.record_toggle:
+            on = rec.toggle()
+            _path = rec.stats()[3]
+            session._log("запись кадров %s" % (_path if on else "выключена"))
         if inp.label == "dog":
             session.operator = "dog"
             session._log("метка D — только для панели, в обучение не входит")
@@ -648,6 +665,7 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
             session._log("метка N — только для панели, в обучение не входит")
         if inp.beep_toggle:
             session._log("звук включён" if mon.beep_on else "звук выключен")
+        note_operator(marks, float(session.world.t), inp)
         _apply_pilot_keys(session, inp, float(session.world.t))
         if inp.reset:
             session.reset()
@@ -689,6 +707,12 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
             last_command=command_name,
             keys_hint=SIM_KEYS if session.learner_kind == "mb" else HEBB_KEYS,
         )
+        rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
+        view.record_on = rec_on
+        view.record_saved = rec_n
+        view.record_bytes = rec_bytes
+        if rec_on and view.camera is not None and rec.due():
+            _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z)
         mon.draw(view)
         if inp.screenshot:
             dest = ROOT / "logs" / "monitor_shot.png"
@@ -701,6 +725,36 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
                 mon.save_screenshot(str(shot))
             break
     return session.summary()
+
+
+def _offer_sim_frame(session: RecognizeTrainSim, rec, marks, camera, steer_x: float, steer_z: float) -> None:
+    from .frame_record import encode_camera_jpeg, fingerprint, make_meta
+
+    try:
+        jpeg = encode_camera_jpeg(camera)
+    except Exception:
+        return
+    mb = session.mb
+    conf = None if mb is None else mb.conf
+    rec.offer(
+        jpeg,
+        make_meta(
+            marks,
+            float(session.world.t),
+            source="sim",
+            mode="auto" if session.pilot.autonomy else "manual",
+            speed_m_s=float(np.hypot(session.learner.vx, session.learner.vy)),
+            yaw_rad_s=float(steer_z),
+            readout=None if mb is None else float(mb.last_readout),
+            confidence=None if conf is None else float(conf.percent),
+            confidence_ready=False if conf is None else bool(conf.ready),
+            recognized=bool(session.recognized_now),
+            sector=session.aim_sector,
+            r_l=None if mb is None else float(mb.r_l),
+            r_r=None if mb is None else float(mb.r_r),
+        ),
+        fingerprint(camera),
+    )
 
 
 def try_load(session: RecognizeTrainSim) -> None:
@@ -1082,7 +1136,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral", help="bilateral: yaw from R_L - R_R. sectors: the smoothed camera sector.")
     p.add_argument("--seek", action="store_true", help="Headless teacher then autonomy. Prints find/stop counts.")
     p.add_argument("--compare-steer", action="store_true", help="Train once, then seek with sectors and with bilateral.")
+    p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera frames per second written while recording.")
     args = p.parse_args(argv)
+    if args.rec_fps <= 0:
+        print("--rec-fps must be positive", file=sys.stderr)
+        return 2
     if args.compare_steer:
         import json
 
@@ -1108,6 +1166,7 @@ def main(argv: list[str] | None = None) -> int:
         return_auto_s=args.return_auto,
         steer=args.steer,
     )
+    session.rec_fps = float(args.rec_fps)
     if args.load or Path(args.state).is_file():
         try_load(session)
     if args.headless:

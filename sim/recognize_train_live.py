@@ -43,7 +43,7 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "A авто  M перехват  Y руль  стрелки после M  T/X  P  G  V/C  Space E-STOP  -/+ стойка  B D/N R S L"
+    "A авто  M перехват  Y руль  U запись  стрелки после M  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
 )
 
 
@@ -76,6 +76,7 @@ class PreviewPull:
         self.base = base
         self.error = ""
         self.camera = None
+        self.camera_jpeg = b""
         self.lidar = None
         self.scan = None
         self.frame_id = 0
@@ -105,6 +106,7 @@ class PreviewPull:
             scan = _fetch_scan(self.base)
             with self._lock:
                 self.camera = cam
+                self.camera_jpeg = bytes(cam_b)
                 self.lidar = lid
                 self.scan = scan
                 self.error = ""
@@ -113,7 +115,7 @@ class PreviewPull:
 
     def latest(self):
         with self._lock:
-            return self.frame_id, self.camera, self.lidar, self.scan, self.error
+            return self.frame_id, self.camera, self.lidar, self.scan, self.error, self.camera_jpeg
 
 
 def _fetch_scan(base: str):
@@ -600,6 +602,8 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         link.move_axes(cmd.x, cmd.z)
         state["moving"] = True
         state["last"] = now
+    session.cmd_x = float(cmd.x)
+    session.cmd_z = float(cmd.z)
     if inp.focused and not inp.estop:
         if inp.stand_up:
             link.stand_up()
@@ -684,6 +688,58 @@ def _phase_name(phase: str) -> str:
     }.get(phase, phase)
 
 
+def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: bytes, onboard: OnboardLink | None) -> None:
+    """Queue the preview JPEG. Onboard still reads :8088 on the laptop."""
+    from .frame_record import fingerprint, make_meta
+
+    if onboard is not None:
+        remote = session.remote or {}
+        source = "onboard"
+        mode = "auto" if remote.get("autonomy") else "manual"
+        speed = abs(float(remote.get("x") or 0.0))
+        yaw = float(remote.get("z") or 0.0)
+        readout = remote.get("readout")
+        confidence = remote.get("confidence")
+        ready = bool(remote.get("confidence_ready"))
+        recognized = bool(remote.get("recognized"))
+        sector = remote.get("sector")
+        r_l = remote.get("r_l")
+        r_r = remote.get("r_r")
+    else:
+        source = "robot"
+        mode = "auto" if session.pilot.autonomy else "manual"
+        speed = abs(float(getattr(session, "cmd_x", 0.0)))
+        yaw = float(getattr(session, "cmd_z", 0.0))
+        mb = session.mb
+        conf = None if mb is None else mb.conf
+        readout = None if mb is None else float(mb.last_readout)
+        confidence = None if conf is None else float(conf.percent)
+        ready = False if conf is None else bool(conf.ready)
+        recognized = bool(session.recognized_now)
+        sector = session.aim_sector
+        r_l = None if mb is None else float(mb.r_l)
+        r_r = None if mb is None else float(mb.r_r)
+    rec.offer(
+        camera_jpeg,
+        make_meta(
+            marks,
+            session.now(),
+            source=source,
+            mode=mode,
+            speed_m_s=speed,
+            yaw_rad_s=yaw,
+            readout=None if readout is None else float(readout),
+            confidence=None if confidence is None else float(confidence),
+            confidence_ready=ready,
+            recognized=recognized,
+            sector=None if sector is None else int(sector),
+            r_l=None if r_l is None else float(r_l),
+            r_r=None if r_r is None else float(r_r),
+        ),
+        fingerprint(camera),
+    )
+
+
 def run_live_gui(
     session: LiveSession,
     pull: PreviewPull,
@@ -693,7 +749,11 @@ def run_live_gui(
 ) -> None:
     from .train_monitor import MonitorView, TrainMonitor
 
+    from .frame_record import FrameRecorder, OperatorMarks, note_operator
+
     mon = TrainMonitor("Go2 recognition trainer")
+    rec = FrameRecorder(ROOT / "logs" / "yolo_frames", fps=float(getattr(session, "rec_fps", 2.0)))
+    marks = OperatorMarks()
     tele = {
         "moving": False,
         "last": 0.0,
@@ -711,12 +771,17 @@ def run_live_gui(
             inp = mon.pump()
             if inp.quit:
                 break
+            if inp.record_toggle:
+                on = rec.toggle()
+                _path = rec.stats()[3]
+                session._log("запись кадров %s  (ноутбук, :8088)" % (_path if on else "выключена"))
             if inp.label == "dog":
                 session.operator = "dog"
                 session._log("метка D — только для панели, в обучение не входит")
             elif inp.label == "none":
                 session.operator = "none"
                 session._log("метка N — только для панели, в обучение не входит")
+            note_operator(marks, session.now(), inp)
             if inp.beep_toggle:
                 session._log("звук включён" if mon.beep_on else "звук выключен")
             if inp.reset and not session.onboard:
@@ -754,7 +819,7 @@ def run_live_gui(
                 except FileNotFoundError:
                     session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
             now = time.monotonic()
-            frame_id, camera, lidar, scan, error = pull.latest()
+            frame_id, camera, lidar, scan, error, camera_jpeg = pull.latest()
             if session.onboard:
                 disp_lidar = lidar
                 session.lidar_hold = ""
@@ -815,6 +880,12 @@ def run_live_gui(
             elif teach_now and waiting:
                 session.pending_teach = teach
             view = _live_view(session, camera, disp_lidar, error, link, inp.focused, command_name, onboard)
+            rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
+            view.record_on = rec_on
+            view.record_saved = rec_n
+            view.record_bytes = rec_bytes
+            if rec_on and camera is not None and camera_jpeg and rec.due():
+                _offer_live_frame(session, rec, marks, camera, camera_jpeg, onboard)
             mon.draw(view)
             if inp.screenshot:
                 dest = ROOT / "logs" / "monitor_shot.png"
@@ -824,6 +895,7 @@ def run_live_gui(
             if seconds > 0 and session.now() >= seconds:
                 break
     finally:
+        rec.close()
         try:
             if link is not None:
                 link.stop()
@@ -914,7 +986,7 @@ def _live_view(
         t=session.now(),
         focused=focused,
         keys_hint=LIVE_KEYS if session.learner_kind == "mb" else (
-            "Arrows drive   C reset   V fresh   Space stop   -/+ stand   E E-STOP   D/N   P R S L F12 Esc"
+            "Arrows drive   U record   C reset   V fresh   Space stop   -/+ stand   E E-STOP   D/N   P R S L F12 Esc"
         ),
         pilot_mode=session.pilot.label(),
         pilot_phase=session.pilot.phase,
@@ -1084,7 +1156,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--onboard-port", type=int, default=8090)
     p.add_argument("--return-auto", type=float, default=0.0, help="Seconds of idle takeover before autonomy returns. 0 stays manual.")
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
+    p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera.jpg frames per second saved on this laptop.")
     args = p.parse_args(argv)
+    if args.rec_fps <= 0:
+        print("--rec-fps must be positive", file=sys.stderr)
+        return 2
     if args.onboard and args.learner != "mb":
         print("Onboard mode is the mushroom body. Ignoring --learner hebb.", file=sys.stderr)
         args.learner = "mb"
@@ -1109,6 +1185,7 @@ def main(argv: list[str] | None = None) -> int:
         onboard=bool(args.onboard),
         steer=args.steer,
     )
+    session.rec_fps = float(args.rec_fps)
     if args.load or Path(args.state).is_file():
         try_load_live(session)
     if args.headless:

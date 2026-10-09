@@ -17,7 +17,9 @@ import sys
 from pathlib import Path
 
 # Static imports so PyInstaller traces the trainer and the connectome runtime.
+import sim.frame_record  # noqa: F401
 import sim.frame_sense  # noqa: F401
+import sim.hemifield  # noqa: F401
 import sim.learn_flash  # noqa: F401
 import sim.npz_compat  # noqa: F401
 import sim.onboard_link  # noqa: F401
@@ -69,7 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--onboard-port", type=int, default=8090)
     p.add_argument("--return-auto", type=float, default=0.0)
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
+    p.add_argument("--rec-fps", type=float, default=2.0, help="Max frames per second while «ЗАПИСЬ КАДРОВ» is on.")
     args = p.parse_args(argv)
+    if args.rec_fps <= 0:
+        print("--rec-fps must be positive", file=sys.stderr)
+        return 2
     if args.sim and args.onboard:
         print("--sim and --onboard are different windows. Pick one.", file=sys.stderr)
         return 2
@@ -106,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         forwarded.extend(["--lidar-refresh", str(args.lidar_refresh)])
         forwarded.extend(["--return-auto", str(args.return_auto)])
         forwarded.extend(["--steer", args.steer])
+        forwarded.extend(["--rec-fps", str(args.rec_fps)])
         return recognize_train.main(forwarded)
     forwarded = [
         "--robot-ip",
@@ -140,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     forwarded.extend(["--lidar-refresh", str(args.lidar_refresh)])
     forwarded.extend(["--return-auto", str(args.return_auto)])
     forwarded.extend(["--steer", args.steer])
+    forwarded.extend(["--rec-fps", str(args.rec_fps)])
     if args.onboard:
         forwarded.extend(["--onboard", args.onboard, "--onboard-port", str(args.onboard_port)])
     return recognize_train_live.main(forwarded)
