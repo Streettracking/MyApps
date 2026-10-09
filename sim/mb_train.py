@@ -148,6 +148,7 @@ class MbTrainer:
                 self.flash_r = record_teacher_step(self.brain_r, right, kind, t)
                 if kind == "pam":
                     self.dan_events.append((t, "PAM"))
+                    # One pulse trains both halves. stat_tot stores this shared count.
                     self.n_pam += 1
                 else:
                     self.dan_events.append((t, "PPL1"))

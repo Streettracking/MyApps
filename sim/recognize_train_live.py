@@ -907,6 +907,16 @@ def run_live_gui(
             pull.stop()
 
 
+def _opt_float(payload: dict, key: str) -> float | None:
+    """Missing status fields stay blank. An old onboard build has no lifetime totals."""
+    if key not in payload or payload.get(key) is None:
+        return None
+    try:
+        return float(payload[key])
+    except (TypeError, ValueError):
+        return None
+
+
 def _scaled(session: LiveSession, rows: list[tuple[float, float]]) -> list[tuple[float, float]]:
     if not rows:
         return []
@@ -1036,6 +1046,9 @@ def _live_view(
             total_time=prog.base_time + prog.session_time,
             total_pam=prog.base_pam + session.mb.n_pam,
             total_ppl1=prog.base_ppl1 + session.mb.n_ppl1,
+            hemi_l=float(session.pilot.track.r_l),
+            hemi_r=float(session.pilot.track.r_r),
+            hemi_z=float(session.pilot.track.yaw_z),
             session_sep=prog.session_sep(),
             total_sep=prog.total_sep(),
             session_acc=prog.session_acc(),
@@ -1060,6 +1073,12 @@ def _live_view(
             readout_caption="сырой выход с борта",
             n_pam=int(remote.get("n_pam") or 0),
             n_ppl1=int(remote.get("n_ppl1") or 0),
+            total_pam=int(remote.get("n_pam_total") or 0),
+            total_ppl1=int(remote.get("n_ppl1_total") or 0),
+            lifetime_known=("n_pam_total" in remote and "n_ppl1_total" in remote),
+            hemi_l=_opt_float(remote, "r_l"),
+            hemi_r=_opt_float(remote, "r_r"),
+            hemi_z=_opt_float(remote, "z_fly"),
             recognized=bool(remote.get("recognized")),
             confidence=float(remote.get("confidence") or 0.0),
             confidence_ready=bool(remote.get("confidence_ready")),

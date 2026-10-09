@@ -363,6 +363,8 @@ class BrainLoop:
                 "z": self.drive.moves[-1][2] if self._moving and self.drive.moves else 0.0,
                 "n_pam": int(self.mb.n_pam),
                 "n_ppl1": int(self.mb.n_ppl1),
+                "n_pam_total": int(self.mb.progress.base_pam + self.mb.n_pam),
+                "n_ppl1_total": int(self.mb.progress.base_ppl1 + self.mb.n_ppl1),
                 "frames_ok": bool(self.frames_ok),
                 "link_ok": bool(link_ok),
                 "hint": self.pilot.hint,

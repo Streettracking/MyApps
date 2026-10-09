@@ -439,6 +439,9 @@ class RecognizeTrainSim:
                     self.pilot.steer,
                 ),
                 steer=self.pilot.steer,
+                hemi_l=float(self.pilot.track.r_l),
+                hemi_r=float(self.pilot.track.r_r),
+                hemi_z=float(self.pilot.track.yaw_z),
             )
         assert self.recognizer is not None
         return MonitorView(

@@ -121,6 +121,10 @@ class MonitorView:
     record_saved: int = 0
     record_bytes: int = 0
     record_idle: bool = False
+    hemi_l: float | None = None
+    hemi_r: float | None = None
+    hemi_z: float | None = None
+    lifetime_known: bool = True
 
 
 def _surf_from_rgb(rgb: np.ndarray):
@@ -328,7 +332,9 @@ class TrainMonitor:
 
         cam_rect = pygame.Rect(16, 56, 460, 210)
         lid_rect = pygame.Rect(16, 278, 460, 300)
-        self._frame(screen, cam_rect, view.camera, "камера", view.sensor_error)
+        cam_inner = self._frame(screen, cam_rect, view.camera, "камера", view.sensor_error)
+        if cam_inner is not None:
+            self._camera_halves(screen, cam_inner, view)
         lid_title = view.lidar_mode or "карта лидара"
         lid_msg = "" if view.lidar is not None else view.lidar_hold
         inner = self._frame(screen, lid_rect, view.lidar, lid_title, lid_msg)
@@ -663,11 +669,23 @@ class TrainMonitor:
         sm = self.font_sm
         screen.blit(sm.render("насколько обучен", True, (190, 220, 196)), (rect.x + 8, rect.y + 4))
         if view.dan_mode == "familiarity":
-            teach = f"знакомство {view.session_novelty} / всего {view.total_novelty}"
+            line1 = f"сессия  {fmt_duration(view.session_time)}    знакомство {view.session_novelty}"
+            line2 = f"всего    {fmt_duration(view.total_time)}    знакомство {view.total_novelty}"
         else:
-            teach = f"лакомств {view.n_pam} / всего {view.total_pam}    наказаний {view.n_ppl1} / {view.total_ppl1}"
-        line1 = f"сессия  {fmt_duration(view.session_time)}    {teach}"
-        line2 = f"всего    {fmt_duration(view.total_time)}    лакомств {view.total_pam}"
+            if view.lifetime_known:
+                life_n = int(view.total_pam) + int(view.total_ppl1)
+                line1 = "Всего за всё время: PAM %d / PPL1 %d (всего %d)" % (
+                    int(view.total_pam),
+                    int(view.total_ppl1),
+                    life_n,
+                )
+            else:
+                line1 = "Всего за всё время: —"
+            line2 = "За этот запуск: PAM %d / PPL1 %d    %s" % (
+                int(view.n_pam),
+                int(view.n_ppl1),
+                fmt_duration(view.session_time),
+            )
         if view.session_labeled or view.total_labeled:
             ses = _metric(view.session_sep, view.session_acc, view.session_labeled)
             tot = _metric(view.total_sep, view.total_acc, view.total_labeled)
@@ -680,9 +698,9 @@ class TrainMonitor:
             sound = "звук вкл"
         else:
             sound = "звук выкл"
-        screen.blit(sm.render(line1[:96], True, (220, 224, 214)), (rect.x + 8, rect.y + 24))
-        screen.blit(sm.render((line2 + "    " + sound)[:96], True, (200, 206, 198)), (rect.x + 8, rect.y + 42))
-        screen.blit(sm.render(line3[:100], True, (176, 186, 178)), (rect.x + 8, rect.y + 58))
+        screen.blit(sm.render(line1, True, (220, 224, 214)), (rect.x + 8, rect.y + 24))
+        screen.blit(sm.render(line2 + "    " + sound, True, (200, 206, 198)), (rect.x + 8, rect.y + 42))
+        screen.blit(sm.render(line3, True, (176, 186, 178)), (rect.x + 8, rect.y + 58))
 
     def _dan_timeline(self, screen, view: MonitorView, rect) -> None:
         import pygame
@@ -794,6 +812,49 @@ class TrainMonitor:
                 screen.blit(self.font_sm.render(chunk, True, (230, 120, 110)), (rect.x + 10, y))
                 y += 16
         return inner
+
+    def _camera_halves(self, screen, inner, view: MonitorView) -> None:
+        """Centre line on the displayed camera. The JPEG is not touched.
+
+        Sector 0 is the left columns and the robot's right, so the picture's
+        left half is П / R_R and the right half is Л / R_L.
+        """
+        import pygame
+
+        mid = inner.x + inner.w // 2
+        left = pygame.Rect(inner.x, inner.y, mid - inner.x, inner.h)
+        right = pygame.Rect(mid, inner.y, inner.right - mid, inner.h)
+        show = (
+            view.steer == "bilateral"
+            and view.hemi_l is not None
+            and view.hemi_r is not None
+        )
+        if show and view.hemi_z is not None and view.hemi_z > 0:
+            self._wash(screen, right, (64, 168, 112))
+        elif show and view.hemi_z is not None and view.hemi_z < 0:
+            self._wash(screen, left, (196, 140, 64))
+        pygame.draw.line(screen, (244, 246, 248), (mid, inner.y + 1), (mid, inner.bottom - 1), 2)
+        self._half_tag(screen, right, "Л", view.hemi_l if show else None)
+        self._half_tag(screen, left, "П", view.hemi_r if show else None)
+
+    def _wash(self, screen, rect, color: tuple[int, int, int]) -> None:
+        import pygame
+
+        veil = pygame.Surface((max(1, rect.w), max(1, rect.h)), pygame.SRCALPHA)
+        veil.fill((color[0], color[1], color[2], 52))
+        screen.blit(veil, rect.topleft)
+
+    def _half_tag(self, screen, rect, name: str, value: float | None) -> None:
+        import pygame
+
+        text = name if value is None else "%s  %+.0f" % (name, float(value))
+        label = self.font_sm.render(text, True, (248, 248, 246))
+        pad = pygame.Surface((label.get_width() + 10, label.get_height() + 4), pygame.SRCALPHA)
+        pad.fill((10, 12, 16, 176))
+        x = rect.x + 6
+        y = rect.y + 6
+        screen.blit(pad, (x, y))
+        screen.blit(label, (x + 5, y + 2))
 
 
 def _metric(sep: float | None, acc: float | None, n: int) -> str:
