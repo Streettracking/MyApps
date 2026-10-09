@@ -1,0 +1,59 @@
+{
+  "artifact_id": "connectome_mb_v1",
+  "created_utc": "2026-09-18T14:59:28.666577+00:00",
+  "snapshot": "FAFB-783",
+  "sources": [
+    {
+      "name": "flywire_annotations Supplemental_file1",
+      "url": "https://github.com/flyconnectome/flywire_annotations",
+      "file": "supplemental_files/Supplemental_file1_neuron_annotations.tsv",
+      "note": "Schlegel et al. Nature 2024 annotations for materialization 783"
+    },
+    {
+      "name": "FlyWire Whole-brain Connectome Connectivity Data",
+      "url": "https://doi.org/10.5281/zenodo.10676866",
+      "file": "proofread_connections_783.feather",
+      "sha256": "24f960ae3e7d4f8cd30db3b62e99fb5179cc3d1e76d8c155bfb441e9737d3faf",
+      "note": "Dorkenwald et al. connectivity release v783"
+    }
+  ],
+  "citations": [
+    "Dorkenwald et al., Nature (2024). Neuronal wiring diagram of an adult brain.",
+    "Schlegel et al., Nature (2024). Whole-brain annotation and multi-connectome cell typing of Drosophila."
+  ],
+  "selection": {
+    "roles": {
+      "PN": "cell_class in {alpn} or olfactory glomerular subclasses",
+      "KC": "cell_class == kenyon_cell",
+      "MBON": "cell_class == MBON",
+      "DAN": "cell_class == DAN"
+    },
+    "synapse_threshold": 5,
+    "edge_filter": "both pre and post in selected neuron set"
+  },
+  "counts": {
+    "neurons": 6216,
+    "PN": 652,
+    "KC": 5137,
+    "MBON": 96,
+    "DAN": 331,
+    "DAN_PPL1_aversive": 16,
+    "DAN_PAM_appetitive": 307,
+    "edges_retained": 45482,
+    "edges_pn_kc": 21533,
+    "edges_kc_mbon": 16073,
+    "edges_dan_kc": 178,
+    "edges_dan_mbon": 835,
+    "plastic_kc_mbon_aversive": 8079,
+    "plastic_kc_mbon_appetitive": 9757
+  },
+  "files": {
+    "npz": "artifacts/connectome_mb_v1.npz",
+    "neurons_csv_gz": "artifacts/connectome_mb_v1_neurons.csv.gz",
+    "edges_csv_gz": "artifacts/connectome_mb_v1_edges.csv.gz",
+    "annotations_gz": "data/flywire/raw/Supplemental_file1_neuron_annotations.tsv.gz",
+    "proofread_root_ids": "data/flywire/raw/proofread_root_ids_783.npy"
+  },
+  "license_note": "FlyWire/Codex data: follow FlyWire Terms of Service and cite the papers above. Redistributed here as derived MB subgraph for research/engineering experiments.",
+  "npz_sha256": "a101e552fdf067fbcd9fd30707b62ce5a62b3c843a26b22c7a52beafe2133642"
+}

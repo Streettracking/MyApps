@@ -1,0 +1,13 @@
+# Large local FlyWire downloads (not committed)
+data/flywire/raw/proofread_connections_783.feather
+data/flywire/raw/proofread_connections_783.feather.partial
+data/flywire/raw/Supplemental_file1_neuron_annotations.tsv
+data/flywire/raw/*.partial
+
+# Runtime / logs
+logs/*
+!logs/.gitkeep
+*.pyc
+__pycache__/
+.venv/
+venv/

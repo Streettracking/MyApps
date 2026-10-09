@@ -1,0 +1,285 @@
+"""Second-eye confirmation, binocular overlap, and the trainer overlay.
+
+Run: python -m unittest sim.test_eye_overlap
+"""
+
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+from sim.hemifield import clamp_overlap, hemifield, overlap_bands
+from sim.pilot import EYE_CONFIRM_S, EYE_LOSE_N, SEARCH_TURN, EyeConfirm, Pilot, phase_label
+from sim.raw_sense import N_RAW, OFF_BODY, OFF_LIDAR
+from sim.train_monitor import eye_tone
+
+
+def _blob(sector: int, value: float = 1.0) -> np.ndarray:
+    feat = np.zeros(N_RAW, dtype=np.float32)
+    feat[OFF_LIDAR + int(sector)] = value
+    feat[OFF_BODY + int(sector) * 3] = value
+    return feat
+
+
+def _energy(feat: np.ndarray) -> float:
+    return float(np.sum(np.abs(feat)))
+
+
+def _auto(pilot: Pilot, now: float, *, left: bool, right: bool, dist: float = 3.0, forward: float = 3.0, r_l: float = 5.0, r_r: float = 5.0):
+    return pilot.command(
+        now,
+        (0.0, 0.0),
+        focused=True,
+        frames_ok=True,
+        link_ok=True,
+        recognized=left or right,
+        sector=4,
+        dist_m=dist,
+        forward_m=forward,
+        r_l=r_l if left else 0.0,
+        r_r=r_r if right else 0.0,
+        recognized_l=left,
+        recognized_r=right,
+    )
+
+
+class OverlapTests(unittest.TestCase):
+    def test_bands_and_clamp(self):
+        self.assertEqual(overlap_bands(0.2), (0.4, 0.6))
+        self.assertEqual(overlap_bands(0.0), (0.5, 0.5))
+        self.assertEqual(overlap_bands(0.5), (0.25, 0.75))
+        self.assertEqual(clamp_overlap(2.0), 0.5)
+        self.assertEqual(clamp_overlap(-1.0), 0.0)
+
+    def test_zero_overlap_matches_the_hard_split(self):
+        rng = np.random.default_rng(0)
+        feat = rng.random(N_RAW).astype(np.float32)
+        np.testing.assert_array_equal(hemifield(feat, "L", 0.0), hemifield(feat, "L"))
+        np.testing.assert_array_equal(hemifield(feat, "R", 0.0), hemifield(feat, "R"))
+        left = hemifield(_blob(4), "R", 0.0)
+        right = hemifield(_blob(3), "L", 0.0)
+        self.assertEqual(_energy(left), 0.0)
+        self.assertEqual(_energy(right), 0.0)
+        self.assertGreater(_energy(hemifield(_blob(4), "L", 0.0)), 0.0)
+        self.assertGreater(_energy(hemifield(_blob(3), "R", 0.0)), 0.0)
+
+    def test_center_reaches_both_eyes_and_edges_stay_apart(self):
+        center = _blob(3) + _blob(4)
+        self.assertGreater(_energy(hemifield(center, "L", 0.2)), 0.0)
+        self.assertGreater(_energy(hemifield(center, "R", 0.2)), 0.0)
+        # Sector 4 sits just left of the midline and now spills into the right eye.
+        self.assertGreater(_energy(hemifield(_blob(4), "R", 0.2)), 0.0)
+        self.assertEqual(_energy(hemifield(_blob(0), "L", 0.2)), 0.0)
+        self.assertGreater(_energy(hemifield(_blob(0), "R", 0.2)), 0.0)
+        self.assertEqual(_energy(hemifield(_blob(7), "R", 0.2)), 0.0)
+        self.assertGreater(_energy(hemifield(_blob(7), "L", 0.2)), 0.0)
+
+    def test_resample_keeps_the_72d_shape(self):
+        feat = _blob(4) + _blob(5)
+        for side in ("L", "R"):
+            out = hemifield(feat, side, 0.2)
+            self.assertEqual(out.shape, (N_RAW,))
+            self.assertEqual(out.dtype, np.float32)
+            self.assertTrue(np.all(out[OFF_LIDAR : OFF_LIDAR + 4] == 0.0))
+            self.assertTrue(np.all(out[OFF_BODY : OFF_BODY + 12] == 0.0))
+
+
+class EyeConfirmTests(unittest.TestCase):
+    def test_both_eyes_walk_one_eye_turns_in_place(self):
+        pilot = Pilot()
+        pilot.start_auto(0.0)
+        both = _auto(pilot, 0.0, left=True, right=True)
+        self.assertEqual(both.phase, "approach")
+        self.assertAlmostEqual(both.x, 0.4)
+        self.assertEqual(both.z, 0.0)
+        self.assertEqual(phase_label(both.phase), "подтверждено — иду")
+
+        left_only = Pilot()
+        left_only.start_auto(0.0)
+        turn = _auto(left_only, 0.0, left=True, right=False)
+        self.assertEqual(turn.phase, "align_l")
+        self.assertEqual(turn.x, 0.0)
+        self.assertAlmostEqual(turn.z, SEARCH_TURN)
+        self.assertEqual(phase_label(turn.phase), "доворот (Л)")
+
+        right_only = Pilot()
+        right_only.start_auto(0.0)
+        turn = _auto(right_only, 0.0, left=False, right=True)
+        self.assertEqual(turn.phase, "align_r")
+        self.assertEqual(turn.x, 0.0)
+        self.assertAlmostEqual(turn.z, -SEARCH_TURN)
+        self.assertEqual(phase_label(turn.phase), "доворот (П)")
+
+    def test_second_eye_timeout_returns_to_search(self):
+        pilot = Pilot()
+        pilot.start_auto(0.0)
+        started = _auto(pilot, 0.0, left=True, right=False)
+        self.assertEqual(started.phase, "align_l")
+        held = _auto(pilot, 2.9, left=True, right=False)
+        self.assertEqual(held.phase, "align_l")
+        gave_up = _auto(pilot, EYE_CONFIRM_S, left=True, right=False)
+        self.assertEqual(gave_up.phase, "search")
+        self.assertEqual(gave_up.x, 0.0)
+        still = _auto(pilot, EYE_CONFIRM_S + 0.4, left=True, right=False)
+        self.assertEqual(still.phase, "search")
+        _auto(pilot, EYE_CONFIRM_S + 0.6, left=False, right=False)
+        again = _auto(pilot, EYE_CONFIRM_S + 0.8, left=True, right=False)
+        self.assertEqual(again.phase, "align_l")
+
+    def test_losing_one_eye_stops_the_walk(self):
+        pilot = Pilot()
+        pilot.start_auto(0.0)
+        _auto(pilot, 0.0, left=True, right=True)
+        for step in range(1, EYE_LOSE_N):
+            cmd = _auto(pilot, 0.05 * step, left=True, right=False)
+            self.assertEqual(cmd.phase, "approach", step)
+            self.assertGreater(cmd.x, 0.0)
+        dropped = _auto(pilot, 0.05 * EYE_LOSE_N, left=True, right=False)
+        self.assertEqual(dropped.phase, "align_l")
+        self.assertEqual(dropped.x, 0.0)
+
+    def test_close_target_holds_and_sector_mode_ignores_eyes(self):
+        pilot = Pilot()
+        pilot.start_auto(0.0)
+        held = _auto(pilot, 0.0, left=True, right=True, dist=0.8, forward=0.8)
+        self.assertEqual(held.phase, "hold")
+        self.assertEqual(held.x, 0.0)
+
+        sectors = Pilot()
+        sectors.set_steer("sectors")
+        sectors.start_auto(0.0)
+        last = None
+        for step in range(8):
+            last = sectors.command(
+                0.1 * step,
+                (0.0, 0.0),
+                focused=True,
+                frames_ok=True,
+                link_ok=True,
+                recognized=True,
+                sector=4,
+                dist_m=3.0,
+                forward_m=3.0,
+                recognized_l=False,
+                recognized_r=False,
+            )
+        assert last is not None
+        self.assertEqual(last.phase, "approach")
+        self.assertGreater(last.x, 0.0)
+
+    def test_eye_class_names_the_false_alarm(self):
+        eyes = EyeConfirm(timeout_s=3.0, lose_n=5)
+        self.assertEqual(eyes.update(0.0, True, False), "align_l")
+        self.assertEqual(eyes.update(3.0, True, False), "search")
+        self.assertEqual(eyes.update(3.1, True, False), "search")
+
+
+class StateAndStatusTests(unittest.TestCase):
+    def test_saved_state_keeps_the_old_arrays(self):
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.npz_compat import open_npz
+
+        brain = MbTrainer(default_npz(), seed=1, overlap=0.2)
+        self.assertEqual(brain.overlap, 0.2)
+        feat = np.zeros(N_RAW, dtype=np.float32)
+        feat[OFF_LIDAR + 4] = 1.0
+        brain.forward(feat)
+        brain.observe(feat, brain.last_readout)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "mb_train_state.npz"
+            brain.save(path)
+            with open_npz(path) as saved:
+                keys = set(saved.files)
+            self.assertIn("kc_mbon_w", keys)
+            self.assertIn("kc_mbon_w_r", keys)
+            self.assertIn("cal_readout", keys)
+            self.assertIn("stat_tot", keys)
+            self.assertNotIn("overlap", keys)
+            self.assertNotIn("cal_readout_l", keys)
+            other = MbTrainer(default_npz(), seed=1, overlap=0.0)
+            other.load(path)
+            self.assertEqual(other.overlap, 0.0)
+            np.testing.assert_array_equal(other.brain_r.kc_mbon_w, brain.brain_r.kc_mbon_w)
+
+    def test_status_reports_eyes_and_overlap(self):
+        from robot.flybrain_onboard.app import BrainLoop
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import MbTrainer, default_npz
+
+        brain = MbTrainer(default_npz(), seed=1, overlap=0.2)
+        loop = BrainLoop(SportDrive(None), brain, "/tmp/mb_eye_status.npz")
+        payload = loop.status()
+        self.assertEqual(payload["overlap"], 0.2)
+        self.assertIn("recognized_L", payload)
+        self.assertIn("recognized_R", payload)
+        self.assertIn("confidence_L", payload)
+        self.assertIn("confidence_R", payload)
+        self.assertEqual(payload["phase_ru"], phase_label(loop.pilot.phase, loop.pilot.steer))
+        now = 10.0
+        loop.last_hb = now
+        loop.frames_ok = True
+        loop.last_frame_t = now
+        loop.pilot.start_auto(now)
+        loop.recognized_l = True
+        loop.recognized_r = True
+        loop.dist_m = 3.0
+        loop.forward_m = 3.0
+        loop.mb.r_l = 5.0
+        loop.mb.r_r = 5.0
+        cmd = loop.tick(now)
+        self.assertEqual(cmd.phase, "approach")
+        self.assertAlmostEqual(cmd.x, 0.4)
+        self.assertEqual(loop.status()["phase_ru"], "подтверждено — иду")
+        self.assertTrue(loop.status()["recognized_L"])
+        self.assertTrue(loop.status()["recognized_R"])
+
+
+class OverlayTests(unittest.TestCase):
+    def test_tones(self):
+        self.assertEqual(eye_tone(False, False, 0.0), "grey")
+        self.assertEqual(eye_tone(True, False, 0.0), "grey")
+        self.assertEqual(eye_tone(True, False, 40.0), "yellow")
+        self.assertEqual(eye_tone(True, True, 90.0), "green")
+
+    def test_draw_does_not_touch_the_camera(self):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        from sim.train_monitor import MonitorView, TrainMonitor
+
+        monitor = TrainMonitor("overlap test")
+        camera = np.zeros((96, 160, 3), dtype=np.uint8)
+        camera[:, :] = (18, 22, 28)
+        camera[:, 70:96] = (40, 70, 90)
+        original = camera.copy()
+        view = MonitorView(
+            camera=camera,
+            learner="mb",
+            steer="bilateral",
+            overlap=0.2,
+            eye_l_ready=True,
+            eye_l_recognized=True,
+            eye_l_confidence=88.0,
+            eye_r_ready=True,
+            eye_r_recognized=False,
+            eye_r_confidence=35.0,
+            phase_ru="доворот (П)",
+            pilot_who="мозг",
+            pilot_mode="АВТОНОМИЯ",
+            autonomy_on=True,
+        )
+        monitor.draw(view)
+        np.testing.assert_array_equal(camera, original)
+        shot = Path("/opt/cursor/artifacts/trainer_overlap.png")
+        shot.parent.mkdir(parents=True, exist_ok=True)
+        monitor.save_screenshot(str(shot))
+        import pygame
+
+        pygame.quit()
+
+
+if __name__ == "__main__":
+    unittest.main()

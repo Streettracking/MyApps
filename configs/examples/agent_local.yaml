@@ -1,0 +1,30 @@
+# Local agent flags (on-robot). Derived from episode config at load time.
+# This file is an example of what each Go2 keeps after set_config.
+
+agent_id: go2_1
+config_hash: "REPLACE_WITH_SHA256_OF_EPISODE_YAML"
+graph_version: fafb783_mb_v1
+
+local_reward:
+  compute_onboard: true
+  depend_on_server_reward_topic: false
+  zones_source: episode_config_copy
+
+perception:
+  sense_conspecifics: true
+  conspecific_near_m: 1.2
+  peer_tag_family: tag36h11
+
+forbidden_subscriptions:
+  # Documented non-goals: agent MUST NOT subscribe for learning
+  - /arena/reward/*
+  - /arena/social/*
+  - /go2_*/mb/*
+  - /go2_*/fly/*
+  - /arena/shared_weights
+
+telemetry:
+  publish_to: /go2_1/telemetry
+  include_r_self: true
+  include_conspecific_cues: true
+  include_weight_norm: true
