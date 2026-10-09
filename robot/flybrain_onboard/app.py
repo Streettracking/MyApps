@@ -72,6 +72,8 @@ class BrainLoop:
         self.cloud_ranges = None
         self.cloud_t = 0.0
         self._teach = None
+        self._teach_l = None
+        self._teach_r = None
         self._moving = False
         self._sent_move = False
         self._last_send = 0.0
@@ -160,8 +162,18 @@ class BrainLoop:
                 self._log("обучение выключено, T/X веса не меняют")
             elif op == "treat":
                 self._teach = "pam"
+                self._teach_l = None
+                self._teach_r = None
             elif op == "punish":
                 self._teach = "ppl1"
+                self._teach_l = None
+                self._teach_r = None
+            elif op == "teach_sides":
+                if self._teach is None:
+                    left = str(data.get("left") or "")
+                    right = str(data.get("right") or "")
+                    self._teach_l = left if left in ("pam", "ppl1") else None
+                    self._teach_r = right if right in ("pam", "ppl1") else None
             elif op == "estop":
                 self.on_estop()
             elif op == "space":
@@ -221,14 +233,22 @@ class BrainLoop:
         dist = scrub_range(dist, self.self_radius)
         forward = scrub_range(forward, self.self_radius)
         kind = self._teach
+        side_l = self._teach_l
+        side_r = self._teach_r
         self._teach = None
-        if kind and not self.learn:
+        self._teach_l = None
+        self._teach_r = None
+        if (kind or side_l or side_r) and not self.learn:
             if float(now) - self._learn_block_log > 1.0:
                 self._log("обучение выключено, T/X веса не меняют")
                 self._learn_block_log = float(now)
             kind = None
+            side_l = None
+            side_r = None
         if kind:
             self.mb.teach(fwd, kind, float(now))
+        elif side_l or side_r:
+            self.mb.teach_sides(side_l, side_r, float(now))
         with self._lock:
             self.recognized = seen
             self.sector = self.marks.aim_sector if seen else None
@@ -362,6 +382,11 @@ class BrainLoop:
                 "phase_ru": phase_label(self.pilot.phase, self.pilot.steer, self.pilot.search_sign),
                 "last_seen_side": self.pilot.last_seen_side or None,
                 "search_sign": 1 if self.pilot.search_sign >= 0 else -1,
+                "reinforce": self.mb.reinforce,
+                "teacher_pam_l": int(self.mb.teacher_pam_l),
+                "teacher_pam_r": int(self.mb.teacher_pam_r),
+                "teacher_ppl1_l": int(self.mb.teacher_ppl1_l),
+                "teacher_ppl1_r": int(self.mb.teacher_ppl1_r),
                 "who": self.pilot.who,
                 "took_over": bool(self.pilot.took_over),
                 "learning": bool(self.learn),

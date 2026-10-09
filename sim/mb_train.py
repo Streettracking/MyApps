@@ -71,6 +71,11 @@ class MbTrainer:
         self.n_pam = 0
         self.n_ppl1 = 0
         self.n_novelty = 0
+        self.teacher_pam_l = 0
+        self.teacher_pam_r = 0
+        self.teacher_ppl1_l = 0
+        self.teacher_ppl1_r = 0
+        self.reinforce = ""
         self.cal = ConfidenceCalibrator()
         self.cal_l = ConfidenceCalibrator()
         self.cal_r = ConfidenceCalibrator()
@@ -161,6 +166,7 @@ class MbTrainer:
                 else:
                     self.dan_events.append((t, "PPL1"))
                     self.n_ppl1 += 1
+                self.reinforce = "operator"
         else:
             fired = False
             for brain, half in ((self.brain, fwd), (self.brain_r, self.last_fwd_r)):
@@ -177,6 +183,48 @@ class MbTrainer:
             self.r_l = self._value(self.brain, self.last_fwd)
             self.r_r = self._value(self.brain_r, self.last_fwd_r)
             self.last_readout = float(self.r_l + self.r_r)
+
+    def teach_sides(self, kind_l: str | None, kind_r: str | None, t: float) -> bool:
+        """DAN on one hemisphere or each. Operator ``teach`` still pulses both.
+
+        The counters below are not written into ``mb_train_state.npz``.
+        """
+        if not self.learn or self.dan != "teacher":
+            return False
+        fired = False
+        if kind_l in ("pam", "ppl1") and self.last_fwd is not None:
+            self.flash = record_teacher_step(self.brain, self.last_fwd, kind_l, t)
+            self._count_teacher("L", kind_l, t)
+            fired = True
+        if kind_r in ("pam", "ppl1") and self.last_fwd_r is not None:
+            self.flash_r = record_teacher_step(self.brain_r, self.last_fwd_r, kind_r, t)
+            self._count_teacher("R", kind_r, t)
+            fired = True
+        if not fired:
+            return False
+        self.reinforce = "teacher"
+        self.last_drift = self.brain.weight_drift() + self.brain_r.weight_drift()
+        if self.last_fwd is not None and self.last_fwd_r is not None:
+            self.r_l = self._value(self.brain, self.last_fwd)
+            self.r_r = self._value(self.brain_r, self.last_fwd_r)
+            self.last_readout = float(self.r_l + self.r_r)
+        return True
+
+    def _count_teacher(self, side: str, kind: str, t: float) -> None:
+        if kind == "pam":
+            self.n_pam += 1
+            self.dan_events.append((t, "PAM"))
+            if side == "L":
+                self.teacher_pam_l += 1
+            else:
+                self.teacher_pam_r += 1
+        else:
+            self.n_ppl1 += 1
+            self.dan_events.append((t, "PPL1"))
+            if side == "L":
+                self.teacher_ppl1_l += 1
+            else:
+                self.teacher_ppl1_r += 1
 
     def observe(self, feat: np.ndarray, readout: float) -> Confidence:
         """Joint confidence, plus one calibrator on each hemisphere. No labels.
@@ -226,6 +274,9 @@ class MbTrainer:
         self.r_r = 0.0
         self.last_drift = 0.0
         self.n_pam = self.n_ppl1 = self.n_novelty = 0
+        self.teacher_pam_l = self.teacher_pam_r = 0
+        self.teacher_ppl1_l = self.teacher_ppl1_r = 0
+        self.reinforce = ""
         self.cal.reset()
         self.cal_l.reset()
         self.cal_r.reset()
@@ -280,4 +331,7 @@ class MbTrainer:
                 self.saved_lidar_refresh = None
         self.conf = self.cal.last
         self.n_pam = self.n_ppl1 = self.n_novelty = 0
+        self.teacher_pam_l = self.teacher_pam_r = 0
+        self.teacher_ppl1_l = self.teacher_ppl1_r = 0
+        self.reinforce = ""
         self.probe_init = self.probe()

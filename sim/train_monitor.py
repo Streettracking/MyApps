@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .hemifield import DEFAULT_OVERLAP
 from .mb_confidence import fmt_duration
 
 WIN_W = 1280
@@ -41,6 +42,9 @@ class MonitorInput:
     flash_toggle: bool = False
     autonomy_toggle: bool = False
     steer_toggle: bool = False
+    teacher_toggle: bool = False
+    boxes_toggle: bool = False
+    fullscreen_toggle: bool = False
     record_toggle: bool = False
     takeover: bool = False
     treat_down: bool = False
@@ -125,7 +129,11 @@ class MonitorView:
     hemi_r: float | None = None
     hemi_z: float | None = None
     lifetime_known: bool = True
-    overlap: float = 0.2
+    overlap: float = DEFAULT_OVERLAP
+    last_seen_side: str = ""
+    yolo_state: str = ""
+    teacher_counts: str = ""
+    teacher_boxes: list = field(default_factory=list)
     eye_l_recognized: bool = False
     eye_r_recognized: bool = False
     eye_l_confidence: float = 0.0
@@ -203,12 +211,14 @@ def _bars(screen, font, origin, values, width, title, color):
 
 
 class TrainMonitor:
-    def __init__(self, title: str):
+    def __init__(self, title: str, fullscreen: bool = False):
         import pygame
 
         pygame.init()
         pygame.display.set_caption(title)
-        self.screen = pygame.display.set_mode((WIN_W, WIN_H))
+        self.fullscreen = bool(fullscreen)
+        self.screen = None
+        self._open_display()
         self.font = pygame.font.SysFont("dejavusans", 16)
         self.font_sm = pygame.font.SysFont("dejavusans", 15)
         self.font_big = pygame.font.SysFont("dejavusans", 36)
@@ -223,6 +233,7 @@ class TrainMonitor:
         self.take_rect = pygame.Rect(476, WIN_H - 148, 230, 46)
         self.steer_rect = pygame.Rect(980, WIN_H - 148, 284, 46)
         self.record_rect = pygame.Rect(888, 8, 376, 34)
+        self.teacher_rect = pygame.Rect(492, 4, 384, 40)
         self.stand_up_rect = pygame.Rect(720, 676, 150, 32)
         self.stand_down_rect = pygame.Rect(878, 676, 130, 32)
         self.recovery_rect = pygame.Rect(1016, 676, 150, 32)
@@ -232,6 +243,26 @@ class TrainMonitor:
         self.audio_ok: bool | None = None
         self._beep_sound = None
         self._prev_rec = False
+
+    def _open_display(self) -> None:
+        """Logical 1280×860. SCALED stretches that layout to the window or the screen."""
+        import pygame
+
+        flags = getattr(pygame, "SCALED", 0)
+        if self.fullscreen:
+            flags |= pygame.FULLSCREEN
+        else:
+            flags |= pygame.RESIZABLE
+        try:
+            self.screen = pygame.display.set_mode((WIN_W, WIN_H), flags)
+        except pygame.error:
+            self.fullscreen = False
+            self.screen = pygame.display.set_mode((WIN_W, WIN_H))
+
+    def toggle_fullscreen(self) -> bool:
+        self.fullscreen = not self.fullscreen
+        self._open_display()
+        return self.fullscreen
 
     def pump(self) -> MonitorInput:
         import pygame
@@ -281,8 +312,15 @@ class TrainMonitor:
                     inp.autonomy_toggle = True
                 elif event.key == pygame.K_m and not getattr(event, "repeat", False):
                     inp.takeover = True
-                elif event.key == pygame.K_y and not getattr(event, "repeat", False):
+                elif event.key == pygame.K_k and not getattr(event, "repeat", False):
                     inp.steer_toggle = True
+                elif event.key == pygame.K_y and not getattr(event, "repeat", False):
+                    inp.teacher_toggle = True
+                elif event.key == pygame.K_h and not getattr(event, "repeat", False):
+                    inp.boxes_toggle = True
+                elif event.key == pygame.K_F11 and not getattr(event, "repeat", False):
+                    self.toggle_fullscreen()
+                    inp.fullscreen_toggle = True
                 elif event.key == pygame.K_u and not getattr(event, "repeat", False):
                     inp.record_toggle = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
@@ -308,6 +346,8 @@ class TrainMonitor:
                     inp.steer_toggle = True
                 elif self.record_rect.collidepoint(event.pos):
                     inp.record_toggle = True
+                elif self.teacher_rect.collidepoint(event.pos):
+                    inp.teacher_toggle = True
                 elif self.show_stand and self.stand_up_rect.collidepoint(event.pos):
                     inp.stand_up = True
                 elif self.show_stand and self.stand_down_rect.collidepoint(event.pos):
@@ -343,6 +383,7 @@ class TrainMonitor:
         sm = self.font_sm
 
         screen.blit(font.render(view.title, True, (236, 236, 240)), (16, 10))
+        self._teacher_button(screen, view)
         self._record_button(screen, view)
         tag = "обучение на паузе" if view.paused else "обучение"
         screen.blit(sm.render(f"t={view.t:6.1f} с    {tag}    {view.mode_label}", True, (180, 186, 198)), (16, 32))
@@ -352,6 +393,7 @@ class TrainMonitor:
         cam_inner = self._frame(screen, cam_rect, view.camera, "камера", view.sensor_error)
         if cam_inner is not None and view.learner == "mb":
             self._camera_overlap(screen, cam_inner, view)
+            self._draw_det_boxes(screen, cam_inner, view.teacher_boxes)
         elif cam_inner is not None:
             self._camera_halves(screen, cam_inner, view)
         lid_title = view.lidar_mode or "карта лидара"
@@ -472,6 +514,10 @@ class TrainMonitor:
         who_text = "ведёт: %s" % view.pilot_who
         if view.phase_ru:
             who_text = "%s  ·  %s" % (who_text, view.phase_ru)
+        if view.last_seen_side == "L":
+            who_text = "%s  ·  видели Л" % who_text
+        elif view.last_seen_side == "R":
+            who_text = "%s  ·  видели П" % who_text
         who = self.font.render(who_text, True, (186, 192, 204))
         screen.blit(who, (720, WIN_H - 114))
         if view.learner == "mb":
@@ -479,13 +525,62 @@ class TrainMonitor:
             self._pill(
                 screen,
                 self.steer_rect,
-                "БИЛАТЕРАЛЬНО Y" if bilateral else "СЕКТОРЫ Y",
+                "БИЛАТЕРАЛЬНО K" if bilateral else "СЕКТОРЫ K",
                 (36, 88, 132) if bilateral else (72, 68, 58),
                 self.steer_rect.collidepoint(mouse),
             )
         if view.pilot_hint:
             hint = self.font_sm.render(view.pilot_hint, True, (232, 176, 72))
             screen.blit(hint, (720, WIN_H - 94))
+        if view.teacher_counts and view.learner == "mb":
+            counts = self.font_sm.render(view.teacher_counts, True, (232, 214, 160))
+            screen.blit(counts, (16, WIN_H - 172))
+
+    def _teacher_button(self, screen, view: MonitorView) -> None:
+        if view.learner != "mb":
+            return
+        import pygame
+
+        state = view.yolo_state or "выкл (нет обучения)"
+        if state == "учит":
+            fill = (32, 118, 72)
+            label = "учит  Y"
+        elif state == "смотрит":
+            fill = (32, 96, 150)
+            label = "смотрит  Y"
+        elif state == "учитель не запущен":
+            fill = (128, 78, 32)
+            label = "учитель не запущен"
+        else:
+            fill = (58, 62, 72)
+            label = "выкл (нет обучения)"
+        mouse = pygame.mouse.get_pos()
+        hot = self.teacher_rect.collidepoint(mouse)
+        color = tuple(min(255, c + 28) for c in fill) if hot else fill
+        pygame.draw.rect(screen, color, self.teacher_rect, border_radius=6)
+        font = self.font_ind if state in ("учит", "смотрит") else self.font
+        text = font.render(label, True, (248, 248, 246))
+        if text.get_width() > self.teacher_rect.w - 12:
+            text = self.font.render(label, True, (248, 248, 246))
+        screen.blit(text, text.get_rect(center=self.teacher_rect.center))
+
+    def _draw_det_boxes(self, screen, inner, boxes) -> None:
+        """Screen-only YOLO frames. The camera array is not written."""
+        import pygame
+
+        if not boxes:
+            return
+        color = (255, 148, 40)
+        for box in boxes:
+            x0 = inner.x + int(round(float(box.x0) * inner.w))
+            x1 = inner.x + int(round(float(box.x1) * inner.w))
+            y0 = inner.y + int(round(float(box.y0) * inner.h))
+            y1 = inner.y + int(round(float(box.y1) * inner.h))
+            rect = pygame.Rect(min(x0, x1), min(y0, y1), max(1, abs(x1 - x0)), max(1, abs(y1 - y0)))
+            pygame.draw.rect(screen, color, rect, 2)
+            zone = getattr(box, "zone", "") or ""
+            tag = self.font_sm.render("%s  %.2f" % (zone, float(box.conf)), True, color)
+            screen.blit(tag, (rect.x + 2, max(inner.y, rect.y - 16)))
 
     def _stand_buttons(self, screen) -> None:
         import pygame
