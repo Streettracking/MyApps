@@ -108,6 +108,7 @@ class MonitorView:
     pilot_phase: str = "stop"
     pilot_who: str = "оператор"
     pilot_hint: str = ""
+    range_line: str = ""
     learning_on: bool = True
     autonomy_on: bool = False
     onboard: bool = False
@@ -415,6 +416,8 @@ class TrainMonitor:
         screen.blit(title, (720, WIN_H - 146))
         who = self.font.render(f"ведёт: {view.pilot_who}", True, (186, 192, 204))
         screen.blit(who, (720, WIN_H - 114))
+        if view.range_line:
+            screen.blit(self.font_sm.render(view.range_line, True, (186, 214, 196)), (720, 648))
         if view.pilot_hint:
             hint = self.font_sm.render(view.pilot_hint, True, (232, 176, 72))
             screen.blit(hint, (720, WIN_H - 94))

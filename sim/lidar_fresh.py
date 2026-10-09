@@ -280,6 +280,11 @@ class SimLidarBank:
 def _sample(agent, world) -> list[tuple[float, float, tuple[int, int, int]]]:
     yaw = float(agent.yaw)
     out: list[tuple[float, float, tuple[int, int, int]]] = []
+    # The robot's own body, about where the real cloud reports the legs.
+    ax, ay = float(agent.x), float(agent.y)
+    for index in range(N_AZ):
+        ang = yaw + _bin_angle(index)
+        out.append((ax + math.cos(ang) * 0.35, ay + math.sin(ang) * 0.35, (200, 64, 56)))
     for other in world.agents:
         if getattr(other, "agent_id", None) == agent.agent_id:
             continue

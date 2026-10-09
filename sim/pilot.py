@@ -1,9 +1,10 @@
 """Who may send Move: the mushroom body, the operator, or nobody.
 
-Autonomy searches by turning in place until the fly MB says «УЗНАЮ», then
-walks toward that camera sector and stops near one metre. Arrows do not
-steal autonomy. Only the takeover key does, and only the autonomy button
-gives it back. Every velocity is clamped.
+Autonomy searches by turning left in place until the fly MB says «УЗНАЮ»
+on enough frames, then walks toward the median of those sectors and stops
+near one metre. The raw sector is not smoothed inside the mushroom body.
+Arrows do not steal autonomy. Only the takeover key does, and only the
+autonomy button gives it back. Every velocity is clamped.
 """
 
 from __future__ import annotations
@@ -25,6 +26,18 @@ TEACH_PERIOD_S = 0.45
 SEARCH_TURN = 0.35
 SEARCH_TURN_S = 1.10
 SEARCH_PAUSE_S = 0.45
+# Points inside this radius are the robot's own body, legs, or mount.
+SELF_RADIUS_M = 0.6
+BODY_HALF_M = 0.22
+BODY_REAR_M = 0.30
+BODY_NOSE_M = 0.50
+# Approach only after this many recognized frames in the window, then keep
+# the bearing for COAST_S after the word drops. The mushroom body is not smoothed.
+HYST_WINDOW = 8
+HYST_NEED = 5
+SECTOR_MEMORY = 5
+COAST_S = 1.0
+SLOW_X = 0.20
 
 
 def clamp_velocity(x: float, z: float) -> tuple[float, float]:
@@ -41,11 +54,25 @@ def clamp_velocity(x: float, z: float) -> tuple[float, float]:
     return x, z
 
 
-def forward_clearance(feat: np.ndarray) -> float | None:
-    """Nearest return in the two sectors that face forward. None if neither has one."""
+def scrub_range(dist: float | None, self_radius: float = SELF_RADIUS_M) -> float | None:
+    """Drop a range that is still inside the body. None means no reliable return."""
+    if dist is None:
+        return None
+    value = float(dist)
+    if value < float(self_radius):
+        return None
+    return value
+
+
+def forward_clearance(feat: np.ndarray, self_radius: float = SELF_RADIUS_M) -> float | None:
+    """Forward return in the two sectors that face ahead, past the body.
+
+    The feature channel stores one near-value per sector, so a body hit
+    saturates it. Those ranges are discarded rather than treated as the target.
+    """
     found = []
     for index in (3, 4):
-        dist = feature_range(feat, index, width=1)
+        dist = scrub_range(feature_range(feat, index, width=1), self_radius)
         if dist is not None:
             found.append(dist)
     if not found:
@@ -53,11 +80,17 @@ def forward_clearance(feat: np.ndarray) -> float | None:
     return float(min(found))
 
 
-def ego_sector_ranges(points_xy: np.ndarray, origin_xy: np.ndarray, yaw: float) -> list[float | None]:
-    """Nearest return in each camera sector. Same bins as the lidar marks.
+def ego_sector_ranges(
+    points_xy: np.ndarray,
+    origin_xy: np.ndarray,
+    yaw: float,
+    self_radius: float = SELF_RADIUS_M,
+) -> list[float | None]:
+    """10th-percentile return in each camera sector, past the robot's body.
 
     ``points_xy`` and ``origin_xy`` are world metres, x right and y up, yaw
-    from the robot odometry. Empty sectors stay None.
+    from the robot odometry. Empty sectors stay None. The nearest point is
+    not used: a single return on the leg would look like a target at 0.35 m.
     """
     points = np.asarray(points_xy, dtype=np.float32).reshape(-1, 2)
     origin = np.asarray(origin_xy, dtype=np.float32).reshape(2)
@@ -68,27 +101,64 @@ def ego_sector_ranges(points_xy: np.ndarray, origin_xy: np.ndarray, yaw: float) 
     dist = np.linalg.norm(delta, axis=1)
     ang = np.arctan2(delta[:, 1], delta[:, 0]) - float(yaw)
     ang = (ang + np.pi) % (2.0 * np.pi) - np.pi
+    fwd = dist * np.cos(ang)
+    left = dist * np.sin(ang)
+    body = (np.abs(left) <= BODY_HALF_M) & (fwd >= -BODY_REAR_M) & (fwd <= BODY_NOSE_M)
+    keep = (~body) & (dist >= float(self_radius)) & (dist < 12.0) & np.isfinite(dist)
     half = float(FOV) / (2.0 * N_AZ)
     for index in range(N_AZ):
         center = bin_angle(index)
         delta_ang = (ang - center + np.pi) % (2.0 * np.pi) - np.pi
-        picked = (np.abs(delta_ang) <= half) & (dist > 0.35) & (dist < 12.0)
-        if np.any(picked):
-            ranges[index] = float(dist[picked].min())
+        picked = (np.abs(delta_ang) <= half) & keep
+        if not np.any(picked):
+            continue
+        ranges[index] = float(np.percentile(dist[picked], 10))
     return ranges
 
 
+def cloud_forward(ranges) -> float | None:
+    """Nearer forward sector. Each value is already a percentile past the body."""
+    if not ranges:
+        return None
+    found = []
+    for index in (3, 4):
+        if index < len(ranges) and ranges[index] is not None:
+            found.append(float(ranges[index]))
+    if not found:
+        return None
+    return float(min(found))
+
+
 def search_yaw(age: float) -> float:
-    """Slow sweep, then a pause so the camera frame can settle."""
-    half = SEARCH_TURN_S + SEARCH_PAUSE_S
-    u = float(age) % (2.0 * half)
+    """Slow turn to the left, then a pause so the camera frame can settle.
+
+    The sign does not flip. The old left-right sweep was this function, not
+    the mushroom body.
+    """
+    period = SEARCH_TURN_S + SEARCH_PAUSE_S
+    u = float(age) % period
     if u < SEARCH_TURN_S:
         return SEARCH_TURN
-    if u < half:
-        return 0.0
-    if u < half + SEARCH_TURN_S:
-        return -SEARCH_TURN
     return 0.0
+
+
+def half_sector() -> float:
+    """Half a camera sector. Inside this, the target counts as centred."""
+    return float(FOV) / (2.0 * float(N_AZ))
+
+
+def yaw_for_bearing(ang: float) -> float:
+    """Yaw rate from a bearing. Left is positive. A centred target is z = 0.
+
+    Sector 0 is the right edge of the 110° view (negative z). Sector 7 is
+    the left edge (positive z). Sectors 3 and 4 straddle straight ahead.
+    """
+    half = half_sector()
+    ang = float(ang)
+    if abs(ang) <= half + 1e-5:
+        return 0.0
+    excess = ang - float(np.copysign(half, ang))
+    return clamp_velocity(0.0, excess / 0.85)[1]
 
 
 def seek_velocity(
@@ -98,31 +168,117 @@ def seek_velocity(
     forward_m: float | None,
     search_age: float,
 ) -> tuple[float, float, str]:
-    """Return clamped (x, z, phase). x is m/s forward, z is rad/s, left positive."""
+    """Return clamped (x, z, phase). x is m/s forward, z is rad/s, left positive.
+
+    ``recognized`` and ``sector`` here are the controller's latched values,
+    not the raw mushroom-body frame. Ranges inside the body radius are dropped.
+    """
+    dist_m = scrub_range(dist_m)
+    forward_m = scrub_range(forward_m)
     if not recognized or sector is None:
         return 0.0, search_yaw(search_age), "search"
     ang = bin_angle(int(sector))
-    turn = ang / 0.55
-    if turn > 1.0:
-        turn = 1.0
-    elif turn < -1.0:
-        turn = -1.0
+    yaw = yaw_for_bearing(ang)
     close = dist_m is not None and dist_m <= STOP_M
-    blocked = dist_m is None and (forward_m is None or forward_m < SAFE_M)
+    blocked = forward_m is not None and forward_m < STOP_M
     if close or blocked:
-        # Stop the walk. A small yaw still recenters the dog. It does not close range.
-        yaw = turn * 0.35 if abs(ang) > 0.22 else 0.0
         return clamp_velocity(0.0, yaw) + ("hold",)
+    centred = abs(ang) <= half_sector() + 1e-5
     if dist_m is None:
-        forward = 0.15
-    elif dist_m > 1.6:
-        forward = 0.35
+        forward = SLOW_X
+    elif centred or abs(ang) <= 0.45:
+        forward = X_MAX
     else:
-        forward = 0.22
-    if abs(ang) > 0.45:
-        forward = 0.08 if forward > 0.08 else forward
-    x, z = clamp_velocity(forward, turn)
+        forward = SLOW_X
+    x, z = clamp_velocity(forward, yaw)
     return x, z, "approach"
+
+
+def format_range_line(dist, forward, sector, sector_smooth, hysteresis) -> str:
+    """One monitor line: filtered ranges, raw sector, smoothed sector."""
+
+    def metres(value) -> str:
+        if value is None:
+            return "—"
+        return "%.2f м" % float(value)
+
+    raw = "—" if sector is None else str(int(sector))
+    smooth = "—" if sector_smooth is None else str(int(sector_smooth))
+    gate = ""
+    if isinstance(hysteresis, dict) and hysteresis.get("window"):
+        gate = "  %s/%s" % (int(hysteresis.get("votes") or 0), int(hysteresis["window"]))
+        if hysteresis.get("coast"):
+            gate += " держу"
+        elif hysteresis.get("latched"):
+            gate += " подход"
+    return "дальн %s   вперёд %s   сектор %s→%s%s" % (metres(dist), metres(forward), raw, smooth, gate)
+
+
+class ApproachTrack:
+    """Smooth the brain's sector and the recognize bit. Does not teach.
+
+    ``sector`` on the status line stays the raw strongest window. ``sector_smooth``
+    is the median of the last few raw sectors. Approach starts after
+    ``HYST_NEED`` of the last ``HYST_WINDOW`` frames, and the last bearing is
+    kept for ``COAST_S`` after the word drops.
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.history: list[bool] = []
+        self.sectors: list[int] = []
+        self.votes = 0
+        self.latched = False
+        self.coast = False
+        self._smooth: int | None = None
+        self._coast_until = -1e9
+        self.raw_recognized = False
+        self.raw_sector: int | None = None
+
+    def update(self, now: float, recognized: bool, sector: int | None) -> None:
+        now = float(now)
+        seen = bool(recognized) and sector is not None
+        self.raw_recognized = seen
+        self.raw_sector = int(sector) % N_AZ if seen else None
+        self.history.append(seen)
+        if len(self.history) > HYST_WINDOW:
+            self.history.pop(0)
+        self.votes = int(sum(1 for item in self.history if item))
+        if seen:
+            assert sector is not None
+            self.sectors.append(int(sector) % N_AZ)
+            if len(self.sectors) > SECTOR_MEMORY:
+                self.sectors.pop(0)
+            self._smooth = int(np.round(float(np.median(np.asarray(self.sectors, dtype=np.float64)))))
+            if self.votes >= HYST_NEED:
+                self.latched = True
+            if self.latched:
+                self._coast_until = now + COAST_S
+        if self.latched and not seen:
+            if now <= self._coast_until:
+                self.coast = True
+            else:
+                self.latched = False
+                self.coast = False
+                self.sectors.clear()
+                self._smooth = None
+        else:
+            self.coast = False
+
+    @property
+    def sector_smooth(self) -> int | None:
+        return self._smooth
+
+    def as_dict(self) -> dict:
+        return {
+            "votes": int(self.votes),
+            "need": HYST_NEED,
+            "window": HYST_WINDOW,
+            "latched": bool(self.latched),
+            "coast": bool(self.coast),
+        }
 
 
 @dataclass
@@ -138,14 +294,16 @@ class DriveCommand:
 class Pilot:
     """Autonomy, manual takeover, and stop. Default is manual, autonomy off."""
 
-    def __init__(self, return_auto_s: float = 0.0):
+    def __init__(self, return_auto_s: float = 0.0, self_radius: float = SELF_RADIUS_M):
         self.mode = "manual"  # manual | auto | estop
         self.took_over = False
         self.held_stop = False
         self.return_auto_s = float(return_auto_s)
+        self.self_radius = float(self_radius)
         self.phase = "stop"
         self.who = "оператор"
         self.hint = ""
+        self.track = ApproachTrack()
         self._search_from = 0.0
         self._idle_from: float | None = None
 
@@ -194,6 +352,7 @@ class Pilot:
         self.held_stop = False
         self._search_from = float(now)
         self._idle_from = None
+        self.track.reset()
         self.who = "мозг"
         self.hint = ""
         return True
@@ -241,9 +400,14 @@ class Pilot:
                 self.phase = "stop"
                 self.who = "мозг"
                 return DriveCommand(0.0, 0.0, True, "stop", self.who, self.hint)
+            dist_m = scrub_range(dist_m, self.self_radius)
+            forward_m = scrub_range(forward_m, self.self_radius)
+            raw_sector = None if sector is None else int(sector) % N_AZ
+            self.track.update(float(now), bool(recognized), raw_sector)
+            use_sector = self.track.sector_smooth if self.track.latched else None
             x, z, phase = seek_velocity(
-                recognized,
-                sector if sector is None else int(sector) % N_AZ,
+                self.track.latched,
+                use_sector,
                 dist_m,
                 forward_m,
                 float(now) - self._search_from,

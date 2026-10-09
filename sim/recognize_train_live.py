@@ -31,7 +31,7 @@ from .lidar_fresh import DEFAULT_LIDAR_REFRESH, FreshWindow, mismatch_warning
 from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
 from .onboard_link import OnboardLink
-from .pilot import Pilot, TeachRepeater, clamp_velocity, forward_clearance
+from .pilot import Pilot, TeachRepeater, clamp_velocity, format_range_line, forward_clearance, scrub_range
 from .recognize import ConspecificRecognizer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -309,10 +309,11 @@ class LiveSession:
 
     def _note_aim(self, feat: np.ndarray, recognized: bool) -> None:
         self.recognized_now = bool(recognized)
-        self.forward_m = forward_clearance(feat)
+        radius = self.pilot.self_radius
+        self.forward_m = forward_clearance(feat, radius)
         if recognized:
             self.aim_sector = self.marks.aim_sector
-            self.aim_dist = self.marks.aim_dist
+            self.aim_dist = scrub_range(self.marks.aim_dist, radius)
         else:
             self.aim_sector = None
             self.aim_dist = None
@@ -824,6 +825,25 @@ def _scaled(session: LiveSession, rows: list[tuple[float, float]]) -> list[tuple
     return [(t, (v - lo) / span) for t, v in rows[-400:]]
 
 
+def _range_line(session: LiveSession, onboard: OnboardLink | None) -> str:
+    if onboard is not None:
+        remote = onboard.status or {}
+        return format_range_line(
+            remote.get("distance_m"),
+            remote.get("forward_m"),
+            remote.get("sector"),
+            remote.get("sector_smooth"),
+            remote.get("hysteresis"),
+        )
+    return format_range_line(
+        session.aim_dist,
+        session.forward_m,
+        session.aim_sector,
+        session.pilot.track.sector_smooth,
+        session.pilot.track.as_dict(),
+    )
+
+
 def _live_view(
     session: LiveSession,
     camera,
@@ -871,6 +891,7 @@ def _live_view(
         lidar_fresh_on=session.lidar_fresh_on,
         learn_flash=session.remote_flash if session.onboard else (None if session.mb is None else session.mb.flash),
         mb_layout=session.layout if session.onboard else (None if session.mb is None else session.mb.layout),
+        range_line=_range_line(session, onboard),
     )
     if session.mb is not None:
         caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"

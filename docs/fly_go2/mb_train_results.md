@@ -48,7 +48,7 @@ The short window separated dog-in-view from no-dog more on every seed. The accum
 
 ## Seek after a scripted teacher
 
-Same arena and the same PAM teacher as the fresh-lidar walk: 25 s, seeds 1–3, learning on, scripted steer. Then learning off and autonomy on for 20 s (`dt = 0.1`). The policy is the fly readout only. «УЗНАЮ» uses the confidence latch (quiet vs busy frames, z on at 0.80). While the word is off the dog yaws in place (`x = 0`, `z = ±0.35` with pauses). While it is on, it walks toward the same sector the lidar mark uses and holds near 1 m. A hold counts only when the phase is `hold`, the word is on, and the true distance to the nearest peer is inside 0.7–1.3 m. Touches more than 1 s apart are separate events.
+Same arena and the same PAM teacher as the fresh-lidar walk: 25 s, seeds 1–3, learning on, scripted steer. Then learning off and autonomy on for 20 s (`dt = 0.1`). The policy is the fly readout only. «УЗНАЮ» uses the confidence latch (quiet vs busy frames, z on at 0.80). These rows used the earlier controller: yaw flipped sign (`z = ±0.35`) and range was the nearest lidar return, including the body. The current controller turns only left, ignores returns inside 0.6 m, and smooths the sector outside the mushroom body. While the word is off the dog yaws in place. While it is on, it walks toward the same sector the lidar mark uses and holds near 1 m. A hold counts only when the phase is `hold`, the word is on, and the true distance to the nearest peer is inside 0.7–1.3 m. Touches more than 1 s apart are separate events.
 
 | seed | PAM | seek frames with the word | approach frames | of them aimed at a dog | of them aimed at a distractor | holds at 1±0.3 m |
 |---|---:|---:|---:|---:|---:|---:|

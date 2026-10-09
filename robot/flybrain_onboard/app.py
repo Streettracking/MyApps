@@ -27,7 +27,7 @@ from sim.learn_flash import flash_payload
 from sim.map_marks import MarkLayer
 from sim.mb_train import MbTrainer, default_npz
 from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot
-from sim.pilot import forward_clearance
+from sim.pilot import forward_clearance, scrub_range
 
 try:
     from .drive import SportDrive
@@ -38,11 +38,12 @@ except ImportError:  # python3 /root/flybrain/main.py has no package parent
 
 
 class BrainLoop:
-    def __init__(self, drive: SportDrive, mb: MbTrainer, state_path: str):
+    def __init__(self, drive: SportDrive, mb: MbTrainer, state_path: str, self_radius: float = 0.6):
         self.drive = drive
         self.mb = mb
         self.state_path = state_path
-        self.pilot = Pilot()
+        self.self_radius = float(self_radius)
+        self.pilot = Pilot(self_radius=self.self_radius)
         self.learn = False
         self.mb.learn = False
         self.marks = MarkLayer()
@@ -133,7 +134,8 @@ class BrainLoop:
         with self._lock:
             if op == "autonomy_on":
                 if self.pilot.start_auto(now):
-                    self._log("автономия: поиск, пока мозг не скажет «узнаю»")
+                    self._log("автономия: поиск в одну сторону, z=+0.35, без качки")
+                    self._log("сырой сектор — мозг; sector_smooth — медиана контроллера")
                 else:
                     self._log("E-STOP держит стоп. M переводит в ручное")
             elif op == "autonomy_off":
@@ -202,7 +204,9 @@ class BrainLoop:
         else:
             if seen:
                 dist = self.marks.aim_dist
-            forward = forward_clearance(feat)
+            forward = forward_clearance(feat, self.self_radius)
+        dist = scrub_range(dist, self.self_radius)
+        forward = scrub_range(forward, self.self_radius)
         kind = self._teach
         self._teach = None
         if kind and not self.learn:
@@ -334,6 +338,8 @@ class BrainLoop:
                 "confidence_ready": self.confidence_ready,
                 "readout": self.readout,
                 "sector": self.sector,
+                "sector_smooth": self.pilot.track.sector_smooth,
+                "hysteresis": self.pilot.track.as_dict(),
                 "distance_m": self.dist_m,
                 "forward_m": self.forward_m,
                 "x": self.drive.moves[-1][0] if self._moving and self.drive.moves else 0.0,
@@ -351,10 +357,10 @@ class BrainLoop:
             }
 
 
-def make_brain(drive: SportDrive, state_path: str, npz_path: str | None = None) -> BrainLoop:
+def make_brain(drive: SportDrive, state_path: str, npz_path: str | None = None, self_radius: float = 0.6) -> BrainLoop:
     mb = MbTrainer(npz_path or default_npz(), seed=1, eta=0.2, dan="teacher")
     mb.learn = False
-    loop = BrainLoop(drive, mb, state_path)
+    loop = BrainLoop(drive, mb, state_path, self_radius=self_radius)
     from pathlib import Path
 
     path = Path(state_path)

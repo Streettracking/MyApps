@@ -15,7 +15,7 @@ from io import BytesIO
 import numpy as np
 
 from sim.lidar_fresh import FreshWindow
-from sim.pilot import ego_sector_ranges
+from sim.pilot import cloud_forward, ego_sector_ranges
 
 
 def jpeg_complete(data: bytes) -> bool:
@@ -170,10 +170,11 @@ class CloudRanges:
     the JPEG ranges stay in charge.
     """
 
-    def __init__(self):
+    def __init__(self, self_radius: float = 0.6):
         self.ranges = None
         self.stamp = 0.0
         self.ok = False
+        self.self_radius = float(self_radius)
         self._stop = False
         self._lock = threading.Lock()
 
@@ -214,7 +215,7 @@ class CloudRanges:
             for sample in clouds.take(2):
                 if sample is None:
                     continue
-                ranges = _ranges_of(sample, pose)
+                ranges = _ranges_of(sample, pose, self.self_radius)
                 if ranges is None:
                     continue
                 with self._lock:
@@ -231,7 +232,7 @@ def _yaw_of(orientation) -> float:
     return float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
 
 
-def _ranges_of(sample, pose):
+def _ranges_of(sample, pose, self_radius: float = 0.6):
     try:
         raw = np.ascontiguousarray(np.asarray(sample.data, dtype=np.uint8))
         step = int(sample.point_step) or 16
@@ -245,15 +246,8 @@ def _ranges_of(sample, pose):
             return None
         origin = np.array([float(pose.pose.pose.position.x), float(pose.pose.pose.position.y)], dtype=np.float32)
         yaw = _yaw_of(pose.pose.pose.orientation)
-        return ego_sector_ranges(points[:, :2], origin, yaw)
+        return ego_sector_ranges(points[:, :2], origin, yaw, self_radius=self_radius)
     except Exception:
         return None
 
 
-def cloud_forward(ranges) -> float | None:
-    if not ranges:
-        return None
-    found = [ranges[i] for i in (3, 4) if i < len(ranges) and ranges[i] is not None]
-    if not found:
-        return None
-    return float(min(found))

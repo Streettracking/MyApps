@@ -6,8 +6,9 @@
     GO2_SSH_PASS=... python robot/deploy_flybrain.py stop
     GO2_SSH_PASS=... python robot/deploy_flybrain.py status
 
-``start`` with no ``--state`` leaves a clean brain. The connectome copied
-to the dog is ``connectome_mb_v1_np1.npz`` (no pickled object arrays).
+``start`` keeps the state file already on the dog. ``--clean`` deletes it.
+``--state PATH`` replaces it. The connectome copied to the dog is
+``connectome_mb_v1_np1.npz`` (no pickled object arrays).
 
 The password is only ``GO2_SSH_PASS``. This script does not install
 packages, does not write a systemd unit, and does not touch the preview
@@ -240,6 +241,18 @@ def _status_cmd(root: str = REMOTE) -> str:
     ) % (pidfile, main, main, log)
 
 
+def state_plan(state_path: str, clean: bool) -> str:
+    """What ``start`` does with ``/root/flybrain/state/mb_train_state.npz``.
+
+    ``upload`` replaces it, ``wipe`` deletes it, ``keep`` leaves it alone.
+    """
+    if state_path:
+        return "upload"
+    if clean:
+        return "wipe"
+    return "keep"
+
+
 def main(argv=None) -> int:
     import argparse
 
@@ -248,7 +261,12 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--state",
         default="",
-        help="mb_train_state.npz to copy onto the dog. Omit this for a clean brain.",
+        help="Replace the dog's mb_train_state.npz with this file. Omit to keep the file already there.",
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Delete the dog's mb_train_state.npz. Without this, start keeps it.",
     )
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     action = args.action
@@ -274,11 +292,14 @@ def main(argv=None) -> int:
                 _upload(sftp, state_path)
             finally:
                 sftp.close()
-            if state_path:
+            plan = state_plan(state_path, bool(args.clean))
+            if plan == "upload":
                 print("state %s" % state_path)
-            else:
+            elif plan == "wipe":
                 print(_run(client, "rm -f /root/flybrain/state/mb_train_state.npz"))
-                print("clean brain: no --state file copied")
+                print("clean brain: --clean removed the state on the dog")
+            else:
+                print("keep state: /root/flybrain/state/mb_train_state.npz")
             print(_run(client, "rm -f /root/flybrain/artifacts/connectome_mb_v1.npz"))
             print(_run(client, _start_cmd(), timeout=8.0))
         elif action == "stop":

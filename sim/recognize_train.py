@@ -18,7 +18,15 @@ import numpy as np
 from .frame_sense import sim_previews
 from .lidar_fresh import DEFAULT_LIDAR_REFRESH, SimLidarBank, mismatch_warning
 from .map_marks import MarkLayer
-from .pilot import Pilot, TeachRepeater, forward_clearance
+from .pilot import (
+    Pilot,
+    TeachRepeater,
+    cloud_forward,
+    ego_sector_ranges,
+    format_range_line,
+    forward_clearance,
+    scrub_range,
+)
 from .mb_train import MbTrainer, default_npz
 from .raw_sense import N_AZ, OFF_LIDAR, render_view
 from .recognize import ConspecificRecognizer
@@ -157,12 +165,29 @@ class RecognizeTrainSim:
             peer.yaw = _wrap(peer.yaw + float(self.rng.normal(0.0, 0.18)))
             self._move_body(peer, 1.0, 0.0)
 
+    def _sector_ranges(self):
+        xy = self.lidar_bank.held_xy
+        if not xy:
+            return None
+        pts = np.asarray(xy, dtype=np.float32)
+        if pts.ndim != 2 or len(pts) == 0:
+            return None
+        origin = np.array([float(self.learner.x), float(self.learner.y)], dtype=np.float32)
+        return ego_sector_ranges(pts, origin, float(self.learner.yaw), self_radius=self.pilot.self_radius)
+
     def _note_aim(self, feat: np.ndarray, recognized: bool) -> None:
         self.recognized_now = bool(recognized)
-        self.forward_m = forward_clearance(feat)
+        ranges = self._sector_ranges()
+        if ranges is not None:
+            self.forward_m = cloud_forward(ranges)
+        else:
+            self.forward_m = forward_clearance(feat, self.pilot.self_radius)
         if recognized:
             self.aim_sector = self.marks.aim_sector
-            self.aim_dist = self.marks.aim_dist
+            if ranges is not None and self.aim_sector is not None:
+                self.aim_dist = ranges[int(self.aim_sector) % 8]
+            else:
+                self.aim_dist = scrub_range(self.marks.aim_dist, self.pilot.self_radius)
         else:
             self.aim_sector = None
             self.aim_dist = None
@@ -394,6 +419,13 @@ class RecognizeTrainSim:
                 pilot_hint=self.pilot.hint,
                 learning_on=self.learn,
                 autonomy_on=self.pilot.autonomy,
+                range_line=format_range_line(
+                    self.aim_dist,
+                    self.forward_m,
+                    self.aim_sector,
+                    self.pilot.track.sector_smooth,
+                    self.pilot.track.as_dict(),
+                ),
             )
         assert self.recognizer is not None
         return MonitorView(
