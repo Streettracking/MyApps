@@ -20,6 +20,7 @@ from pathlib import Path
 import sim.frame_record  # noqa: F401
 import sim.frame_sense  # noqa: F401
 import sim.hemifield  # noqa: F401
+from sim.raw_sense import add_recog_camera_only_arg
 import sim.yolo_teacher  # noqa: F401
 import sim.learn_flash  # noqa: F401
 import sim.npz_compat  # noqa: F401
@@ -73,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--return-auto", type=float, default=0.0)
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
     p.add_argument("--overlap", type=float, default=sim.hemifield.DEFAULT_OVERLAP, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
+    add_recog_camera_only_arg(p)
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max frames per second while «ЗАПИСЬ КАДРОВ» is on.")
     p.add_argument("--fullscreen", action="store_true", help="Open fullscreen. F11 toggles it.")
     p.add_argument("--teacher-url", default="http://127.0.0.1:8091")
@@ -122,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         forwarded.extend(["--rec-fps", str(args.rec_fps)])
         if args.fullscreen:
             forwarded.append("--fullscreen")
+        forwarded.append("--recog-camera-only" if args.recog_camera_only else "--no-recog-camera-only")
         forwarded.extend(["--teacher-url", args.teacher_url, "--teacher-conf", str(args.teacher_conf), "--teacher-rate", str(args.teacher_rate)])
         return recognize_train.main(forwarded)
     forwarded = [
@@ -161,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     forwarded.extend(["--rec-fps", str(args.rec_fps)])
     if args.fullscreen:
         forwarded.append("--fullscreen")
+    forwarded.append("--recog-camera-only" if args.recog_camera_only else "--no-recog-camera-only")
     forwarded.extend(["--teacher-url", args.teacher_url, "--teacher-conf", str(args.teacher_conf), "--teacher-rate", str(args.teacher_rate)])
     if args.onboard:
         forwarded.extend(["--onboard", args.onboard, "--onboard-port", str(args.onboard_port)])

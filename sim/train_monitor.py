@@ -142,6 +142,7 @@ class MonitorView:
     eye_r_ready: bool = False
     phase_ru: str = ""
     eyes_line: str = ""
+    recog_line: str = ""
 
 
 def eye_tone(ready: bool, recognized: bool, percent: float) -> str:
@@ -427,7 +428,7 @@ class TrainMonitor:
                 screen,
                 font,
                 sm,
-                pygame.Rect(rx, 88, WIN_W - rx - 16, 512),
+                pygame.Rect(rx, 108, WIN_W - rx - 16, 492),
                 view.mb_layout,
                 view.learn_flash,
                 view.t,
@@ -761,17 +762,28 @@ class TrainMonitor:
             fill, ink = (96, 74, 24), (255, 236, 190)
         else:
             fill, ink = (42, 46, 54), (214, 218, 224)
-        bar = pygame.Rect(rx, 46, col_w, 38)
+        height = 56 if view.eyes_line and view.recog_line else 38
+        bar = pygame.Rect(rx, 46, col_w, height)
         pygame.draw.rect(screen, fill, bar, border_radius=6)
-        label = self.font_ind.render(view.eyes_line, True, ink)
-        if label.get_width() > bar.w - 16:
-            label = self.font.render(view.eyes_line, True, ink)
-        screen.blit(label, label.get_rect(center=bar.center))
+        if view.eyes_line:
+            label = self.font_ind.render(view.eyes_line, True, ink)
+            if label.get_width() > bar.w - 16:
+                label = self.font.render(view.eyes_line, True, ink)
+            if view.recog_line:
+                screen.blit(label, label.get_rect(center=(bar.centerx, bar.y + 18)))
+            else:
+                screen.blit(label, label.get_rect(center=bar.center))
+        if view.recog_line:
+            sub = self.font.render(view.recog_line, True, (214, 240, 255))
+            if view.eyes_line:
+                screen.blit(sub, sub.get_rect(center=(bar.centerx, bar.bottom - 14)))
+            else:
+                screen.blit(sub, sub.get_rect(center=bar.center))
 
     def _draw_mb_head(self, screen, view: MonitorView, rx: int) -> None:
         sm = self.font_sm
         col_w = WIN_W - rx - 16
-        if view.eyes_line:
+        if view.eyes_line or view.recog_line:
             self._eyes_banner(screen, view, rx, col_w)
             return
         if view.recognized:
@@ -793,8 +805,9 @@ class TrainMonitor:
         col_w = WIN_W - rx - 16
         self._draw_mb_head(screen, view, rx)
         raw = f"сырой MBON {view.likeness:+.0f}    {view.readout_caption}"
-        screen.blit(sm.render(raw[:88], True, (150, 156, 168)), (rx, 90))
-        self._progress_box(screen, view, pygame.Rect(rx, 110, col_w, 74))
+        head = 108 if (view.eyes_line or view.recog_line) else 90
+        screen.blit(sm.render(raw[:88], True, (150, 156, 168)), (rx, head))
+        self._progress_box(screen, view, pygame.Rect(rx, head + 20, col_w, 58))
 
         plot_w = (col_w - 8) // 2
         _plot(screen, pygame.Rect(rx, 192, plot_w, 96), view.peer_curve, 0.0, 1.0, (80, 200, 120), sm, "собака в кадре")

@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from .frame_sense import decode_image_bytes, features_from_frames
+from .raw_sense import add_recog_camera_only_arg, recog_label
 from .go2_udp import Go2CommandLink
 from .learn_flash import flash_from_payload
 from .lidar_fresh import DEFAULT_LIDAR_REFRESH, FreshWindow, mismatch_warning
@@ -223,6 +224,7 @@ class LiveSession:
         onboard: bool = False,
         steer: str = "bilateral",
         overlap: float = DEFAULT_OVERLAP,
+        camera_only: bool = True,
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -262,6 +264,7 @@ class LiveSession:
         self.pilot = Pilot(return_auto_s)
         self.pilot.set_steer(steer if steer in ("bilateral", "sectors") else "bilateral")
         self.overlap = float(overlap)
+        self.camera_only = bool(camera_only)
         self.teach_pulse = TeachRepeater()
         self.aim_sector: int | None = None
         self.aim_dist: float | None = None
@@ -292,8 +295,16 @@ class LiveSession:
             self._log("автономия и обучение на борту выключены, пока не нажаты A и P")
             return
         if learner == "mb":
-            self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan, overlap=overlap)
+            self.mb = MbTrainer(
+                npz or default_npz(),
+                seed=seed,
+                eta=eta,
+                dan=dan,
+                overlap=overlap,
+                camera_only=self.camera_only,
+            )
             self._log("грибовидное тело  T учит  A включает поиск сородича")
+            self._log(recog_label(self.camera_only))
             self._log(self._lidar_intro())
         else:
             self.recognizer = ConspecificRecognizer()
@@ -1042,6 +1053,13 @@ def _scaled(session: LiveSession, rows: list[tuple[float, float]]) -> list[tuple
     return [(t, (v - lo) / span) for t, v in rows[-400:]]
 
 
+def _recog_line(session: LiveSession, remote: dict) -> str:
+    """What the onboard brain actually feeds PN. Missing key means an old build."""
+    if "recog_camera_only" not in remote:
+        return "узнавание: борт без опции"
+    return recog_label(bool(remote.get("recog_camera_only")))
+
+
 def _fly_line(session: LiveSession, onboard: OnboardLink | None) -> str:
     if onboard is not None:
         remote = onboard.status or {}
@@ -1178,6 +1196,7 @@ def _live_view(
             eye_l_ready=bool(conf_l.ready),
             eye_r_ready=bool(conf_r.ready),
             phase_ru=phase_label(session.pilot.phase, session.pilot.steer, session.pilot.search_sign),
+            recog_line=recog_label(bool(getattr(session, "camera_only", True))),
             eyes_line=format_eyes_line(
                 session.pilot.track.r_l,
                 session.pilot.track.r_r,
@@ -1225,6 +1244,7 @@ def _live_view(
             eye_l_ready=bool(session.eye_l_ready),
             eye_r_ready=bool(session.eye_r_ready),
             phase_ru=session.phase_ru or phase_label(session.pilot.phase, session.pilot.steer, session.pilot.search_sign),
+            recog_line=_recog_line(session, remote),
             eyes_line=format_eyes_line(
                 remote.get("r_l") if "r_l" in remote else None,
                 remote.get("r_r") if "r_r" in remote else None,
@@ -1328,6 +1348,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--return-auto", type=float, default=0.0, help="Seconds of idle takeover before autonomy returns. 0 stays manual.")
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
     p.add_argument("--overlap", type=float, default=DEFAULT_OVERLAP, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
+    add_recog_camera_only_arg(p)
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera.jpg frames per second saved on this laptop.")
     p.add_argument("--fullscreen", action="store_true", help="Open the trainer fullscreen. F11 toggles it.")
     p.add_argument("--teacher-url", default="http://127.0.0.1:8091", help="YOLO service on this laptop.")
@@ -1361,6 +1382,7 @@ def main(argv: list[str] | None = None) -> int:
         onboard=bool(args.onboard),
         steer=args.steer,
         overlap=args.overlap,
+        camera_only=bool(args.recog_camera_only),
     )
     session.rec_fps = float(args.rec_fps)
     session.start_fullscreen = bool(args.fullscreen)

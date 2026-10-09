@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield
+from .raw_sense import drop_lidar
 from .learn_flash import LearnFlash, MbLayout, build_layout, record_teacher_step
 from .mb_confidence import Confidence, ConfidenceCalibrator, TrainProgress
 from .mb_runtime import MBForward, MushroomBodyRuntime
@@ -46,7 +47,15 @@ def bin_kc(kc: np.ndarray, n: int = 48) -> np.ndarray:
 
 
 class MbTrainer:
-    def __init__(self, npz: Path, seed: int = 1, eta: float = 0.2, dan: str = "teacher", overlap: float = DEFAULT_OVERLAP):
+    def __init__(
+        self,
+        npz: Path,
+        seed: int = 1,
+        eta: float = 0.2,
+        dan: str = "teacher",
+        overlap: float = DEFAULT_OVERLAP,
+        camera_only: bool = True,
+    ):
         if dan not in ("teacher", "familiarity"):
             raise ValueError(dan)
         self.dan = dan
@@ -67,6 +76,8 @@ class MbTrainer:
         self.r_l = 0.0
         self.r_r = 0.0
         self.overlap = clamp_overlap(overlap)
+        # Set before probe(): the canonical views must use the same input as training.
+        self.camera_only = bool(camera_only)
         self.probe_init = self.probe()
         self.n_pam = 0
         self.n_ppl1 = 0
@@ -106,8 +117,16 @@ class MbTrainer:
     def _half(self, feat: np.ndarray, side: str) -> np.ndarray:
         return hemifield(feat, side, self.overlap)
 
+    def _sense(self, feat: np.ndarray) -> np.ndarray:
+        """Input to both hemispheres. Lidar slots are cleared when camera-only."""
+        raw = np.asarray(feat, dtype=np.float32).ravel()
+        if not self.camera_only:
+            return raw
+        return drop_lidar(raw)
+
     def forward(self, feat: np.ndarray) -> MBForward:
         """Both halves. The stored readout is their sum, which is what the joint «УЗНАЮ» uses."""
+        feat = self._sense(feat)
         fwd_l, self.r_l = self._drive(self.brain, self._half(feat, "L"))
         fwd_r, self.r_r = self._drive(self.brain_r, self._half(feat, "R"))
         if fwd_l is None:
@@ -144,6 +163,7 @@ class MbTrainer:
 
         A sector window is split the same way as a full frame. The mark uses the sum.
         """
+        feat = self._sense(feat)
         _fwd_l, left = self._drive(self.brain, self._half(feat, "L"))
         _fwd_r, right = self._drive(self.brain_r, self._half(feat, "R"))
         return float(left + right)
@@ -232,7 +252,7 @@ class MbTrainer:
         The per-eye windows are not written into ``mb_train_state.npz``. An old
         file still loads, and a new file has the same arrays as before.
         """
-        raw = np.asarray(feat, dtype=np.float32)
+        raw = self._sense(feat)
         energy = float(np.mean(np.abs(raw)))
         self.conf = self.cal.update(readout, energy)
         left = self._half(raw, "L")

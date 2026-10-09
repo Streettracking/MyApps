@@ -22,6 +22,7 @@ for candidate in (HERE, HERE.parent.parent, HERE.parent):
         break
 
 from sim.hemifield import DEFAULT_OVERLAP  # noqa: E402
+from sim.raw_sense import add_recog_camera_only_arg  # noqa: E402
 
 
 def _pid_path(explicit: str) -> Path | None:
@@ -57,6 +58,7 @@ def main(argv=None) -> int:
         default=DEFAULT_OVERLAP,
         help="Shared fraction of the field, 0..0.5. 0 is the old hard midline. Default 0.4.",
     )
+    add_recog_camera_only_arg(parser)
     args = parser.parse_args(argv)
     stop = {"stop": False}
 
@@ -85,7 +87,14 @@ def main(argv=None) -> int:
         client.SetTimeout(3.0)
         client.Init()
     drive = SportDrive(client)
-    brain = make_brain(drive, state, args.npz or None, self_radius=args.self_radius, overlap=args.overlap)
+    brain = make_brain(
+        drive,
+        state,
+        args.npz or None,
+        self_radius=args.self_radius,
+        overlap=args.overlap,
+        camera_only=bool(args.recog_camera_only),
+    )
     brain.pilot.set_steer(args.steer)
     eyes = JpegEyes(args.preview, interval=args.lidar_refresh)
     eyes.start()

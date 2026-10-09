@@ -31,7 +31,7 @@ from .pilot import (
     scrub_range,
 )
 from .mb_train import MbTrainer, default_npz
-from .raw_sense import N_AZ, OFF_LIDAR, render_view
+from .raw_sense import N_AZ, OFF_LIDAR, add_recog_camera_only_arg, recog_label, render_view
 from .recognize import ConspecificRecognizer
 from .world import AgentState, ArenaConfig, ArenaWorld, default_agents
 
@@ -60,6 +60,7 @@ class RecognizeTrainSim:
         return_auto_s: float = 0.0,
         steer: str = "bilateral",
         overlap: float = DEFAULT_OVERLAP,
+        camera_only: bool = True,
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -104,6 +105,7 @@ class RecognizeTrainSim:
         self.pilot = Pilot(return_auto_s)
         self.pilot.set_steer(steer if steer in ("bilateral", "sectors") else "bilateral")
         self.overlap = float(overlap)
+        self.camera_only = bool(camera_only)
         self.teach_pulse = TeachRepeater()
         self.aim_sector: int | None = None
         self.aim_dist: float | None = None
@@ -114,8 +116,16 @@ class RecognizeTrainSim:
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
         if learner == "mb":
-            self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan, overlap=overlap)
+            self.mb = MbTrainer(
+                npz or default_npz(),
+                seed=seed,
+                eta=eta,
+                dan=dan,
+                overlap=overlap,
+                camera_only=self.camera_only,
+            )
             self._log("грибовидное тело  учитель — клавиша T  учатся только KC→MBON")
+            self._log(recog_label(self.camera_only))
             self._log(self._lidar_intro())
         else:
             self.recognizer = ConspecificRecognizer()
@@ -455,6 +465,7 @@ class RecognizeTrainSim:
                 eye_l_ready=bool(conf_l.ready),
                 eye_r_ready=bool(conf_r.ready),
                 phase_ru=phase_label(self.pilot.phase, self.pilot.steer, self.pilot.search_sign),
+                recog_line=recog_label(self.camera_only),
                 eyes_line=format_eyes_line(
                     self.pilot.track.r_l,
                     self.pilot.track.r_r,
@@ -1208,6 +1219,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--return-auto", type=float, default=0.0, help="Idle seconds after takeover before autonomy returns. 0 stays manual.")
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral", help="bilateral: yaw from R_L - R_R. sectors: the smoothed camera sector.")
     p.add_argument("--overlap", type=float, default=DEFAULT_OVERLAP, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
+    add_recog_camera_only_arg(p)
     p.add_argument("--seek", action="store_true", help="Headless teacher then autonomy. Prints find/stop counts.")
     p.add_argument("--compare-steer", action="store_true", help="Train once, then seek with sectors and with bilateral.")
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera frames per second written while recording.")
@@ -1244,6 +1256,7 @@ def main(argv: list[str] | None = None) -> int:
         return_auto_s=args.return_auto,
         steer=args.steer,
         overlap=args.overlap,
+        camera_only=bool(args.recog_camera_only),
     )
     session.rec_fps = float(args.rec_fps)
     session.start_fullscreen = bool(args.fullscreen)
