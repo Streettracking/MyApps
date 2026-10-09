@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .hemifield import hemifield
+from .hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield
 from .learn_flash import LearnFlash, MbLayout, build_layout, record_teacher_step
 from .mb_confidence import Confidence, ConfidenceCalibrator, TrainProgress
 from .mb_runtime import MBForward, MushroomBodyRuntime
@@ -46,7 +46,7 @@ def bin_kc(kc: np.ndarray, n: int = 48) -> np.ndarray:
 
 
 class MbTrainer:
-    def __init__(self, npz: Path, seed: int = 1, eta: float = 0.2, dan: str = "teacher"):
+    def __init__(self, npz: Path, seed: int = 1, eta: float = 0.2, dan: str = "teacher", overlap: float = DEFAULT_OVERLAP):
         if dan not in ("teacher", "familiarity"):
             raise ValueError(dan)
         self.dan = dan
@@ -66,13 +66,18 @@ class MbTrainer:
         self.last_fwd_r: MBForward | None = None
         self.r_l = 0.0
         self.r_r = 0.0
+        self.overlap = clamp_overlap(overlap)
         self.probe_init = self.probe()
         self.n_pam = 0
         self.n_ppl1 = 0
         self.n_novelty = 0
         self.cal = ConfidenceCalibrator()
+        self.cal_l = ConfidenceCalibrator()
+        self.cal_r = ConfidenceCalibrator()
         self.progress = TrainProgress()
         self.conf = Confidence()
+        self.conf_l = Confidence()
+        self.conf_r = Confidence()
         self.lidar_refresh = 0.0
         self.saved_lidar_refresh: float | None = None
         self.layout: MbLayout = build_layout(self.brain)
@@ -93,10 +98,13 @@ class MbTrainer:
             return -brain.novelty_drive(fwd.mbon)
         return brain.appetitive_drive(fwd.action_scores)
 
+    def _half(self, feat: np.ndarray, side: str) -> np.ndarray:
+        return hemifield(feat, side, self.overlap)
+
     def forward(self, feat: np.ndarray) -> MBForward:
-        """Both halves. The stored readout is their sum, which is what «УЗНАЮ» uses."""
-        fwd_l, self.r_l = self._drive(self.brain, hemifield(feat, "L"))
-        fwd_r, self.r_r = self._drive(self.brain_r, hemifield(feat, "R"))
+        """Both halves. The stored readout is their sum, which is what the joint «УЗНАЮ» uses."""
+        fwd_l, self.r_l = self._drive(self.brain, self._half(feat, "L"))
+        fwd_r, self.r_r = self._drive(self.brain_r, self._half(feat, "R"))
         if fwd_l is None:
             fwd_l = self._silent(self.brain)
         if fwd_r is None:
@@ -131,8 +139,8 @@ class MbTrainer:
 
         A sector window is split the same way as a full frame. The mark uses the sum.
         """
-        _fwd_l, left = self._drive(self.brain, hemifield(feat, "L"))
-        _fwd_r, right = self._drive(self.brain_r, hemifield(feat, "R"))
+        _fwd_l, left = self._drive(self.brain, self._half(feat, "L"))
+        _fwd_r, right = self._drive(self.brain_r, self._half(feat, "R"))
         return float(left + right)
 
     def teach(self, fwd: MBForward, kind: str | None, t: float) -> None:
@@ -171,10 +179,25 @@ class MbTrainer:
             self.last_readout = float(self.r_l + self.r_r)
 
     def observe(self, feat: np.ndarray, readout: float) -> Confidence:
-        """Confidence from the readout and the frame's own energy. No labels."""
-        energy = float(np.mean(np.abs(np.asarray(feat, dtype=np.float32))))
+        """Joint confidence, plus one calibrator on each hemisphere. No labels.
+
+        The per-eye windows are not written into ``mb_train_state.npz``. An old
+        file still loads, and a new file has the same arrays as before.
+        """
+        raw = np.asarray(feat, dtype=np.float32)
+        energy = float(np.mean(np.abs(raw)))
         self.conf = self.cal.update(readout, energy)
+        left = self._half(raw, "L")
+        right = self._half(raw, "R")
+        self.conf_l = self.cal_l.update(self.r_l, float(np.mean(np.abs(left))))
+        self.conf_r = self.cal_r.update(self.r_r, float(np.mean(np.abs(right))))
         return self.conf
+
+    def eye_recognized(self) -> tuple[bool, bool]:
+        """Latched per-eye words. Each calibrator has its own 0.80 / 0.65 hysteresis."""
+        left = bool(self.conf_l.ready and self.conf_l.recognized)
+        right = bool(self.conf_r.ready and self.conf_r.recognized)
+        return left, right
 
     def note_drift(self, t: float) -> None:
         self.drift_curve.append((t, self.last_drift))
@@ -204,8 +227,12 @@ class MbTrainer:
         self.last_drift = 0.0
         self.n_pam = self.n_ppl1 = self.n_novelty = 0
         self.cal.reset()
+        self.cal_l.reset()
+        self.cal_r.reset()
         self.progress.reset()
         self.conf = Confidence()
+        self.conf_l = Confidence()
+        self.conf_r = Confidence()
         self.probe_init = self.probe()
 
     def save(self, path: Path) -> None:

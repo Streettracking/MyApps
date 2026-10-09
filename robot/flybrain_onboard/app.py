@@ -26,7 +26,7 @@ from sim.frame_sense import features_from_frames
 from sim.learn_flash import flash_payload
 from sim.map_marks import MarkLayer
 from sim.mb_train import MbTrainer, default_npz
-from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot
+from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, phase_label
 from sim.pilot import forward_clearance, scrub_range
 
 try:
@@ -62,6 +62,12 @@ class BrainLoop:
         self.readout = 0.0
         self.confidence = 0.0
         self.confidence_ready = False
+        self.recognized_l = False
+        self.recognized_r = False
+        self.confidence_l = 0.0
+        self.confidence_r = 0.0
+        self.confidence_l_ready = False
+        self.confidence_r_ready = False
         self.cloud_ranges = None
         self.cloud_t = 0.0
         self._teach = None
@@ -230,6 +236,13 @@ class BrainLoop:
             self.readout = float(value)
             self.confidence = float(conf.percent)
             self.confidence_ready = bool(conf.ready)
+            eye_l, eye_r = self.mb.eye_recognized()
+            self.recognized_l = eye_l
+            self.recognized_r = eye_r
+            self.confidence_l = float(self.mb.conf_l.percent)
+            self.confidence_r = float(self.mb.conf_r.percent)
+            self.confidence_l_ready = bool(self.mb.conf_l.ready)
+            self.confidence_r_ready = bool(self.mb.conf_r.ready)
 
     def tick(self, now: float) -> DriveCommand:
         now = float(now)
@@ -250,6 +263,8 @@ class BrainLoop:
             forward_m = self.forward_m
             r_l = float(self.mb.r_l)
             r_r = float(self.mb.r_r)
+            recognized_l = self.recognized_l
+            recognized_r = self.recognized_r
         if not self.driving():
             # Watch-only, or the E-STOP block: no Move and no StopMove.
             # The fly's two readouts still update so the laptop can see them.
@@ -282,6 +297,8 @@ class BrainLoop:
             manual_axes=axes,
             r_l=r_l,
             r_r=r_r,
+            recognized_l=recognized_l,
+            recognized_r=recognized_r,
         )
         self._emit(cmd, now)
         return cmd
@@ -341,6 +358,7 @@ class BrainLoop:
                 "mode": self.pilot.mode,
                 "label": self.pilot.label(),
                 "phase": self.pilot.phase,
+                "phase_ru": phase_label(self.pilot.phase, self.pilot.steer),
                 "who": self.pilot.who,
                 "took_over": bool(self.pilot.took_over),
                 "learning": bool(self.learn),
@@ -357,6 +375,13 @@ class BrainLoop:
                 "r_r": self.pilot.track.r_r,
                 "r_diff": self.pilot.track.r_diff,
                 "z_fly": self.pilot.track.yaw_z,
+                "recognized_L": bool(self.recognized_l),
+                "recognized_R": bool(self.recognized_r),
+                "confidence_L": float(self.confidence_l),
+                "confidence_R": float(self.confidence_r),
+                "confidence_L_ready": bool(self.confidence_l_ready),
+                "confidence_R_ready": bool(self.confidence_r_ready),
+                "overlap": float(self.mb.overlap),
                 "distance_m": self.dist_m,
                 "forward_m": self.forward_m,
                 "x": self.drive.moves[-1][0] if self._moving and self.drive.moves else 0.0,
@@ -377,8 +402,14 @@ class BrainLoop:
             }
 
 
-def make_brain(drive: SportDrive, state_path: str, npz_path: str | None = None, self_radius: float = 0.6) -> BrainLoop:
-    mb = MbTrainer(npz_path or default_npz(), seed=1, eta=0.2, dan="teacher")
+def make_brain(
+    drive: SportDrive,
+    state_path: str,
+    npz_path: str | None = None,
+    self_radius: float = 0.6,
+    overlap: float = 0.2,
+) -> BrainLoop:
+    mb = MbTrainer(npz_path or default_npz(), seed=1, eta=0.2, dan="teacher", overlap=overlap)
     mb.learn = False
     loop = BrainLoop(drive, mb, state_path, self_radius=self_radius)
     from pathlib import Path

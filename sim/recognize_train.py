@@ -17,7 +17,8 @@ from pathlib import Path
 import numpy as np
 
 from .frame_sense import sim_previews
-from .hemifield import format_fly_line
+from .hemifield import DEFAULT_OVERLAP, format_fly_line
+from .pilot import phase_label
 from .lidar_fresh import DEFAULT_LIDAR_REFRESH, SimLidarBank, mismatch_warning
 from .map_marks import MarkLayer
 from .pilot import (
@@ -58,6 +59,7 @@ class RecognizeTrainSim:
         lidar_refresh: float = DEFAULT_LIDAR_REFRESH,
         return_auto_s: float = 0.0,
         steer: str = "bilateral",
+        overlap: float = DEFAULT_OVERLAP,
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -101,6 +103,7 @@ class RecognizeTrainSim:
         self.marks = MarkLayer()
         self.pilot = Pilot(return_auto_s)
         self.pilot.set_steer(steer if steer in ("bilateral", "sectors") else "bilateral")
+        self.overlap = float(overlap)
         self.teach_pulse = TeachRepeater()
         self.aim_sector: int | None = None
         self.aim_dist: float | None = None
@@ -111,7 +114,7 @@ class RecognizeTrainSim:
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
         if learner == "mb":
-            self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan)
+            self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan, overlap=overlap)
             self._log("грибовидное тело  учитель — клавиша T  учатся только KC→MBON")
             self._log(self._lidar_intro())
         else:
@@ -366,6 +369,8 @@ class RecognizeTrainSim:
             mode = f"сим · {self.pilot.label()}"
             prog = self.mb.progress
             conf = self.mb.conf
+            conf_l = self.mb.conf_l
+            conf_r = self.mb.conf_r
             return MonitorView(
                 title=f"тренировка узнавания   {self.learner.agent_id}",
                 camera=cam,
@@ -442,6 +447,14 @@ class RecognizeTrainSim:
                 hemi_l=float(self.pilot.track.r_l),
                 hemi_r=float(self.pilot.track.r_r),
                 hemi_z=float(self.pilot.track.yaw_z),
+                overlap=float(self.mb.overlap),
+                eye_l_recognized=bool(conf_l.ready and conf_l.recognized),
+                eye_r_recognized=bool(conf_r.ready and conf_r.recognized),
+                eye_l_confidence=float(conf_l.percent),
+                eye_r_confidence=float(conf_r.percent),
+                eye_l_ready=bool(conf_l.ready),
+                eye_r_ready=bool(conf_r.ready),
+                phase_ru=phase_label(self.pilot.phase, self.pilot.steer),
             )
         assert self.recognizer is not None
         return MonitorView(
@@ -595,8 +608,15 @@ def _readouts(session: RecognizeTrainSim) -> tuple[float, float]:
     return float(session.mb.r_l), float(session.mb.r_r)
 
 
+def _eye_bits(session: RecognizeTrainSim) -> tuple[bool, bool]:
+    if session.mb is None:
+        return False, False
+    return session.mb.eye_recognized()
+
+
 def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, float, bool, str]:
     r_l, r_r = _readouts(session)
+    eye_l, eye_r = _eye_bits(session)
     cmd = session.pilot.command(
         now,
         (inp.steer_x, inp.steer_z),
@@ -609,6 +629,8 @@ def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, floa
         forward_m=session.forward_m,
         r_l=r_l,
         r_r=r_r,
+        recognized_l=eye_l,
+        recognized_r=eye_r,
     )
     if cmd.hint and cmd.hint != session._hint_logged:
         session._log(cmd.hint)
@@ -616,23 +638,17 @@ def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, floa
     elif not cmd.hint:
         session._hint_logged = ""
     if session.pilot.autonomy:
-        return cmd.x, cmd.z, True, _phase_name(cmd.phase)
+        return cmd.x, cmd.z, True, _phase_name(cmd.phase, session.pilot.steer)
     if abs(inp.steer_x) + abs(inp.steer_z) > 0 and inp.focused:
-        return cmd.x, cmd.z, True, _phase_name(cmd.phase)
+        return cmd.x, cmd.z, True, _phase_name(cmd.phase, session.pilot.steer)
     if session.pilot.took_over or session.pilot.mode == "estop":
         return 0.0, 0.0, True, "стоп"
     sx, sz = session.scripted_steer()
     return sx, sz, False, "сценарий"
 
 
-def _phase_name(phase: str) -> str:
-    return {
-        "search": "поиск",
-        "approach": "подход",
-        "hold": "стоп 1 м",
-        "manual": "ручное",
-        "stop": "стоп",
-    }.get(phase, phase)
+def _phase_name(phase: str, steer: str = "bilateral") -> str:
+    return phase_label(phase, steer)
 
 
 def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: Path | None = None) -> dict:
@@ -819,6 +835,7 @@ def seek_trial(seed: int, teach_s: float = 25.0, seek_s: float = 20.0, state: Pa
     distractor_hold_frames = 0
     for _ in range(int(seek_s / dt)):
         r_l, r_r = _readouts(session)
+        eye_l, eye_r = _eye_bits(session)
         cmd = session.pilot.command(
             float(session.world.t),
             (0.0, 0.0),
@@ -831,6 +848,8 @@ def seek_trial(seed: int, teach_s: float = 25.0, seek_s: float = 20.0, state: Pa
             forward_m=session.forward_m,
             r_l=r_l,
             r_r=r_r,
+            recognized_l=eye_l,
+            recognized_r=eye_r,
         )
         learner = session.learner
         dogs = []
@@ -1035,6 +1054,7 @@ def compare_steer(seeds: tuple[int, ...] = (1, 2, 3), teach_s: float = 8.0, seek
             recognized_frames = 0
             for _ in range(int(seek_s / dt)):
                 r_l, r_r = _readouts(session)
+                eye_l, eye_r = _eye_bits(session)
                 cmd = session.pilot.command(
                     float(session.world.t),
                     (0.0, 0.0),
@@ -1047,6 +1067,8 @@ def compare_steer(seeds: tuple[int, ...] = (1, 2, 3), teach_s: float = 8.0, seek
                     forward_m=session.forward_m,
                     r_l=r_l,
                     r_r=r_r,
+                    recognized_l=eye_l,
+                    recognized_r=eye_r,
                 )
                 nearest, bodies = _fov_bodies(session)
                 bearing = None if nearest is None else nearest[1]
@@ -1139,6 +1161,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--return-auto", type=float, default=0.0, help="Idle seconds after takeover before autonomy returns. 0 stays manual.")
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral", help="bilateral: yaw from R_L - R_R. sectors: the smoothed camera sector.")
+    p.add_argument("--overlap", type=float, default=DEFAULT_OVERLAP, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
     p.add_argument("--seek", action="store_true", help="Headless teacher then autonomy. Prints find/stop counts.")
     p.add_argument("--compare-steer", action="store_true", help="Train once, then seek with sectors and with bilateral.")
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera frames per second written while recording.")
@@ -1170,6 +1193,7 @@ def main(argv: list[str] | None = None) -> int:
         lidar_refresh=args.lidar_refresh,
         return_auto_s=args.return_auto,
         steer=args.steer,
+        overlap=args.overlap,
     )
     session.rec_fps = float(args.rec_fps)
     if args.load or Path(args.state).is_file():

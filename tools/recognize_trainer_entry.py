@@ -71,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--onboard-port", type=int, default=8090)
     p.add_argument("--return-auto", type=float, default=0.0)
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
+    p.add_argument("--overlap", type=float, default=0.2, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max frames per second while «ЗАПИСЬ КАДРОВ» is on.")
     args = p.parse_args(argv)
     if args.rec_fps <= 0:
@@ -112,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         forwarded.extend(["--lidar-refresh", str(args.lidar_refresh)])
         forwarded.extend(["--return-auto", str(args.return_auto)])
         forwarded.extend(["--steer", args.steer])
+        forwarded.extend(["--overlap", str(args.overlap)])
         forwarded.extend(["--rec-fps", str(args.rec_fps)])
         return recognize_train.main(forwarded)
     forwarded = [
@@ -147,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     forwarded.extend(["--lidar-refresh", str(args.lidar_refresh)])
     forwarded.extend(["--return-auto", str(args.return_auto)])
     forwarded.extend(["--steer", args.steer])
+    forwarded.extend(["--overlap", str(args.overlap)])
     forwarded.extend(["--rec-fps", str(args.rec_fps)])
     if args.onboard:
         forwarded.extend(["--onboard", args.onboard, "--onboard-port", str(args.onboard_port)])

@@ -31,7 +31,8 @@ from .lidar_fresh import DEFAULT_LIDAR_REFRESH, FreshWindow, mismatch_warning
 from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
 from .onboard_link import OnboardLink
-from .hemifield import format_fly_line
+from .hemifield import DEFAULT_OVERLAP, format_fly_line
+from .pilot import phase_label
 from .pilot import Pilot, TeachRepeater, clamp_velocity, format_range_line, forward_clearance, scrub_range
 from .recognize import ConspecificRecognizer
 
@@ -220,6 +221,7 @@ class LiveSession:
         return_auto_s: float = 0.0,
         onboard: bool = False,
         steer: str = "bilateral",
+        overlap: float = DEFAULT_OVERLAP,
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -258,6 +260,7 @@ class LiveSession:
         self.marks = MarkLayer()
         self.pilot = Pilot(return_auto_s)
         self.pilot.set_steer(steer if steer in ("bilateral", "sectors") else "bilateral")
+        self.overlap = float(overlap)
         self.teach_pulse = TeachRepeater()
         self.aim_sector: int | None = None
         self.aim_dist: float | None = None
@@ -265,6 +268,13 @@ class LiveSession:
         self.recognized_now = False
         self._hint_logged = ""
         self._learn_block_log = -10.0
+        self.eye_l_recognized = False
+        self.eye_r_recognized = False
+        self.eye_l_confidence = 0.0
+        self.eye_r_confidence = 0.0
+        self.eye_l_ready = False
+        self.eye_r_ready = False
+        self.phase_ru = ""
         self.onboard = bool(onboard)
         self.bridge_open = False
         self._bridge_warned = False
@@ -281,7 +291,7 @@ class LiveSession:
             self._log("автономия и обучение на борту выключены, пока не нажаты A и P")
             return
         if learner == "mb":
-            self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan)
+            self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan, overlap=overlap)
             self._log("грибовидное тело  T учит  A включает поиск сородича")
             self._log(self._lidar_intro())
         else:
@@ -567,12 +577,25 @@ def _mirror_remote(session: LiveSession, status: dict) -> None:
     session.remote_flash_r = flash_from_payload(status.get("flash_r"))
     if status.get("steer") in ("bilateral", "sectors"):
         session.pilot.steer = str(status["steer"])
+    if status.get("overlap") is not None:
+        session.overlap = float(status["overlap"])
+    session.eye_l_recognized = bool(status.get("recognized_L", False))
+    session.eye_r_recognized = bool(status.get("recognized_R", False))
+    session.eye_l_confidence = float(status.get("confidence_L") or 0.0)
+    session.eye_r_confidence = float(status.get("confidence_R") or 0.0)
+    session.eye_l_ready = bool(status.get("confidence_L_ready", False))
+    session.eye_r_ready = bool(status.get("confidence_R_ready", False))
+    session.phase_ru = str(status.get("phase_ru") or "")
     for line in status.get("log") or []:
         if line not in session.log:
             session.log.append(str(line))
 
 
 def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now: float, frames_ok: bool) -> str:
+    if session.mb is None:
+        eye_l, eye_r = None, None
+    else:
+        eye_l, eye_r = session.mb.eye_recognized()
     cmd = session.pilot.command(
         session.now(),
         (inp.steer_x, inp.steer_z),
@@ -585,6 +608,8 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         forward_m=session.forward_m,
         r_l=0.0 if session.mb is None else float(session.mb.r_l),
         r_r=0.0 if session.mb is None else float(session.mb.r_r),
+        recognized_l=eye_l,
+        recognized_r=eye_r,
     )
     if cmd.hint and cmd.hint != session._hint_logged:
         session._log(cmd.hint)
@@ -611,7 +636,7 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         if inp.stand_down:
             link.stand_down()
             session._log("StandDown")
-    return link.last_command or _phase_name(cmd.phase)
+    return link.last_command or _phase_name(cmd.phase, session.pilot.steer)
 
 
 def _note_bridge(session: LiveSession, now: float, state: dict) -> None:
@@ -678,14 +703,8 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
         session._hint_logged = ""
 
 
-def _phase_name(phase: str) -> str:
-    return {
-        "search": "поиск",
-        "approach": "подход",
-        "hold": "стоп 1 м",
-        "manual": "ручное",
-        "stop": "стоп",
-    }.get(phase, phase)
+def _phase_name(phase: str, steer: str = "bilateral") -> str:
+    return phase_label(phase, steer)
 
 
 def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: bytes, onboard: OnboardLink | None) -> None:
@@ -839,7 +858,7 @@ def run_live_gui(
             _apply_live_keys(session, inp, onboard)
             if onboard is not None:
                 _drive_onboard(session, onboard, inp, tele, now)
-                command_name = str(session.remote.get("phase") or "—")
+                command_name = str(session.remote.get("phase_ru") or _phase_name(str(session.remote.get("phase") or "—"), session.pilot.steer))
             elif link is not None:
                 command_name = _drive_udp(session, link, inp, tele, now, frames_ok)
             teach = session.teach_pulse.poll(
@@ -1021,6 +1040,8 @@ def _live_view(
         caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"
         prog = session.mb.progress
         conf = session.mb.conf
+        conf_l = session.mb.conf_l
+        conf_r = session.mb.conf_r
         mode = f"робот · {session.pilot.label()}"
         return MonitorView(
             title="тренировка узнавания   живая собака",
@@ -1049,6 +1070,14 @@ def _live_view(
             hemi_l=float(session.pilot.track.r_l),
             hemi_r=float(session.pilot.track.r_r),
             hemi_z=float(session.pilot.track.yaw_z),
+            overlap=float(session.mb.overlap),
+            eye_l_recognized=bool(conf_l.ready and conf_l.recognized),
+            eye_r_recognized=bool(conf_r.ready and conf_r.recognized),
+            eye_l_confidence=float(conf_l.percent),
+            eye_r_confidence=float(conf_r.percent),
+            eye_l_ready=bool(conf_l.ready),
+            eye_r_ready=bool(conf_r.ready),
+            phase_ru=phase_label(session.pilot.phase, session.pilot.steer),
             session_sep=prog.session_sep(),
             total_sep=prog.total_sep(),
             session_acc=prog.session_acc(),
@@ -1082,6 +1111,14 @@ def _live_view(
             recognized=bool(remote.get("recognized")),
             confidence=float(remote.get("confidence") or 0.0),
             confidence_ready=bool(remote.get("confidence_ready")),
+            overlap=float(session.overlap),
+            eye_l_recognized=bool(session.eye_l_recognized),
+            eye_r_recognized=bool(session.eye_r_recognized),
+            eye_l_confidence=float(session.eye_l_confidence),
+            eye_r_confidence=float(session.eye_r_confidence),
+            eye_l_ready=bool(session.eye_l_ready),
+            eye_r_ready=bool(session.eye_r_ready),
+            phase_ru=session.phase_ru or phase_label(session.pilot.phase, session.pilot.steer),
             onboard=True,
             **common,
         )
@@ -1177,6 +1214,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--onboard-port", type=int, default=8090)
     p.add_argument("--return-auto", type=float, default=0.0, help="Seconds of idle takeover before autonomy returns. 0 stays manual.")
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
+    p.add_argument("--overlap", type=float, default=DEFAULT_OVERLAP, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera.jpg frames per second saved on this laptop.")
     args = p.parse_args(argv)
     if args.rec_fps <= 0:
@@ -1205,6 +1243,7 @@ def main(argv: list[str] | None = None) -> int:
         return_auto_s=args.return_auto,
         onboard=bool(args.onboard),
         steer=args.steer,
+        overlap=args.overlap,
     )
     session.rec_fps = float(args.rec_fps)
     if args.load or Path(args.state).is_file():

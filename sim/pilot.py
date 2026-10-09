@@ -41,6 +41,10 @@ COAST_S = 1.0
 SLOW_X = 0.20
 SIDE_EMA = 0.45
 STEER_MODES = ("bilateral", "sectors")
+# Second eye must agree within this long, or the first eye was a false alarm.
+EYE_CONFIRM_S = 3.0
+# Drop out of the walk after this many frames with one eye dark.
+EYE_LOSE_N = 5
 
 
 def clamp_velocity(x: float, z: float) -> tuple[float, float]:
@@ -143,6 +147,122 @@ def search_yaw(age: float) -> float:
     if u < SEARCH_TURN_S:
         return SEARCH_TURN
     return 0.0
+
+
+def phase_label(phase: str, steer: str = "bilateral") -> str:
+    """Short Russian name for a pilot phase. Sector mode keeps the old approach word."""
+    if phase == "approach" and steer == "sectors":
+        return "подход"
+    names = {
+        "search": "поиск",
+        "align_l": "доворот (Л)",
+        "align_r": "доворот (П)",
+        "approach": "подтверждено — иду",
+        "hold": "стоп 1 м",
+        "manual": "ручное",
+        "stop": "стоп",
+    }
+    return names.get(phase, phase)
+
+
+class EyeConfirm:
+    """Walk only when both hemispheres recognize. One eye turns in place.
+
+    Each eye's ``recognized`` bit already carries its own calibrator hysteresis.
+    A lone eye yaws toward that side at the search rate and never sends forward
+    speed. If the other eye is still dark after ``EYE_CONFIRM_S``, the sighting
+    is a false alarm: search resumes and that eye cannot start another turn
+    until it goes dark. Losing one eye for ``EYE_LOSE_N`` frames during the
+    walk drops back to the same in-place turn.
+    """
+
+    def __init__(self, timeout_s: float = EYE_CONFIRM_S, lose_n: int = EYE_LOSE_N):
+        self.timeout_s = float(timeout_s)
+        self.lose_n = int(lose_n)
+        self.reset()
+
+    def reset(self) -> None:
+        self.phase = "search"
+        self._align_from: float | None = None
+        self._miss_l = 0
+        self._miss_r = 0
+        self._suppress: str | None = None
+        self.recognized_l = False
+        self.recognized_r = False
+
+    def update(self, now: float, recognized_l: bool, recognized_r: bool) -> str:
+        now = float(now)
+        left = bool(recognized_l)
+        right = bool(recognized_r)
+        self.recognized_l = left
+        self.recognized_r = right
+        if self._suppress == "L" and not left:
+            self._suppress = None
+        elif self._suppress == "R" and not right:
+            self._suppress = None
+        if left and right:
+            self._suppress = None
+            self._align_from = None
+            self._miss_l = 0
+            self._miss_r = 0
+            self.phase = "approach"
+            return "approach"
+        if self.phase == "approach":
+            self._miss_l = 0 if left else self._miss_l + 1
+            self._miss_r = 0 if right else self._miss_r + 1
+            if self._miss_l < self.lose_n and self._miss_r < self.lose_n:
+                return "approach"
+            self._miss_l = 0
+            self._miss_r = 0
+            self.phase = "search"
+        see_l = left and self._suppress != "L"
+        see_r = right and self._suppress != "R"
+        if see_l and not see_r:
+            return self._align(now, "align_l")
+        if see_r and not see_l:
+            return self._align(now, "align_r")
+        self._align_from = None
+        self.phase = "search"
+        return "search"
+
+    def _align(self, now: float, phase: str) -> str:
+        if self.phase != phase or self._align_from is None:
+            self._align_from = float(now)
+        self.phase = phase
+        if float(now) - float(self._align_from) >= self.timeout_s:
+            self._suppress = "L" if phase == "align_l" else "R"
+            self._align_from = None
+            self.phase = "search"
+            return "search"
+        return phase
+
+    def velocity(
+        self,
+        now: float,
+        recognized_l: bool,
+        recognized_r: bool,
+        dist_m: float | None,
+        forward_m: float | None,
+        search_age: float,
+        fly_z: float,
+    ) -> tuple[float, float, str]:
+        phase = self.update(now, recognized_l, recognized_r)
+        if phase == "align_l":
+            return 0.0, SEARCH_TURN, "align_l"
+        if phase == "align_r":
+            return 0.0, -SEARCH_TURN, "align_r"
+        if phase == "search":
+            return 0.0, search_yaw(search_age), "search"
+        x, z, stepped = seek_velocity(
+            True,
+            None,
+            dist_m,
+            forward_m,
+            search_age,
+            steer="bilateral",
+            fly_z=float(fly_z),
+        )
+        return x, z, stepped
 
 
 def half_sector() -> float:
@@ -339,6 +459,7 @@ class Pilot:
         self.who = "оператор"
         self.hint = ""
         self.track = ApproachTrack()
+        self.eyes = EyeConfirm()
         self.steer = "bilateral"
         self._search_from = 0.0
         self._idle_from: float | None = None
@@ -346,6 +467,8 @@ class Pilot:
     def set_steer(self, mode: str) -> str:
         if mode not in STEER_MODES:
             raise ValueError(mode)
+        if mode != self.steer:
+            self.eyes.reset()
         self.steer = mode
         return mode
 
@@ -399,6 +522,7 @@ class Pilot:
         self._search_from = float(now)
         self._idle_from = None
         self.track.reset()
+        self.eyes.reset()
         self.who = "мозг"
         self.hint = ""
         return True
@@ -429,6 +553,8 @@ class Pilot:
         manual_axes: tuple[float, float] | None = None,
         r_l: float = 0.0,
         r_r: float = 0.0,
+        recognized_l: bool | None = None,
+        recognized_r: bool | None = None,
     ) -> DriveCommand:
         ax = float(arrows[0]) if arrows else 0.0
         az = float(arrows[1]) if arrows else 0.0
@@ -453,16 +579,31 @@ class Pilot:
             forward_m = scrub_range(forward_m, self.self_radius)
             raw_sector = None if sector is None else int(sector) % N_AZ
             self.track.update(float(now), bool(recognized), raw_sector)
-            use_sector = self.track.sector_smooth if self.track.latched else None
-            x, z, phase = seek_velocity(
-                self.track.latched,
-                use_sector,
-                dist_m,
-                forward_m,
-                float(now) - self._search_from,
-                steer=self.steer,
-                fly_z=self.track.yaw_z,
-            )
+            if recognized_l is None:
+                recognized_l = bool(recognized)
+            if recognized_r is None:
+                recognized_r = bool(recognized)
+            if self.steer == "bilateral":
+                x, z, phase = self.eyes.velocity(
+                    float(now),
+                    bool(recognized_l),
+                    bool(recognized_r),
+                    dist_m,
+                    forward_m,
+                    float(now) - self._search_from,
+                    self.track.yaw_z,
+                )
+            else:
+                use_sector = self.track.sector_smooth if self.track.latched else None
+                x, z, phase = seek_velocity(
+                    self.track.latched,
+                    use_sector,
+                    dist_m,
+                    forward_m,
+                    float(now) - self._search_from,
+                    steer=self.steer,
+                    fly_z=self.track.yaw_z,
+                )
             self.phase = phase
             self.who = "мозг"
             stop = abs(x) < 1e-6 and abs(z) < 1e-6
@@ -496,6 +637,8 @@ class Pilot:
                         manual_axes=None,
                         r_l=r_l,
                         r_r=r_r,
+                        recognized_l=recognized_l,
+                        recognized_r=recognized_r,
                     )
             self.phase = "stop"
             self.who = "никто" if self.held_stop else "оператор"

@@ -125,6 +125,23 @@ class MonitorView:
     hemi_r: float | None = None
     hemi_z: float | None = None
     lifetime_known: bool = True
+    overlap: float = 0.2
+    eye_l_recognized: bool = False
+    eye_r_recognized: bool = False
+    eye_l_confidence: float = 0.0
+    eye_r_confidence: float = 0.0
+    eye_l_ready: bool = False
+    eye_r_ready: bool = False
+    phase_ru: str = ""
+
+
+def eye_tone(ready: bool, recognized: bool, percent: float) -> str:
+    """Grey is quiet, yellow is climbing, green is the latched «УЗНАЮ»."""
+    if recognized:
+        return "green"
+    if ready and float(percent) > 0.0:
+        return "yellow"
+    return "grey"
 
 
 def _surf_from_rgb(rgb: np.ndarray):
@@ -333,7 +350,9 @@ class TrainMonitor:
         cam_rect = pygame.Rect(16, 56, 460, 210)
         lid_rect = pygame.Rect(16, 278, 460, 300)
         cam_inner = self._frame(screen, cam_rect, view.camera, "камера", view.sensor_error)
-        if cam_inner is not None:
+        if cam_inner is not None and view.learner == "mb":
+            self._camera_overlap(screen, cam_inner, view)
+        elif cam_inner is not None:
             self._camera_halves(screen, cam_inner, view)
         lid_title = view.lidar_mode or "карта лидара"
         lid_msg = "" if view.lidar is not None else view.lidar_hold
@@ -450,7 +469,10 @@ class TrainMonitor:
             color = (214, 218, 224)
         title = self.font_ind.render(word, True, color)
         screen.blit(title, (720, WIN_H - 146))
-        who = self.font.render(f"ведёт: {view.pilot_who}", True, (186, 192, 204))
+        who_text = "ведёт: %s" % view.pilot_who
+        if view.phase_ru:
+            who_text = "%s  ·  %s" % (who_text, view.phase_ru)
+        who = self.font.render(who_text, True, (186, 192, 204))
         screen.blit(who, (720, WIN_H - 114))
         if view.learner == "mb":
             bilateral = view.steer != "sectors"
@@ -812,6 +834,111 @@ class TrainMonitor:
                 screen.blit(self.font_sm.render(chunk, True, (230, 120, 110)), (rect.x + 10, y))
                 y += 16
         return inner
+
+    def _camera_overlap(self, screen, inner, view: MonitorView) -> None:
+        """Binocular zone and one «УЗНАЮ» per eye. The camera array is not written.
+
+        Image left is the robot's right eye (П). Image right is the left eye (Л).
+        The shared band is cyan, with a boundary on each side.
+        """
+        import pygame
+
+        from .hemifield import overlap_bands
+
+        lo, hi = overlap_bands(view.overlap)
+        x0 = inner.x + int(round(lo * inner.w))
+        x1 = inner.x + int(round(hi * inner.w))
+        if x1 > x0 + 1:
+            self._wash(screen, pygame.Rect(x0, inner.y, x1 - x0, inner.h), (64, 196, 214))
+            pygame.draw.line(screen, (186, 244, 255), (x0, inner.y + 1), (x0, inner.bottom - 1), 2)
+            pygame.draw.line(screen, (186, 244, 255), (x1, inner.y + 1), (x1, inner.bottom - 1), 2)
+        else:
+            mid = inner.x + inner.w // 2
+            pygame.draw.line(screen, (244, 246, 248), (mid, inner.y + 1), (mid, inner.bottom - 1), 2)
+            x0 = mid
+            x1 = mid
+        self._zone_tag(screen, inner.x, x0, inner, "П")
+        if x1 > x0 + 18:
+            self._zone_tag(screen, x0, x1, inner, "Л+П")
+        self._zone_tag(screen, x1, inner.right, inner, "Л")
+        pct = self.font_sm.render("перекрытие %d%%" % int(round(float(view.overlap) * 100.0)), True, (232, 248, 255))
+        pad = pygame.Surface((pct.get_width() + 10, pct.get_height() + 4), pygame.SRCALPHA)
+        pad.fill((8, 24, 32, 180))
+        px = inner.right - pad.get_width() - 6
+        py = inner.bottom - pad.get_height() - 6
+        screen.blit(pad, (px, py))
+        screen.blit(pct, (px + 5, py + 2))
+        self._eye_badge(
+            screen,
+            inner.x,
+            x0,
+            inner.y,
+            "П",
+            view.eye_r_ready,
+            view.eye_r_recognized,
+            view.eye_r_confidence,
+        )
+        self._eye_badge(
+            screen,
+            x1,
+            inner.right,
+            inner.y,
+            "Л",
+            view.eye_l_ready,
+            view.eye_l_recognized,
+            view.eye_l_confidence,
+        )
+
+    def _zone_tag(self, screen, x_lo: int, x_hi: int, inner, name: str) -> None:
+        import pygame
+
+        if x_hi - x_lo < 16:
+            return
+        label = self.font_sm.render(name, True, (248, 248, 246))
+        pad = pygame.Surface((label.get_width() + 10, label.get_height() + 4), pygame.SRCALPHA)
+        pad.fill((10, 12, 16, 176))
+        x = x_lo + max(4, (x_hi - x_lo - pad.get_width()) // 2)
+        y = inner.bottom - pad.get_height() - 28
+        screen.blit(pad, (x, y))
+        screen.blit(label, (x + 5, y + 2))
+
+    def _eye_badge(
+        self,
+        screen,
+        x_lo: int,
+        x_hi: int,
+        y: int,
+        name: str,
+        ready: bool,
+        recognized: bool,
+        percent: float,
+    ) -> None:
+        import pygame
+
+        tone = eye_tone(ready, recognized, percent)
+        ink = {"green": (120, 230, 150), "yellow": (240, 206, 80), "grey": (168, 172, 178)}[tone]
+        bar_ink = {"green": (70, 190, 110), "yellow": (210, 170, 50), "grey": (90, 94, 100)}[tone]
+        word = "УЗНАЮ"
+        pct = "…" if not ready else "%d%%" % int(round(float(percent)))
+        title = self.font_sm.render("%s  %s  %s" % (name, word, pct), True, ink)
+        width = max(title.get_width() + 12, 108)
+        height = title.get_height() + 12
+        span = max(0, x_hi - x_lo)
+        if span > 8 and width > span - 4:
+            width = max(48, span - 4)
+        x = x_lo + max(2, (span - width) // 2)
+        if x + width > x_hi and span > width:
+            x = x_hi - width
+        badge = pygame.Surface((width, height), pygame.SRCALPHA)
+        badge.fill((8, 12, 16, 188))
+        pygame.draw.rect(badge, ink, pygame.Rect(0, 0, width, height), 1)
+        badge.blit(title, (6, 2))
+        bar = pygame.Rect(6, height - 7, max(8, width - 12), 4)
+        pygame.draw.rect(badge, (36, 40, 46), bar)
+        filled = int(bar.w * float(np.clip(percent if ready else 0.0, 0.0, 100.0)) / 100.0)
+        if filled > 0:
+            pygame.draw.rect(badge, bar_ink, pygame.Rect(bar.x, bar.y, filled, bar.h))
+        screen.blit(badge, (x, y + 4))
 
     def _camera_halves(self, screen, inner, view: MonitorView) -> None:
         """Centre line on the displayed camera. The JPEG is not touched.

@@ -49,6 +49,12 @@ def main(argv=None) -> int:
     parser.add_argument("--lidar-refresh", type=float, default=1.5)
     parser.add_argument("--self-radius", type=float, default=0.6, help="Ignore lidar returns closer than this, metres.")
     parser.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
+    parser.add_argument(
+        "--overlap",
+        type=float,
+        default=0.2,
+        help="Shared fraction of the field, 0..0.5. 0 is the old hard midline. Default 0.2.",
+    )
     args = parser.parse_args(argv)
     stop = {"stop": False}
 
@@ -77,7 +83,7 @@ def main(argv=None) -> int:
         client.SetTimeout(3.0)
         client.Init()
     drive = SportDrive(client)
-    brain = make_brain(drive, state, args.npz or None, self_radius=args.self_radius)
+    brain = make_brain(drive, state, args.npz or None, self_radius=args.self_radius, overlap=args.overlap)
     brain.pilot.set_steer(args.steer)
     eyes = JpegEyes(args.preview, interval=args.lidar_refresh)
     eyes.start()
