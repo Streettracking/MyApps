@@ -5,7 +5,8 @@ to the local go2_wr_server at 127.0.0.1:5451. ``--sim`` opens the zone-free
 simulator instead, so the exe can be tried with no robot.
 
 Default learning is the mushroom body. T is a PAM treat, X is a PPL1 punish.
-The mushroom body never drives the dog. Familiarity is ``--dan familiarity``.
+Familiarity is ``--dan familiarity``. ``A`` lets the mushroom body search
+and approach. ``M`` is takeover. ``--onboard IP`` watches the brain on the dog.
 The Hebbian layer is ``--learner hebb``.
 """
 
@@ -18,6 +19,8 @@ from pathlib import Path
 # Static imports so PyInstaller traces the trainer and the connectome runtime.
 import sim.frame_sense  # noqa: F401
 import sim.learn_flash  # noqa: F401
+import sim.onboard_link  # noqa: F401
+import sim.pilot  # noqa: F401
 import sim.lidar_fresh  # noqa: F401
 import sim.map_marks  # noqa: F401
 import sim.go2_udp  # noqa: F401
@@ -61,7 +64,13 @@ def main(argv: list[str] | None = None) -> int:
         default=recognize_train_live.DEFAULT_LIDAR_REFRESH,
         help="Seconds between fresh lidar windows. 0 keeps the accumulating map.",
     )
+    p.add_argument("--onboard", default="", help="Robot IP. Brain stays on the dog. This window does not send UDP.")
+    p.add_argument("--onboard-port", type=int, default=8090)
+    p.add_argument("--return-auto", type=float, default=0.0)
     args = p.parse_args(argv)
+    if args.sim and args.onboard:
+        print("--sim and --onboard are different windows. Pick one.", file=sys.stderr)
+        return 2
     if args.state is None:
         name = "mb_train_state.npz" if args.learner == "mb" else "recognizer_state.json"
         args.state = Path("logs") / name
@@ -93,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.punish:
             forwarded.append("--punish")
         forwarded.extend(["--lidar-refresh", str(args.lidar_refresh)])
+        forwarded.extend(["--return-auto", str(args.return_auto)])
         return recognize_train.main(forwarded)
     forwarded = [
         "--robot-ip",
@@ -125,6 +135,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.reset_lidar:
         forwarded.append("--reset-lidar")
     forwarded.extend(["--lidar-refresh", str(args.lidar_refresh)])
+    forwarded.extend(["--return-auto", str(args.return_auto)])
+    if args.onboard:
+        forwarded.extend(["--onboard", args.onboard, "--onboard-port", str(args.onboard_port)])
     return recognize_train_live.main(forwarded)
 
 

@@ -398,3 +398,51 @@ def _footer(screen, font, rect, layout: MbLayout, flash: LearnFlash | None) -> N
         font.render("зелёный — к подходу, красный — к избеганию. Яркая ~1.5 с.", True, (140, 156, 148)),
         (rect.x + 10, y + 54),
     )
+
+
+def flash_payload(flash: LearnFlash | None, limit: int = 400) -> dict | None:
+    """Compact teaching step for the laptop. Strongest synapses only."""
+    if flash is None:
+        return None
+    n = int(len(flash.dw))
+    if n > limit:
+        idx = np.argsort(np.abs(flash.dw))[-limit:]
+    else:
+        idx = np.arange(n)
+    return {
+        "t": float(flash.t),
+        "kind": str(flash.kind),
+        "n_syn": int(flash.n_syn),
+        "sum_abs": float(flash.sum_abs),
+        "before": float(flash.before),
+        "after": float(flash.after),
+        "kc_on": [int(i) for i in np.asarray(flash.kc_on).ravel()[:400]],
+        "pre": [int(i) for i in np.asarray(flash.pre).ravel()[idx]],
+        "post": [int(i) for i in np.asarray(flash.post).ravel()[idx]],
+        "dw": [float(i) for i in np.asarray(flash.dw).ravel()[idx]],
+        "toward": [bool(i) for i in np.asarray(flash.toward).ravel()[idx]],
+        "mbon_before": [float(i) for i in np.asarray(flash.mbon_before).ravel()],
+        "mbon_after": [float(i) for i in np.asarray(flash.mbon_after).ravel()],
+    }
+
+
+def flash_from_payload(data: dict | None) -> LearnFlash | None:
+    if not data:
+        return None
+    return LearnFlash(
+        t=float(data.get("t", 0.0)),
+        kind=str(data.get("kind", "")),
+        kc_on=np.asarray(data.get("kc_on", []), dtype=np.int32),
+        pre=np.asarray(data.get("pre", []), dtype=np.int32),
+        post=np.asarray(data.get("post", []), dtype=np.int32),
+        dw=np.asarray(data.get("dw", []), dtype=np.float32),
+        toward=np.asarray(data.get("toward", []), dtype=bool),
+        n_syn=int(data.get("n_syn", 0)),
+        sum_abs=float(data.get("sum_abs", 0.0)),
+        before=float(data.get("before", 0.0)),
+        after=float(data.get("after", 0.0)),
+        mbon_before=np.asarray(data.get("mbon_before", []), dtype=np.float32),
+        mbon_after=np.asarray(data.get("mbon_after", []), dtype=np.float32),
+        strong_pre=-1,
+        strong_post=-1,
+    )

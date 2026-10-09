@@ -45,3 +45,19 @@ Same 25 s teacher walk, frames after 8 s, seeds 1–3. Readout gap is the mean a
 | 3 | +452 | +289 | 0.76 | 0.85 |
 
 The short window separated dog-in-view from no-dog more on every seed. The accumulating cloud left a higher near-field on frames with no dog in the camera.
+
+## Seek after a scripted teacher
+
+Same arena and the same PAM teacher as the fresh-lidar walk: 25 s, seeds 1–3, learning on, scripted steer. Then learning off and autonomy on for 20 s (`dt = 0.1`). The policy is the fly readout only. «УЗНАЮ» uses the confidence latch (quiet vs busy frames, z on at 0.80). While the word is off the dog yaws in place (`x = 0`, `z = ±0.35` with pauses). While it is on, it walks toward the same sector the lidar mark uses and holds near 1 m. A hold counts only when the phase is `hold`, the word is on, and the true distance to the nearest peer is inside 0.7–1.3 m. Touches more than 1 s apart are separate events.
+
+| seed | PAM | seek frames with the word | approach frames | of them aimed at a dog | of them aimed at a distractor | holds at 1±0.3 m |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 115 | 0 / 200 | 0 | 0 | 0 | 0 |
+| 2 | 111 | 6 / 200 | 6 | 0 | 0 | 0 |
+| 3 | 114 | 6 / 200 | 6 | 4 | 2 | 0 |
+
+The word stays off for almost the whole search, so the dog keeps turning and never settles at 1 m. Seed 2's six approach frames had neither a dog nor a distractor in the aimed sector (±1 bin). Seed 3 aimed at a dog on four of those frames and at a distractor on two, then lost the word. No hold landed inside 1±0.3 m of a distractor either. This is the same modest recall already seen when the camera is not held on a dog by the scripted walker. The trial does not add a detector to force approaches.
+
+Takeover in this build is the `M` key and the on-screen «ПЕРЕХВАТ» button. Arrows during autonomy do not change the phase. On the mock sport client, takeover calls `StopMove`, later manual axes stay inside `x` ±0.4 and `z` ±1, and 300 ms without a manual packet stops again while the mode stays manual. E-STOP still blocks `A`.
+
+`SportClient.Move` is held by the sport service for about one second, so a dropped sender coasts until `StopMove` or that timeout. The onboard program does not call `SwitchJoystick` or `Damp`. `ObstaclesAvoidClient.UseRemoteCommandFromApi` is a different client and is not used together with `SportClient`. The SDK text does not give `SportClient` a switch that makes the Unitree stick always win. The stick is not this app's takeover. `M` and E-STOP are. If the stick and `Move` are both live they can fight. Releasing the stick does not clear autonomy and does not put this process into manual.

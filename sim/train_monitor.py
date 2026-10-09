@@ -14,7 +14,7 @@ import numpy as np
 from .mb_confidence import fmt_duration
 
 WIN_W = 1280
-WIN_H = 760
+WIN_H = 860
 
 
 @dataclass
@@ -38,6 +38,10 @@ class MonitorInput:
     lidar_reset: bool = False
     lidar_toggle: bool = False
     flash_toggle: bool = False
+    autonomy_toggle: bool = False
+    takeover: bool = False
+    treat_down: bool = False
+    punish_down: bool = False
     focused: bool = True
 
 
@@ -99,6 +103,12 @@ class MonitorView:
     lidar_fresh_on: bool = True
     learn_flash: object | None = None
     mb_layout: object | None = None
+    pilot_mode: str = "РУЧНОЕ"
+    pilot_phase: str = "stop"
+    pilot_who: str = "оператор"
+    pilot_hint: str = ""
+    learning_on: bool = True
+    autonomy_on: bool = False
 
 
 def _surf_from_rgb(rgb: np.ndarray):
@@ -175,6 +185,9 @@ class TrainMonitor:
         self.treat_rect = pygame.Rect(WIN_W - 430, WIN_H - 56, 220, 40)
         self.lidar_reset_rect = pygame.Rect(16, 588, 200, 34)
         self.lidar_fresh_rect = pygame.Rect(224, 588, 236, 34)
+        self.learn_rect = pygame.Rect(16, WIN_H - 148, 210, 46)
+        self.auto_rect = pygame.Rect(236, WIN_H - 148, 230, 46)
+        self.take_rect = pygame.Rect(476, WIN_H - 148, 230, 46)
         self.beep_on = False
         self.flash_open = False
         self.audio_ok: bool | None = None
@@ -225,6 +238,10 @@ class TrainMonitor:
                 elif event.key == pygame.K_g and not getattr(event, "repeat", False):
                     self.flash_open = not self.flash_open
                     inp.flash_toggle = True
+                elif event.key == pygame.K_a and not getattr(event, "repeat", False):
+                    inp.autonomy_toggle = True
+                elif event.key == pygame.K_m and not getattr(event, "repeat", False):
+                    inp.takeover = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
@@ -238,6 +255,12 @@ class TrainMonitor:
                     inp.lidar_reset = True
                 elif self.lidar_fresh_rect.collidepoint(event.pos):
                     inp.lidar_toggle = True
+                elif self.learn_rect.collidepoint(event.pos):
+                    inp.pause_learn = True
+                elif self.auto_rect.collidepoint(event.pos):
+                    inp.autonomy_toggle = True
+                elif self.take_rect.collidepoint(event.pos):
+                    inp.takeover = True
         inp.focused = bool(pygame.key.get_focused())
         if inp.focused:
             keys = pygame.key.get_pressed()
@@ -249,6 +272,8 @@ class TrainMonitor:
                 inp.steer_z += 1.0
             if keys[pygame.K_RIGHT]:
                 inp.steer_z -= 1.0
+            inp.treat_down = bool(keys[pygame.K_t])
+            inp.punish_down = bool(keys[pygame.K_x])
         return inp
 
     def save_screenshot(self, path: str) -> None:
@@ -307,9 +332,10 @@ class TrainMonitor:
         screen.blit(sm.render("журнал", True, (200, 204, 214)), (rx, log_y))
         y = log_y + 18
         for line in view.log_lines[-log_n:]:
-            screen.blit(sm.render(line[:110], True, (186, 190, 200)), (rx, y))
+            screen.blit(sm.render(line[:78], True, (186, 190, 200)), (rx, y))
             y += 16
 
+        self._mode_buttons(screen, view)
         pygame.draw.rect(screen, (12, 12, 16), pygame.Rect(0, WIN_H - 72, WIN_W, 72))
         focus = "окно в фокусе" if view.focused else "нажмите на окно — клавиши не читаются"
         screen.blit(sm.render(view.udp_status + "    " + focus, True, (220, 220, 220)), (16, WIN_H - 64))
@@ -332,6 +358,59 @@ class TrainMonitor:
             self._prev_rec = False
         pygame.display.flip()
         self.clock.tick(30)
+
+    def _mode_buttons(self, screen, view: MonitorView) -> None:
+        import pygame
+
+        mouse = pygame.mouse.get_pos()
+        learn_on = bool(view.learning_on)
+        auto_on = bool(view.autonomy_on)
+        grabbed = "ПЕРЕХВАТ" in (view.pilot_mode or "")
+        self._pill(
+            screen,
+            self.learn_rect,
+            "СТОП ОБУЧЕНИЯ P" if learn_on else "СТАРТ ОБУЧЕНИЯ P",
+            (32, 118, 72) if learn_on else (58, 62, 72),
+            self.learn_rect.collidepoint(mouse),
+        )
+        self._pill(
+            screen,
+            self.auto_rect,
+            "СТОП АВТО A" if auto_on else "СТАРТ АВТО A",
+            (32, 96, 150) if auto_on else (58, 62, 72),
+            self.auto_rect.collidepoint(mouse),
+        )
+        self._pill(
+            screen,
+            self.take_rect,
+            "ПЕРЕХВАТ M",
+            (168, 112, 36) if grabbed else (92, 58, 32),
+            self.take_rect.collidepoint(mouse),
+        )
+        word = view.pilot_mode or "РУЧНОЕ"
+        if word == "АВТОНОМИЯ":
+            color = (86, 214, 128)
+        elif "ПЕРЕХВАТ" in word:
+            color = (232, 176, 72)
+        elif word == "СТОП":
+            color = (232, 84, 76)
+        else:
+            color = (214, 218, 224)
+        title = self.font_ind.render(word, True, color)
+        screen.blit(title, (720, WIN_H - 146))
+        who = self.font.render(f"ведёт: {view.pilot_who}", True, (186, 192, 204))
+        screen.blit(who, (720, WIN_H - 114))
+        if view.pilot_hint:
+            hint = self.font_sm.render(view.pilot_hint, True, (232, 176, 72))
+            screen.blit(hint, (720, WIN_H - 94))
+
+    def _pill(self, screen, rect, text: str, color: tuple[int, int, int], hot: bool) -> None:
+        import pygame
+
+        fill = tuple(min(255, c + 28) for c in color) if hot else color
+        pygame.draw.rect(screen, fill, rect, border_radius=6)
+        label = self.font.render(text, True, (248, 248, 246))
+        screen.blit(label, label.get_rect(center=rect.center))
 
     def _ensure_audio(self) -> bool:
         if self.audio_ok is not None:

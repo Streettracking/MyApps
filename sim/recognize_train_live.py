@@ -1,13 +1,12 @@
 """Live recognition trainer for one Go2.
 
 Sensors: HTTP JPEG preview (camera.jpg, lidar.jpg).
-Motion: UDP JSON to the local command server (go2_wr_server), and only when
-the operator holds an arrow key in this focused window.
+Motion: UDP JSON to the local command server, or, with ``--onboard``,
+buttons to the fly brain already running on the dog.
 
-Learning is in the fly mushroom body on this machine: raw JPEG → PN → KC → MBON,
-and only KC→MBON changes. Default DAN is the operator. T injects appetitive PAM,
-X injects aversive PPL1. D and N only choose which monitor curve a frame joins.
-The mushroom body never sends Move.
+Learning is KC→MBON. T is PAM, X is PPL1. D and N only pick a monitor curve.
+Autonomy (A) lets that same readout search and approach. Arrows do not take
+over: M or the ПЕРЕХВАТ button does, and A is the only way back.
 """
 
 from __future__ import annotations
@@ -27,9 +26,12 @@ import numpy as np
 
 from .frame_sense import decode_image_bytes, features_from_frames
 from .go2_udp import Go2CommandLink
+from .learn_flash import flash_from_payload
 from .lidar_fresh import DEFAULT_LIDAR_REFRESH, FreshWindow, mismatch_warning
 from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
+from .onboard_link import OnboardLink
+from .pilot import Pilot, TeachRepeater, clamp_velocity, forward_clearance
 from .recognize import ConspecificRecognizer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,8 +42,7 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "стрелки ход  T лакомство  X наказание  G вспышка  B звук  C/V лидар  "
-    "Space  E-STOP  D/N P R S L F12"
+    "A авто  M перехват  стрелки после M  T/X  P  G  V/C  Space E-STOP  B D/N R S L"
 )
 
 
@@ -213,6 +214,8 @@ class LiveSession:
         npz: Path | None = None,
         seed: int = 1,
         lidar_refresh: float = DEFAULT_LIDAR_REFRESH,
+        return_auto_s: float = 0.0,
+        onboard: bool = False,
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -249,11 +252,29 @@ class LiveSession:
         self._weights_from_disk = False
         self._lidar_saved: float | None = None
         self.marks = MarkLayer()
+        self.pilot = Pilot(return_auto_s)
+        self.teach_pulse = TeachRepeater()
+        self.aim_sector: int | None = None
+        self.aim_dist: float | None = None
+        self.forward_m: float | None = None
+        self.recognized_now = False
+        self._hint_logged = ""
+        self._learn_block_log = -10.0
+        self.onboard = bool(onboard)
+        self.remote: dict = {}
+        self.remote_flash = None
+        self.layout = None
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
+        if onboard:
+            self.learner_kind = "mb"
+            self.learn = False
+            self._log("мозг на роботе. Окно шлёт кнопки на порт 8090 и не шлёт UDP 5451.")
+            self._log("автономия и обучение на борту выключены, пока не нажаты A и P")
+            return
         if learner == "mb":
             self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan)
-            self._log("грибовидное тело  учитель — клавиша T  мозг собаку не ведёт")
+            self._log("грибовидное тело  T учит  A включает поиск сородича")
             self._log(self._lidar_intro())
         else:
             self.recognizer = ConspecificRecognizer()
@@ -283,6 +304,23 @@ class LiveSession:
         self.treat_flash = kind == "pam"
         self.mb.teach(self.mb.last_fwd, kind if self.dan == "teacher" else None, self.now())
         self._log_teach(kind)
+
+    def _note_aim(self, feat: np.ndarray, recognized: bool) -> None:
+        self.recognized_now = bool(recognized)
+        self.forward_m = forward_clearance(feat)
+        if recognized:
+            self.aim_sector = self.marks.aim_sector
+            self.aim_dist = self.marks.aim_dist
+        else:
+            self.aim_sector = None
+            self.aim_dist = None
+
+    def ensure_layout(self) -> None:
+        if self.layout is not None or not self.onboard:
+            return
+        holder = MbTrainer(default_npz(), seed=1, eta=0.2, dan="teacher")
+        self.layout = holder.layout
+        self._layout_holder = holder
 
     def _log_teach(self, kind: str | None) -> None:
         if self.mb is None:
@@ -325,14 +363,16 @@ class LiveSession:
             self._was_rec = bool(conf.recognized) if conf.ready else False
             self.last_like = float(value)
             self.last_match = float(value)
+            seen = bool(conf.ready and conf.recognized)
             self.marks.consider(
                 self.mb,
                 feat,
                 self.now(),
-                recognized=bool(conf.ready and conf.recognized),
+                recognized=seen,
                 mode="live",
                 scan=scan,
             )
+            self._note_aim(feat, seen)
             if self.now() - self._last_metric >= 1.0:
                 self.mb.note_drift(self.now())
                 self._record_metric()
@@ -355,6 +395,9 @@ class LiveSession:
                 self._log(f"likeness spike  {like:.2f}")
                 self._last_spike = self.now()
             self._prev_like = like
+            self.recognized_now = False
+            self.aim_sector = None
+            self.aim_dist = None
             if self.now() - self._last_metric >= 1.0:
                 self._record_metric()
                 self._last_metric = self.now()
@@ -373,10 +416,7 @@ class LiveSession:
 
     def _lidar_intro(self) -> str:
         if self.lidar_fresh_on:
-            return (
-                f"свежий лидар каждые {self.lidar_interval:.1f} с: "
-                "в мозг идёт кадр перед сбросом, пустые кадры после сброса не идут"
-            )
+            return f"свежий лидар {self.lidar_interval:.1f} с, пустой кадр после сброса не идёт в мозг"
         return "лидар копится на карте сервера"
 
     def _lidar_caption(self) -> str:
@@ -451,13 +491,165 @@ class LiveSession:
         return "D — собака в кадре, N — нет. Метка только для панели."
 
 
-def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, seconds: float = 0.0) -> None:
+def _apply_live_keys(session: LiveSession, inp, onboard: OnboardLink | None) -> None:
+    if inp.estop:
+        session.pilot.estop()
+        if onboard is not None:
+            onboard.post("estop")
+        else:
+            session._log("E-STOP")
+    elif inp.stop:
+        session.pilot.space()
+        if onboard is not None:
+            onboard.post("space")
+        session._log("стоп")
+    if inp.takeover and not inp.estop:
+        session.pilot.takeover()
+        if onboard is not None:
+            onboard.post("takeover")
+        session._log("перехват: ручное, автономия сама не вернётся")
+    if inp.autonomy_toggle and not inp.estop:
+        if session.learner_kind != "mb" and not session.onboard:
+            session._log("автономия только у грибовидного тела")
+        elif onboard is not None:
+            if session.remote.get("autonomy"):
+                onboard.post("autonomy_off")
+            else:
+                onboard.post("autonomy_on")
+        elif session.pilot.autonomy:
+            session.pilot.stop_auto()
+            session._log("автономия выключена")
+        elif not session.pilot.start_auto(session.now()):
+            session._log("E-STOP держит стоп. M переводит в ручное")
+        else:
+            session._log("автономия: поиск, пока мозг не скажет «узнаю»")
+    if inp.pause_learn:
+        if onboard is not None:
+            onboard.post("learn_off" if session.remote.get("learning") else "learn_on")
+        else:
+            session.learn = not session.learn
+            session._log("обучение выключено, T/X веса не меняют" if not session.learn else "обучение включено")
+
+
+def _mirror_remote(session: LiveSession, status: dict) -> None:
+    if not status:
+        return
+    session.remote = status
+    session.learn = bool(status.get("learning", False))
+    session.pilot.mode = str(status.get("mode", session.pilot.mode))
+    session.pilot.took_over = bool(status.get("took_over", False))
+    session.pilot.phase = str(status.get("phase", "stop"))
+    session.pilot.who = str(status.get("who", "никто"))
+    session.pilot.hint = str(status.get("hint", ""))
+    session.pilot.held_stop = status.get("label") == "СТОП" and status.get("mode") != "estop"
+    session.recognized_now = bool(status.get("recognized", False))
+    session.last_like = float(status.get("readout") or 0.0)
+    session.last_match = session.last_like
+    session.remote_flash = flash_from_payload(status.get("flash"))
+    for line in status.get("log") or []:
+        if line not in session.log:
+            session.log.append(str(line))
+
+
+def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now: float, frames_ok: bool) -> str:
+    cmd = session.pilot.command(
+        session.now(),
+        (inp.steer_x, inp.steer_z),
+        focused=inp.focused,
+        frames_ok=frames_ok,
+        link_ok=True,
+        recognized=session.recognized_now and session.learner_kind == "mb",
+        sector=session.aim_sector,
+        dist_m=session.aim_dist,
+        forward_m=session.forward_m,
+    )
+    if cmd.hint and cmd.hint != session._hint_logged:
+        session._log(cmd.hint)
+        session._hint_logged = cmd.hint
+    elif not cmd.hint:
+        session._hint_logged = ""
+    if inp.estop:
+        link.emergency_stop()
+    force = bool(inp.estop or inp.stop or inp.takeover or not inp.focused)
+    if cmd.stop:
+        if state["moving"] or force:
+            link.stop()
+            state["moving"] = False
+    elif (not state["moving"]) or (now - state["last"] >= 0.10):
+        link.move_axes(cmd.x, cmd.z)
+        state["moving"] = True
+        state["last"] = now
+    if inp.focused and not inp.estop:
+        if inp.stand_up:
+            link.stand_up()
+            session._log("StandUp")
+        if inp.stand_down:
+            link.stand_down()
+            session._log("StandDown")
+    return link.last_command or _phase_name(cmd.phase)
+
+
+def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict, now: float) -> None:
+    """Buttons and, only after takeover, manual axes. Never UDP."""
+    if now - state["poll"] >= 0.10:
+        onboard.poll()
+        _mirror_remote(session, onboard.status)
+        state["poll"] = now
+    autonomy = bool(session.remote.get("autonomy"))
+    manual_mode = session.remote.get("mode") == "manual"
+    if inp.focused and manual_mode and not autonomy:
+        ax = float(inp.steer_x)
+        az = float(inp.steer_z)
+        if abs(ax) + abs(az) > 0:
+            if now - state["manual"] >= 0.10:
+                x, z = clamp_velocity(0.4 * ax, az if az else 0.0)
+                if az > 0:
+                    z = 1.0
+                elif az < 0:
+                    z = -1.0
+                x, z = clamp_velocity(x, z)
+                onboard.post("manual", x=x, z=z)
+                state["manual"] = now
+                state["axes"] = True
+        elif state["axes"]:
+            onboard.post("manual", x=0.0, z=0.0)
+            state["manual"] = now
+            state["axes"] = False
+    elif state["axes"]:
+        state["axes"] = False
+    if autonomy and inp.focused and abs(float(inp.steer_x)) + abs(float(inp.steer_z)) > 0:
+        session.pilot.hint = "нажми ПЕРЕХВАТ"
+        if session._hint_logged != session.pilot.hint:
+            session._log(session.pilot.hint)
+            session._hint_logged = session.pilot.hint
+    elif not autonomy:
+        session._hint_logged = ""
+
+
+def _phase_name(phase: str) -> str:
+    return {
+        "search": "поиск",
+        "approach": "подход",
+        "hold": "стоп 1 м",
+        "manual": "ручное",
+        "stop": "стоп",
+    }.get(phase, phase)
+
+
+def run_live_gui(
+    session: LiveSession,
+    pull: PreviewPull,
+    link: Go2CommandLink | None,
+    seconds: float = 0.0,
+    onboard: OnboardLink | None = None,
+) -> None:
     from .train_monitor import MonitorView, TrainMonitor
 
     mon = TrainMonitor("Go2 recognition trainer")
-    tele = {"moving": False, "last": 0.0, "latched": False}
+    tele = {"moving": False, "last": 0.0, "latched": False, "poll": 0.0, "manual": 0.0, "axes": False}
     seen_frame = 0
     announced = False
+    command_name = "—"
     try:
         while True:
             inp = mon.pump()
@@ -471,12 +663,9 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                 session._log("метка N — только для панели, в обучение не входит")
             if inp.beep_toggle:
                 session._log("звук включён" if mon.beep_on else "звук выключен")
-            if inp.pause_learn:
-                session.learn = not session.learn
-                session._log("обучение на паузе" if not session.learn else "обучение продолжается")
-            if inp.reset:
+            if inp.reset and not session.onboard:
                 session.reset()
-            if inp.lidar_reset:
+            if inp.lidar_reset and not session.onboard:
                 if session.lidar_fresh_on:
                     session.fresh.manual_clear()
                 request_lidar_reset(
@@ -485,39 +674,71 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                     session.fresh if session.lidar_fresh_on else None,
                     quiet=False,
                 )
-            if inp.lidar_toggle:
+            elif inp.lidar_reset and session.onboard:
+                session._log("свежий лидар ведёт борт, это окно его не сбрасывает")
+            if inp.lidar_toggle and not session.onboard:
                 session.toggle_lidar_fresh(time.monotonic())
             if inp.flash_toggle:
                 if session.learner_kind != "mb":
                     mon.flash_open = False
                     session._log("вспышка обучения только у грибовидного тела")
+                elif session.onboard and mon.flash_open:
+                    session.ensure_layout()
+                    session._log("схема обучения открыта")
                 else:
                     session._log("схема обучения открыта" if mon.flash_open else "схема обучения скрыта")
             if inp.save:
-                session.save()
-            if inp.load:
+                if onboard is not None:
+                    onboard.post("save")
+                else:
+                    session.save()
+            if inp.load and not session.onboard:
                 try:
                     session.load()
                 except FileNotFoundError:
                     session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
-            apply_teleop(link, inp, tele, time.monotonic(), session._log)
+            now = time.monotonic()
             frame_id, camera, lidar, scan, error = pull.latest()
-            brain_lidar, brain_scan, disp_lidar, hold = service_lidar(
-                session, lidar, scan, time.monotonic(), pull.base
-            )
-            session.lidar_hold = hold
+            if session.onboard:
+                disp_lidar = lidar
+                session.lidar_hold = ""
+                brain_lidar = None
+                brain_scan = None
+            else:
+                brain_lidar, brain_scan, disp_lidar, hold = service_lidar(
+                    session, lidar, scan, now, pull.base
+                )
+                session.lidar_hold = hold
+            frames_ok = camera is not None and lidar is not None and not error
             if error and not announced:
                 print(error, file=sys.stderr)
                 announced = True
             if not error:
                 announced = False
-            teach = None
-            if inp.treat:
-                teach = "pam"
-            elif inp.punish:
-                teach = "ppl1"
-            new_frame = frame_id != seen_frame and camera is not None
-            teach_now = teach and camera is not None and session.dan == "teacher"
+            _apply_live_keys(session, inp, onboard)
+            if onboard is not None:
+                _drive_onboard(session, onboard, inp, tele, now)
+                command_name = str(session.remote.get("phase") or "—")
+            elif link is not None:
+                command_name = _drive_udp(session, link, inp, tele, now, frames_ok)
+            teach = session.teach_pulse.poll(
+                session.now(),
+                inp.treat,
+                inp.punish,
+                inp.treat_down,
+                inp.punish_down,
+            )
+            if teach and onboard is not None:
+                onboard.post("treat" if teach == "pam" else "punish")
+                teach = None
+            elif teach and not session.learn and session.now() - session._learn_block_log > 1.0:
+                session._log("обучение выключено, T/X веса не меняют")
+                session._learn_block_log = session.now()
+                teach = None
+            elif teach and not session.learn:
+                teach = None
+            new_frame = frame_id != seen_frame and camera is not None and not session.onboard
+            teach_now = teach and camera is not None and session.dan == "teacher" and not session.onboard
             waiting = session.lidar_fresh_on and brain_lidar is None
             if new_frame:
                 if waiting:
@@ -537,7 +758,7 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                 session.teach_current(teach)
             elif teach_now and waiting:
                 session.pending_teach = teach
-            view = _live_view(session, camera, disp_lidar, error, link, inp.focused)
+            view = _live_view(session, camera, disp_lidar, error, link, inp.focused, command_name, onboard)
             mon.draw(view)
             if inp.screenshot:
                 dest = ROOT / "logs" / "monitor_shot.png"
@@ -548,9 +769,11 @@ def run_live_gui(session: LiveSession, pull: PreviewPull, link: Go2CommandLink, 
                 break
     finally:
         try:
-            link.stop()
+            if link is not None:
+                link.stop()
         finally:
-            link.close()
+            if link is not None:
+                link.close()
             pull.stop()
 
 
@@ -564,9 +787,24 @@ def _scaled(session: LiveSession, rows: list[tuple[float, float]]) -> list[tuple
     return [(t, (v - lo) / span) for t, v in rows[-400:]]
 
 
-def _live_view(session: LiveSession, camera, lidar, error: str, link: Go2CommandLink, focused: bool):
+def _live_view(
+    session: LiveSession,
+    camera,
+    lidar,
+    error: str,
+    link: Go2CommandLink | None,
+    focused: bool,
+    command_name: str = "—",
+    onboard: OnboardLink | None = None,
+):
     from .train_monitor import MonitorView
 
+    if onboard is not None:
+        udp_status = onboard.status_line()
+    elif link is not None:
+        udp_status = link.status_line()
+    else:
+        udp_status = ""
     common = dict(
         camera=camera,
         lidar=lidar,
@@ -576,26 +814,32 @@ def _live_view(session: LiveSession, camera, lidar, error: str, link: Go2Command
         metric_curve=session.metric_curve[-120:],
         log_lines=list(session.log),
         paused=not session.learn,
-        udp_status=link.status_line(),
-        last_command=link.last_command or "—",
+        udp_status=udp_status,
+        last_command=command_name,
         operator_label=session.label_text(),
         t=session.now(),
         focused=focused,
         keys_hint=LIVE_KEYS if session.learner_kind == "mb" else (
             "Arrows drive   C reset   V fresh   Space stop   -/+ stand   E E-STOP   D/N   P R S L F12 Esc"
         ),
+        pilot_mode=session.pilot.label(),
+        pilot_phase=session.pilot.phase,
+        pilot_who=session.pilot.who,
+        pilot_hint=session.pilot.hint,
+        learning_on=session.learn,
+        autonomy_on=session.pilot.autonomy,
         lidar_mode=session._lidar_caption(),
         lidar_hold=session.lidar_hold,
         lidar_warning=session.lidar_warning,
         lidar_fresh_on=session.lidar_fresh_on,
-        learn_flash=None if session.mb is None else session.mb.flash,
-        mb_layout=None if session.mb is None else session.mb.layout,
+        learn_flash=session.remote_flash if session.onboard else (None if session.mb is None else session.mb.flash),
+        mb_layout=session.layout if session.onboard else (None if session.mb is None else session.mb.layout),
     )
     if session.mb is not None:
         caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"
         prog = session.mb.progress
         conf = session.mb.conf
-        mode = "робот · лакомство T · мозг не рулит" if session.dan == "teacher" else "робот · знакомство · мозг не рулит"
+        mode = f"робот · {session.pilot.label()}"
         return MonitorView(
             title="тренировка узнавания   живая собака",
             peer_curve=_scaled(session, session.peer_curve),
@@ -629,6 +873,24 @@ def _live_view(session: LiveSession, camera, lidar, error: str, link: Go2Command
             session_novelty=session.mb.n_novelty,
             total_novelty=prog.base_novelty + session.mb.n_novelty,
             marks=session.marks.visible(session.now()),
+            **common,
+        )
+    if session.onboard:
+        remote = session.remote
+        return MonitorView(
+            title="тренировка узнавания   мозг на роботе",
+            mode_label=f"борт · {session.pilot.label()}",
+            learner="mb",
+            dan_mode="teacher",
+            kc_on=int(remote.get("kc_on") or 0),
+            kc_n=int(remote.get("kc_n") or 0),
+            drift=float(remote.get("drift") or 0.0),
+            readout_caption="сырой выход с борта",
+            n_pam=int(remote.get("n_pam") or 0),
+            n_ppl1=int(remote.get("n_ppl1") or 0),
+            recognized=bool(remote.get("recognized")),
+            confidence=float(remote.get("confidence") or 0.0),
+            confidence_ready=bool(remote.get("confidence_ready")),
             **common,
         )
     rec = session.recognizer
@@ -719,7 +981,13 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_LIDAR_REFRESH,
         help="Seconds between GET /lidar/reset. 0 feeds the accumulating map.",
     )
+    p.add_argument("--onboard", default="", help="Robot IP with the fly brain on port 8090. No local Move and no UDP.")
+    p.add_argument("--onboard-port", type=int, default=8090)
+    p.add_argument("--return-auto", type=float, default=0.0, help="Seconds of idle takeover before autonomy returns. 0 stays manual.")
     args = p.parse_args(argv)
+    if args.onboard and args.learner != "mb":
+        print("Onboard mode is the mushroom body. Ignoring --learner hebb.", file=sys.stderr)
+        args.learner = "mb"
     if args.headless:
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -737,6 +1005,8 @@ def main(argv: list[str] | None = None) -> int:
         npz=args.npz,
         seed=args.seed,
         lidar_refresh=args.lidar_refresh,
+        return_auto_s=args.return_auto,
+        onboard=bool(args.onboard),
     )
     if args.load or Path(args.state).is_file():
         try_load_live(session)
@@ -744,9 +1014,13 @@ def main(argv: list[str] | None = None) -> int:
         summary = run_headless(session, base, args.max_frames)
         print(json.dumps(summary, indent=2))
         return 0
-    link = Go2CommandLink(args.udp_host, args.udp_port)
     pull = PreviewPull(base)
     pull.start()
+    if args.onboard:
+        board = OnboardLink(args.onboard, args.onboard_port)
+        run_live_gui(session, pull, None, seconds=args.seconds, onboard=board)
+        return 0
+    link = Go2CommandLink(args.udp_host, args.udp_port)
     run_live_gui(session, pull, link, seconds=args.seconds)
     return 0
 

@@ -65,7 +65,15 @@ class Go2CommandLink:
         return payload
 
     def move(self, steer_x: float, steer_z: float) -> dict[str, Any]:
+        """Legacy arrow speeds: x is ±0.5. Autonomy and takeover use ``move_axes``."""
         return self.send("Move", move_params(steer_x, steer_z))
+
+    def move_axes(self, x: float, z: float) -> dict[str, Any]:
+        """Body velocity already chosen by the pilot. Clamped, no strafe."""
+        from .pilot import clamp_velocity
+
+        cx, cz = clamp_velocity(x, z)
+        return self.send("Move", {"x": cx, "y": 0.0, "z": cz})
 
     def stop(self) -> dict[str, Any]:
         return self.send("StopMove")

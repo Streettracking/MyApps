@@ -193,6 +193,8 @@ def choose_bearings(rows: list[tuple[int, float, float]]) -> list[tuple[int, flo
 @dataclass
 class MarkLayer:
     alive: dict[int, MapMark] = field(default_factory=dict)
+    aim_sector: int | None = None
+    aim_dist: float | None = None
 
     def consider(
         self,
@@ -204,6 +206,8 @@ class MarkLayer:
         mode: str,
         scan: dict | None = None,
     ) -> list[MapMark]:
+        self.aim_sector = None
+        self.aim_dist = None
         if trainer is None or feat is None or not recognized:
             return self.visible(now)
         rows = sector_table(trainer, feat)
@@ -215,7 +219,10 @@ class MarkLayer:
             mark = project_mark(index, percent, dist, mode=mode, scan=scan)
             mark.born = now
             self.alive[index] = mark
-            chosen.append(index)
+            chosen.append((index, dist))
+        if chosen:
+            self.aim_sector = int(chosen[0][0])
+            self.aim_dist = chosen[0][1]
         # Bearings that lost the peak this frame start fading from now only if
         # they were not refreshed. Their previous born time stays.
         return self.visible(now)
