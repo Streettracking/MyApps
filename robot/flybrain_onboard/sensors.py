@@ -18,21 +18,72 @@ from sim.lidar_fresh import FreshWindow
 from sim.pilot import ego_sector_ranges
 
 
+def jpeg_complete(data: bytes) -> bool:
+    """True when the buffer is a JPEG with the end marker, not a half write."""
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return False
+    tail = data.rstrip(b"\x00\r\n\t ")
+    return tail.endswith(b"\xff\xd9")
+
+
+def _imdecode_quiet(cv2, buf):
+    """Decode one JPEG. libjpeg warnings stay off the process log.
+
+    A half-written preview frame makes cv2 print ``Corrupt JPEG data``
+    on the C stderr. That text was filling ``flybrain.log``. The warning
+    is captured and the frame is rejected.
+    """
+    import os
+
+    read_fd, write_fd = os.pipe()
+    saved = os.dup(2)
+    bgr = None
+    try:
+        try:
+            os.dup2(write_fd, 2)
+            os.close(write_fd)
+            write_fd = -1
+            bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        finally:
+            os.dup2(saved, 2)
+            os.close(saved)
+            if write_fd >= 0:
+                os.close(write_fd)
+        chunks = []
+        while True:
+            piece = os.read(read_fd, 4096)
+            if not piece:
+                break
+            chunks.append(piece)
+    finally:
+        os.close(read_fd)
+    err = b"".join(chunks)
+    bad = b"Corrupt JPEG" in err or b"premature end" in err
+    return bgr, bad
+
+
 def decode_jpeg(data: bytes) -> np.ndarray:
-    """RGB image. OpenCV or PIL. Not pygame."""
+    """RGB image. OpenCV or PIL. Not pygame.
+
+    A frame without the JPEG end marker ``FFD9`` is still being written
+    by the preview server. It is skipped before a decoder can warn.
+    """
+    if not jpeg_complete(data):
+        raise ValueError("incomplete jpeg")
     buf = np.frombuffer(data, dtype=np.uint8)
     try:
         import cv2
-
-        bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-        if bgr is None:
-            raise ValueError("cv2 returned nothing")
-        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     except Exception:
-        from PIL import Image
+        cv2 = None
+    if cv2 is not None:
+        bgr, corrupt = _imdecode_quiet(cv2, buf)
+        if corrupt or bgr is None:
+            raise ValueError("corrupt jpeg")
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    from PIL import Image
 
-        image = Image.open(BytesIO(data)).convert("RGB")
-        return np.asarray(image)
+    image = Image.open(BytesIO(data)).convert("RGB")
+    return np.asarray(image)
 
 
 def fetch_bytes(url: str, timeout: float = 1.5) -> bytes:

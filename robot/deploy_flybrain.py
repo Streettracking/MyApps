@@ -13,9 +13,10 @@ The password is only ``GO2_SSH_PASS``. This script does not install
 packages, does not write a systemd unit, and does not touch the preview
 server, its unit, or ``/tmp/robot_preview_server.py``.
 
-Remote files stay under ``/root/flybrain/``. The process is ``nohup``
-``python3 /root/flybrain/main.py``. Stop kills only that pid, and only
-when ``/proc/<pid>/cmdline`` contains ``flybrain``.
+Remote files stay under ``/root/flybrain/``. Start detaches with
+``setsid`` so the SSH channel closes, and ``main.py`` writes its own
+pid to ``flybrain.pid``. Stop kills that pid and any leftover
+``python3 /root/flybrain/main.py``.
 """
 
 from __future__ import annotations
@@ -59,15 +60,67 @@ def _reject(cmd: str) -> None:
             raise SystemExit(f"refusing a remote command that mentions {bad}")
 
 
-def _run(client, cmd: str, wait: float = 0.5) -> str:
+def _run(client, cmd: str, timeout: float = 12.0) -> str:
+    """Run one remote command and return. Never block on a live child.
+
+    A background process that still holds the SSH pipe used to keep
+    ``stdout.read`` open until the brain exited. The caller passes a
+    timeout, and the channel is closed when that timeout lands.
+    """
     import time
 
     _reject(cmd)
-    _stdin, stdout, stderr = client.exec_command(cmd)
-    time.sleep(wait)
-    out = stdout.read().decode("utf-8", errors="replace")
-    err = stderr.read().decode("utf-8", errors="replace")
+    stdin, stdout, stderr = client.exec_command(cmd)
+    try:
+        stdin.close()
+    except Exception:
+        pass
+    channel = stdout.channel
+    deadline = time.monotonic() + float(timeout)
+    out_chunks = []
+    err_chunks = []
+    while time.monotonic() < deadline:
+        progressed = False
+        if channel.recv_ready():
+            out_chunks.append(channel.recv(65536))
+            progressed = True
+        if channel.recv_stderr_ready():
+            err_chunks.append(channel.recv_stderr(65536))
+            progressed = True
+        if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+            break
+        if not progressed:
+            time.sleep(0.05)
+    while channel.recv_ready():
+        out_chunks.append(channel.recv(65536))
+    while channel.recv_stderr_ready():
+        err_chunks.append(channel.recv_stderr(65536))
+    try:
+        channel.close()
+    except Exception:
+        pass
+    out = b"".join(out_chunks).decode("utf-8", errors="replace")
+    err = b"".join(err_chunks).decode("utf-8", errors="replace")
     return (out + err).strip()
+
+
+def _alive_fn(root: str) -> str:
+    """Shell function: true only when an argv is exactly ``root/main.py``.
+
+    ``pgrep -f`` also sees the shell that contains that path as text.
+    Matching one argv skips that shell and matches only the interpreter.
+    """
+    main = root + "/main.py"
+    return (
+        "_fly_alive() { "
+        "for p in $(pgrep -f %s || true); do "
+        "if [ -r /proc/$p/cmdline ] && tr \"\\0\" \"\\n\" < /proc/$p/cmdline | grep -qx %s; then "
+        "return 0; "
+        "fi; "
+        "done; "
+        "return 1; "
+        "}; "
+    ) % (main, main)
 
 
 def _mkdir(sftp, path: str) -> None:
@@ -117,39 +170,74 @@ def _upload(sftp, state_path: str = "") -> None:
         sftp.put(str(plain), REMOTE + "/state/mb_train_state.npz")
 
 
-def _start_cmd() -> str:
+def _start_cmd(root: str = REMOTE) -> str:
+    """Detach python. ``main.py`` writes the pid; ``$!`` is not the shell.
+
+    ``setsid`` puts python in its own session. ``< /dev/null`` and the
+    log redirect drop the SSH pipe, so this command exits at once.
+    """
+    main = root + "/main.py"
+    log = root + "/flybrain.log"
     return (
         "bash -lc '"
-        "pid=$(cat /root/flybrain/flybrain.pid 2>/dev/null || true); "
+        + _alive_fn(root)
+        + "cd %s || exit 1; "
+        "export PYTHONPATH=%s:/unitree/module/pet_go:/root/go2_flask_api; "
+        "if _fly_alive; then echo already; exit 0; fi; "
+        "nohup setsid python3 %s >> %s 2>&1 < /dev/null & "
+        "disown || true; "
+        "echo started; "
+        "exit 0'"
+    ) % (root, root, main, log)
+
+
+def _stop_cmd(root: str = REMOTE) -> str:
+    """Kill the pid file entry, then every process whose argv is main.py."""
+    pidfile = root + "/flybrain.pid"
+    return (
+        "bash -lc '"
+        + _alive_fn(root)
+        + "pid=$(cat %s 2>/dev/null || true); "
         "if [ -n \"$pid\" ] && [ -r /proc/$pid/cmdline ] && "
         "tr \"\\0\" \" \" < /proc/$pid/cmdline | grep -q flybrain; then "
-        "echo already; exit 0; fi; "
-        "cd /root/flybrain && "
-        "PYTHONPATH=/root/flybrain:/unitree/module/pet_go:/root/go2_flask_api "
-        "nohup python3 /root/flybrain/main.py >> /root/flybrain/flybrain.log 2>&1 & "
-        "echo $! > /root/flybrain/flybrain.pid; echo started'"
-    )
+        "kill $pid 2>/dev/null || true; "
+        "fi; "
+        "for p in $(pgrep -f %s || true); do "
+        "if [ -r /proc/$p/cmdline ] && tr \"\\0\" \"\\n\" < /proc/$p/cmdline | grep -qx %s; then "
+        "kill $p 2>/dev/null || true; "
+        "fi; "
+        "done; "
+        "sleep 0.6; "
+        "if _fly_alive; then "
+        "for p in $(pgrep -f %s || true); do "
+        "if [ -r /proc/$p/cmdline ] && tr \"\\0\" \"\\n\" < /proc/$p/cmdline | grep -qx %s; then "
+        "kill -9 $p 2>/dev/null || true; "
+        "fi; "
+        "done; "
+        "sleep 0.2; "
+        "fi; "
+        "if _fly_alive; then echo still-running; else echo stopped; fi'"
+    ) % (pidfile, root + "/main.py", root + "/main.py", root + "/main.py", root + "/main.py")
 
 
-def _stop_cmd() -> str:
+def _status_cmd(root: str = REMOTE) -> str:
+    pidfile = root + "/flybrain.pid"
+    log = root + "/flybrain.log"
+    main = root + "/main.py"
     return (
         "bash -lc '"
-        "pid=$(cat /root/flybrain/flybrain.pid 2>/dev/null || true); "
-        "if [ -n \"$pid\" ] && [ -r /proc/$pid/cmdline ] && "
-        "tr \"\\0\" \" \" < /proc/$pid/cmdline | grep -q flybrain; then "
-        "kill $pid; echo stopped; else echo not-running; fi'"
-    )
-
-
-def _status_cmd() -> str:
-    return (
-        "bash -lc '"
-        "pid=$(cat /root/flybrain/flybrain.pid 2>/dev/null || true); "
+        "pid=$(cat %s 2>/dev/null || true); "
         "echo pid=$pid; "
         "if [ -n \"$pid\" ] && [ -r /proc/$pid/cmdline ]; then "
-        "tr \"\\0\" \" \" < /proc/$pid/cmdline; echo; else echo not-running; fi; "
-        "tail -n 20 /root/flybrain/flybrain.log 2>/dev/null || true'"
-    )
+        "tr \"\\0\" \" \" < /proc/$pid/cmdline; echo; "
+        "else echo not-running; fi; "
+        "for p in $(pgrep -f %s || true); do "
+        "if [ -r /proc/$p/cmdline ] && tr \"\\0\" \"\\n\" < /proc/$p/cmdline | grep -qx %s; then "
+        "echo main=$p; "
+        "fi; "
+        "done; "
+        "tail -n 20 %s 2>/dev/null || true'"
+    ) % (pidfile, main, main, log)
 
 
 def main(argv=None) -> int:
@@ -192,7 +280,7 @@ def main(argv=None) -> int:
                 print(_run(client, "rm -f /root/flybrain/state/mb_train_state.npz"))
                 print("clean brain: no --state file copied")
             print(_run(client, "rm -f /root/flybrain/artifacts/connectome_mb_v1.npz"))
-            print(_run(client, _start_cmd(), wait=1.5))
+            print(_run(client, _start_cmd(), timeout=8.0))
         elif action == "stop":
             print(_run(client, _stop_cmd()))
         print(_run(client, _status_cmd()))

@@ -9,6 +9,8 @@ the laptop asks.
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -20,20 +22,47 @@ for candidate in (HERE, HERE.parent.parent, HERE.parent):
         break
 
 
-def main(argv=None) -> int:
-    sys.path.insert(0, str(HERE))
-    from app import make_brain, serve
-    from drive import SportDrive
-    from sensors import CloudRanges, JpegEyes
+def _pid_path(explicit: str) -> Path | None:
+    if explicit:
+        return Path(explicit)
+    if Path("/root/flybrain").is_dir():
+        return Path("/root/flybrain/flybrain.pid")
+    return None
 
+
+def _write_pid(path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("%s\n" % os.getpid())
+    except OSError:
+        pass
+
+
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Onboard fly mushroom body")
     parser.add_argument("--preview", default="http://127.0.0.1:8088")
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--state", default="")
     parser.add_argument("--npz", default="")
+    parser.add_argument("--pidfile", default="")
     parser.add_argument("--dry", action="store_true", help="No SportClient. For a laptop smoke test.")
     parser.add_argument("--lidar-refresh", type=float, default=1.5)
     args = parser.parse_args(argv)
+    stop = {"stop": False}
+
+    def _on_signal(_signum, _frame) -> None:
+        stop["stop"] = True
+
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
+    pid_path = _pid_path(args.pidfile)
+    if pid_path is not None:
+        _write_pid(pid_path)
+    sys.path.insert(0, str(HERE))
+    from app import make_brain, serve
+    from drive import SportDrive
+    from sensors import CloudRanges, JpegEyes
+
     state = args.state or str(HERE / "state" / "mb_train_state.npz")
     Path(state).parent.mkdir(parents=True, exist_ok=True)
     client = None
@@ -64,6 +93,8 @@ def main(argv=None) -> int:
             if camera is not None and brain_lidar is not None:
                 brain.ingest(camera, brain_lidar, now)
             brain.tick(now)
+            if stop["stop"]:
+                break
             if now - last_save >= 30.0:
                 brain.mb.lidar_refresh = float(args.lidar_refresh)
                 brain.mb.save(state)
