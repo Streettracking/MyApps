@@ -42,7 +42,7 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "A авто  M перехват  стрелки после M  T/X  P  G  V/C  Space E-STOP  B D/N R S L"
+    "A авто  M перехват  стрелки после M  T/X  P  G  V/C  Space E-STOP  -/+ стойка  B D/N R S L"
 )
 
 
@@ -261,6 +261,8 @@ class LiveSession:
         self._hint_logged = ""
         self._learn_block_log = -10.0
         self.onboard = bool(onboard)
+        self.bridge_open = False
+        self._bridge_warned = False
         self.remote: dict = {}
         self.remote_flash = None
         self.layout = None
@@ -269,7 +271,7 @@ class LiveSession:
         if onboard:
             self.learner_kind = "mb"
             self.learn = False
-            self._log("мозг на роботе. Окно шлёт кнопки на порт 8090 и не шлёт UDP 5451.")
+            self._log("мозг на роботе. Стойка и ход идут на порт 8090, не через python main.py.")
             self._log("автономия и обучение на борту выключены, пока не нажаты A и P")
             return
         if learner == "mb":
@@ -589,15 +591,39 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
     return link.last_command or _phase_name(cmd.phase)
 
 
+def _note_bridge(session: LiveSession, now: float, state: dict) -> None:
+    if now - state.get("bridge", 0.0) < 1.0:
+        return
+    state["bridge"] = now
+    from .onboard_link import udp_bridge_listening
+
+    session.bridge_open = udp_bridge_listening()
+    if session.bridge_open and not session._bridge_warned:
+        session._log("два источника команд: это окно и python main.py на UDP 5451")
+        session._bridge_warned = True
+    elif not session.bridge_open:
+        session._bridge_warned = False
+
+
 def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict, now: float) -> None:
     """Buttons and, only after takeover, manual axes. Never UDP."""
     if now - state["poll"] >= 0.10:
         onboard.poll()
         _mirror_remote(session, onboard.status)
         state["poll"] = now
+    _note_bridge(session, now, state)
+    if inp.stand_up:
+        onboard.post("stand_up")
+        session._log("StandUp")
+    if inp.stand_down:
+        onboard.post("stand_down")
+        session._log("StandDown")
+    if inp.recovery:
+        onboard.post("recovery_stand")
+        session._log("RecoveryStand")
     autonomy = bool(session.remote.get("autonomy"))
-    manual_mode = session.remote.get("mode") == "manual"
-    if inp.focused and manual_mode and not autonomy:
+    grabbed = bool(session.remote.get("took_over")) and session.remote.get("mode") == "manual"
+    if inp.focused and grabbed and not autonomy:
         ax = float(inp.steer_x)
         az = float(inp.steer_z)
         if abs(ax) + abs(az) > 0:
@@ -646,7 +672,15 @@ def run_live_gui(
     from .train_monitor import MonitorView, TrainMonitor
 
     mon = TrainMonitor("Go2 recognition trainer")
-    tele = {"moving": False, "last": 0.0, "latched": False, "poll": 0.0, "manual": 0.0, "axes": False}
+    tele = {
+        "moving": False,
+        "last": 0.0,
+        "latched": False,
+        "poll": 0.0,
+        "manual": 0.0,
+        "axes": False,
+        "bridge": 0.0,
+    }
     seen_frame = 0
     announced = False
     command_name = "—"
@@ -800,7 +834,7 @@ def _live_view(
     from .train_monitor import MonitorView
 
     if onboard is not None:
-        udp_status = onboard.status_line()
+        udp_status = onboard.status_line(session.bridge_open)
     elif link is not None:
         udp_status = link.status_line()
     else:
@@ -891,6 +925,7 @@ def _live_view(
             recognized=bool(remote.get("recognized")),
             confidence=float(remote.get("confidence") or 0.0),
             confidence_ready=bool(remote.get("confidence_ready")),
+            onboard=True,
             **common,
         )
     rec = session.recognizer

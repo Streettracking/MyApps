@@ -25,6 +25,7 @@ class MonitorInput:
     stop: bool = False
     stand_up: bool = False
     stand_down: bool = False
+    recovery: bool = False
     estop: bool = False
     pause_learn: bool = False
     reset: bool = False
@@ -109,6 +110,7 @@ class MonitorView:
     pilot_hint: str = ""
     learning_on: bool = True
     autonomy_on: bool = False
+    onboard: bool = False
 
 
 def _surf_from_rgb(rgb: np.ndarray):
@@ -188,6 +190,10 @@ class TrainMonitor:
         self.learn_rect = pygame.Rect(16, WIN_H - 148, 210, 46)
         self.auto_rect = pygame.Rect(236, WIN_H - 148, 230, 46)
         self.take_rect = pygame.Rect(476, WIN_H - 148, 230, 46)
+        self.stand_up_rect = pygame.Rect(720, 676, 150, 32)
+        self.stand_down_rect = pygame.Rect(878, 676, 130, 32)
+        self.recovery_rect = pygame.Rect(1016, 676, 150, 32)
+        self.show_stand = False
         self.beep_on = False
         self.flash_open = False
         self.audio_ok: bool | None = None
@@ -261,6 +267,12 @@ class TrainMonitor:
                     inp.autonomy_toggle = True
                 elif self.take_rect.collidepoint(event.pos):
                     inp.takeover = True
+                elif self.show_stand and self.stand_up_rect.collidepoint(event.pos):
+                    inp.stand_up = True
+                elif self.show_stand and self.stand_down_rect.collidepoint(event.pos):
+                    inp.stand_down = True
+                elif self.show_stand and self.recovery_rect.collidepoint(event.pos):
+                    inp.recovery = True
         inp.focused = bool(pygame.key.get_focused())
         if inp.focused:
             keys = pygame.key.get_pressed()
@@ -336,6 +348,9 @@ class TrainMonitor:
             y += 16
 
         self._mode_buttons(screen, view)
+        self.show_stand = bool(view.onboard)
+        if view.onboard:
+            self._stand_buttons(screen)
         pygame.draw.rect(screen, (12, 12, 16), pygame.Rect(0, WIN_H - 72, WIN_W, 72))
         focus = "окно в фокусе" if view.focused else "нажмите на окно — клавиши не читаются"
         screen.blit(sm.render(view.udp_status + "    " + focus, True, (220, 220, 220)), (16, WIN_H - 64))
@@ -403,6 +418,14 @@ class TrainMonitor:
         if view.pilot_hint:
             hint = self.font_sm.render(view.pilot_hint, True, (232, 176, 72))
             screen.blit(hint, (720, WIN_H - 94))
+
+    def _stand_buttons(self, screen) -> None:
+        import pygame
+
+        mouse = pygame.mouse.get_pos()
+        self._pill(screen, self.stand_up_rect, "ВСТАТЬ +", (46, 92, 64), self.stand_up_rect.collidepoint(mouse))
+        self._pill(screen, self.stand_down_rect, "ЛЕЧЬ −", (72, 64, 58), self.stand_down_rect.collidepoint(mouse))
+        self._pill(screen, self.recovery_rect, "ПОДЪЁМ", (58, 72, 96), self.recovery_rect.collidepoint(mouse))
 
     def _pill(self, screen, rect, text: str, color: tuple[int, int, int], hot: bool) -> None:
         import pygame

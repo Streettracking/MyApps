@@ -1,10 +1,10 @@
 """Onboard loop: mushroom body, pilot, and the laptop control port.
 
-Autonomy and learning start off. The laptop heartbeat and camera frames
-are watched. Either going stale for a second calls StopMove. Arrows do
-not arrive here as Move; a takeover command switches to manual, and only
-then do posted axes drive. Manual axes older than 300 ms become StopMove
-and stay manual.
+Autonomy and learning start off. That is watch-only: this process does
+not call SportClient at all. StopMove is one edge, and only after this
+process itself sent Move (a link or frame loss, or the step from moving
+to stopped). E-STOP sends StopMove once and then blocks. StandUp,
+StandDown, and RecoveryStand run only when the operator asks.
 """
 
 from __future__ import annotations
@@ -60,12 +60,13 @@ class BrainLoop:
         self.cloud_t = 0.0
         self._teach = None
         self._moving = False
+        self._sent_move = False
         self._last_send = 0.0
         self._prev_camera = None
         self._prev_near = None
         self._learn_block_log = 0.0
         self._lock = threading.Lock()
-        self._log("наблюдение: автономия выключена, обучение выключено")
+        self._log("наблюдение: SportClient не трогаем, пока нет автономии или перехвата")
 
     def _log(self, text: str) -> None:
         self.log.append(f"{time.monotonic() - self.t0:6.1f}s  {text}")
@@ -82,23 +83,41 @@ class BrainLoop:
         self.cloud_ranges = ranges
         self.cloud_t = float(now)
 
-    def halt(self) -> None:
+    def driving(self) -> bool:
+        """Autonomy, or manual after an explicit takeover. Watch-only is neither."""
+        if self.pilot.mode == "auto":
+            return True
+        return self.pilot.mode == "manual" and bool(self.pilot.took_over)
+
+    def _stop_once(self) -> None:
+        """One StopMove if this process has a Move outstanding. Otherwise silence."""
+        if not self._sent_move:
+            return
         self.drive.stop()
+        self._sent_move = False
         self._moving = False
 
+    def halt(self) -> None:
+        self._stop_once()
+
     def on_estop(self) -> None:
+        """One StopMove, then a block. A repeat while the block holds sends nothing."""
+        if self.pilot.mode == "estop":
+            return
         self.pilot.estop()
-        self.halt()
+        self.drive.stop()
+        self._sent_move = False
+        self._moving = False
         self._log("E-STOP")
 
     def on_space(self) -> None:
+        self._stop_once()
         self.pilot.space()
-        self.halt()
         self._log("стоп")
 
     def on_takeover(self) -> None:
+        self._stop_once()
         self.pilot.takeover()
-        self.halt()
         self._log("перехват: ручное, автономия сама не вернётся")
 
     def handle(self, data: dict, now: float) -> None:
@@ -111,8 +130,8 @@ class BrainLoop:
                 else:
                     self._log("E-STOP держит стоп. M переводит в ручное")
             elif op == "autonomy_off":
+                self._stop_once()
                 self.pilot.stop_auto()
-                self.halt()
                 self._log("автономия выключена")
             elif op == "learn_on":
                 self.learn = True
@@ -132,12 +151,24 @@ class BrainLoop:
                 self.on_space()
             elif op == "takeover":
                 self.on_takeover()
+            elif op == "stand_up":
+                self.drive.stand_up()
+                self._log("StandUp")
+            elif op == "stand_down":
+                self.drive.stand_down()
+                self._log("StandDown")
+            elif op == "recovery_stand":
+                if self.drive.recovery_stand():
+                    self._log("RecoveryStand")
+                else:
+                    self._log("RecoveryStand нет в SDK")
             elif op == "save":
                 self.mb.lidar_refresh = 1.5
                 self.mb.save(self.state_path)
                 self._log("сохранено")
             elif op == "manual":
-                self.note_manual(float(data.get("x", 0.0)), float(data.get("z", 0.0)), now)
+                if self.driving():
+                    self.note_manual(float(data.get("x", 0.0)), float(data.get("z", 0.0)), now)
             elif op == "heartbeat":
                 pass
 
@@ -197,6 +228,9 @@ class BrainLoop:
             sector = self.sector
             dist_m = self.dist_m
             forward_m = self.forward_m
+        if not self.driving():
+            # Watch-only, or the E-STOP block. Do not touch SportClient.
+            return DriveCommand(0.0, 0.0, True, "stop", "никто", "")
         if self.pilot.mode != "auto":
             axes = manual
         elif abs(manual[0]) + abs(manual[1]) > 1e-6 and recent_manual:
@@ -204,25 +238,12 @@ class BrainLoop:
         else:
             axes = None
         if not link_ok or not frames_ok:
-            cmd = self.pilot.command(
-                now,
-                (0.0, 0.0),
-                focused=True,
-                frames_ok=False,
-                link_ok=link_ok,
-                recognized=recognized,
-                sector=sector,
-                dist_m=dist_m,
-                forward_m=forward_m,
-                manual_axes=None,
-            )
-            # Missing frames in manual still stop. The sport service would
-            # otherwise keep the last Move for about a second.
-            cmd = DriveCommand(0.0, 0.0, True, "stop", "никто", cmd.hint)
+            # The sport service would keep our last Move for about a second.
+            # One StopMove covers that. Further ticks stay silent.
+            self._stop_once()
             self.pilot.phase = "stop"
             self.pilot.who = "никто"
-            self._emit(cmd, now, force_stop=True)
-            return cmd
+            return DriveCommand(0.0, 0.0, True, "stop", "никто", "")
         cmd = self.pilot.command(
             now,
             (0.0, 0.0),
@@ -235,16 +256,16 @@ class BrainLoop:
             forward_m=forward_m,
             manual_axes=axes,
         )
-        self._emit(cmd, now, force_stop=False)
+        self._emit(cmd, now)
         return cmd
 
-    def _emit(self, cmd: DriveCommand, now: float, force_stop: bool) -> None:
-        if cmd.stop or force_stop or (abs(cmd.x) < 1e-6 and abs(cmd.z) < 1e-6):
-            if self._moving or force_stop:
-                self.halt()
+    def _emit(self, cmd: DriveCommand, now: float) -> None:
+        if cmd.stop or (abs(cmd.x) < 1e-6 and abs(cmd.z) < 1e-6):
+            self._stop_once()
             return
-        if (not self._moving) or (now - self._last_send >= 0.10):
+        if (not self._sent_move) or (now - self._last_send >= 0.10):
             self.drive.move(cmd.x, cmd.z)
+            self._sent_move = True
             self._moving = True
             self._last_send = now
 
