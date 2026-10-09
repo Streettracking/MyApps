@@ -43,6 +43,7 @@ SIM_FILES = (
     "lidar_fresh.py",
     "map_marks.py",
     "pilot.py",
+    "hemifield.py",
     "npz_compat.py",
 )
 

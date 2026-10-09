@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from .frame_sense import sim_previews
+from .hemifield import format_fly_line
 from .lidar_fresh import DEFAULT_LIDAR_REFRESH, SimLidarBank, mismatch_warning
 from .map_marks import MarkLayer
 from .pilot import (
@@ -55,6 +56,7 @@ class RecognizeTrainSim:
         punish: bool = False,
         lidar_refresh: float = DEFAULT_LIDAR_REFRESH,
         return_auto_s: float = 0.0,
+        steer: str = "bilateral",
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -97,6 +99,7 @@ class RecognizeTrainSim:
         self.last_near_max = 0.0
         self.marks = MarkLayer()
         self.pilot = Pilot(return_auto_s)
+        self.pilot.set_steer(steer if steer in ("bilateral", "sectors") else "bilateral")
         self.teach_pulse = TeachRepeater()
         self.aim_sector: int | None = None
         self.aim_dist: float | None = None
@@ -412,6 +415,7 @@ class RecognizeTrainSim:
                 lidar_warning=self.lidar_warning,
                 lidar_fresh_on=self.lidar_fresh_on,
                 learn_flash=self.mb.flash,
+                learn_flash_r=self.mb.flash_r,
                 mb_layout=self.mb.layout,
                 pilot_mode=self.pilot.label(),
                 pilot_phase=self.pilot.phase,
@@ -426,6 +430,14 @@ class RecognizeTrainSim:
                     self.pilot.track.sector_smooth,
                     self.pilot.track.as_dict(),
                 ),
+                fly_line=format_fly_line(
+                    self.pilot.track.r_l,
+                    self.pilot.track.r_r,
+                    self.pilot.track.r_diff,
+                    self.pilot.track.yaw_z,
+                    self.pilot.steer,
+                ),
+                steer=self.pilot.steer,
             )
         assert self.recognizer is not None
         return MonitorView(
@@ -522,7 +534,7 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "T/X учить  A авто  M перехват  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
+SIM_KEYS = "T/X учить  A авто  M перехват  Y руль  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
 HEBB_KEYS = "стрелки ход   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
 
 
@@ -560,13 +572,27 @@ def _apply_pilot_keys(session: RecognizeTrainSim, inp, now: float) -> None:
         elif not session.pilot.start_auto(now):
             session._log("E-STOP держит стоп. M переводит в ручное")
         else:
-            session._log("автономия: поиск, пока мозг не скажет «узнаю»")
+            session._log("автономия: поиск в одну сторону, руль %s" % _steer_name(session.pilot.steer))
+    if inp.steer_toggle and session.learner_kind == "mb":
+        mode = session.pilot.toggle_steer()
+        session._log("руль: %s" % _steer_name(mode))
     if inp.pause_learn:
         session.learn = not session.learn
         session._log("обучение выключено, T/X веса не меняют" if not session.learn else "обучение включено")
 
 
+def _steer_name(mode: str) -> str:
+    return "билатерально" if mode == "bilateral" else "секторы"
+
+
+def _readouts(session: RecognizeTrainSim) -> tuple[float, float]:
+    if session.mb is None:
+        return 0.0, 0.0
+    return float(session.mb.r_l), float(session.mb.r_r)
+
+
 def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, float, bool, str]:
+    r_l, r_r = _readouts(session)
     cmd = session.pilot.command(
         now,
         (inp.steer_x, inp.steer_z),
@@ -577,6 +603,8 @@ def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, floa
         sector=session.aim_sector,
         dist_m=session.aim_dist,
         forward_m=session.forward_m,
+        r_l=r_l,
+        r_r=r_r,
     )
     if cmd.hint and cmd.hint != session._hint_logged:
         session._log(cmd.hint)
@@ -731,6 +759,7 @@ def seek_trial(seed: int, teach_s: float = 25.0, seek_s: float = 20.0, state: Pa
     dog_approach = 0
     distractor_hold_frames = 0
     for _ in range(int(seek_s / dt)):
+        r_l, r_r = _readouts(session)
         cmd = session.pilot.command(
             float(session.world.t),
             (0.0, 0.0),
@@ -741,6 +770,8 @@ def seek_trial(seed: int, teach_s: float = 25.0, seek_s: float = 20.0, state: Pa
             sector=session.aim_sector,
             dist_m=session.aim_dist,
             forward_m=session.forward_m,
+            r_l=r_l,
+            r_r=r_r,
         )
         learner = session.learner
         dogs = []
@@ -813,6 +844,219 @@ def seek_trial(seed: int, teach_s: float = 25.0, seek_s: float = 20.0, state: Pa
     }
 
 
+def _sign_match(z: float, bearing: int | None) -> bool | None:
+    """True when the commanded yaw points at this bearing. None if it is outside the view."""
+    from .map_marks import bin_angle
+    from .pilot import half_sector
+
+    if bearing is None:
+        return None
+    ang = bin_angle(int(bearing))
+    if abs(ang) <= half_sector() + 1e-5:
+        return abs(z) < 0.08
+    if z > 0.05:
+        return ang > 0
+    if z < -0.05:
+        return ang < 0
+    return False
+
+
+def _aimed_kind(z: float, bodies: list[tuple[float, int | None, str]]) -> str | None:
+    from .map_marks import bin_angle
+    from .pilot import half_sector
+
+    pool = []
+    for dist, bearing, kind in bodies:
+        if bearing is None:
+            continue
+        ang = bin_angle(int(bearing))
+        if abs(z) < 0.08:
+            if abs(ang) <= half_sector() * 2.0:
+                pool.append((dist, kind))
+        elif z > 0 and ang > 0:
+            pool.append((dist, kind))
+        elif z < 0 and ang < 0:
+            pool.append((dist, kind))
+    if not pool:
+        return None
+    pool.sort()
+    return pool[0][1]
+
+
+def _fov_bodies(session: RecognizeTrainSim):
+    """Bodies inside the camera field. Bearing is None outside it, and those are dropped."""
+    from .raw_sense import bearing_bin
+
+    learner = session.learner
+    bodies = []
+    dogs = []
+    for peer in session.peers:
+        dist = float(np.hypot(peer.x - learner.x, peer.y - learner.y))
+        bearing = bearing_bin(peer.x - learner.x, peer.y - learner.y, learner.yaw)
+        if bearing is None:
+            continue
+        dogs.append((dist, bearing))
+        bodies.append((dist, bearing, "dog"))
+    for obj in session.world.distractors:
+        dist = float(np.hypot(obj.x - learner.x, obj.y - learner.y))
+        bearing = bearing_bin(obj.x - learner.x, obj.y - learner.y, learner.yaw)
+        if bearing is None:
+            continue
+        bodies.append((dist, bearing, "distractor"))
+    dogs.sort()
+    nearest = None if not dogs else dogs[0]
+    return nearest, bodies
+
+
+def _side_hit(z: float, bearing: int | None) -> bool | None:
+    return _sign_match(z, bearing)
+
+
+def compare_steer(seeds: tuple[int, ...] = (1, 2, 3), teach_s: float = 8.0, seek_s: float = 12.0) -> list[dict]:
+    """Same teacher, then both steer modes from the moment «УЗНАЮ» is on.
+
+    A 20 s teacher lets the summed readout rise on quiet frames too, and the
+    word goes back off (the burst is about 5–11 s). Autonomy started after
+    that only searches, in both modes. This comparison therefore teaches for
+    8 s with the instantaneous lidar and switches while the word is still on.
+    Both modes see the same seed and the same script up to that switch.
+    Direction uses the nearest peer that is inside the field of view.
+    ``fly_acc`` is the sign of R_L−R_R during the teacher, before either
+    controller moves the dog.
+    """
+    from .hemifield import bilateral_yaw
+
+    rows = []
+    for seed in seeds:
+        taught = []
+        for mode in ("sectors", "bilateral"):
+            session = RecognizeTrainSim(
+                n_agents=3,
+                seed=int(seed),
+                state_path=Path("/tmp/bilateral_%s_%s.npz" % (seed, mode)),
+                learner="mb",
+                dan="teacher",
+                auto_teach=True,
+                lidar_refresh=0.0,
+                steer=mode,
+            )
+            dt = float(session.world.cfg.dt)
+            fly_hit = 0
+            fly_n = 0
+            for _ in range(int(teach_s / dt)):
+                sx, sz = session.scripted_steer()
+                session.step(sx, sz, rate=False)
+                if session.mb is None:
+                    continue
+                nearest, _bodies = _fov_bodies(session)
+                if nearest is None:
+                    continue
+                matched = _side_hit(bilateral_yaw(float(session.mb.r_l), float(session.mb.r_r)), nearest[1])
+                if matched is None:
+                    continue
+                fly_n += 1
+                if matched:
+                    fly_hit += 1
+            taught.append((session, dt, fly_hit, fly_n))
+        for session, dt, fly_hit, fly_n in taught:
+            mode = session.pilot.steer
+            session.learn = False
+            session.auto_teach = False
+            word_at_switch = bool(session.recognized_now)
+            session.pilot.start_auto(float(session.world.t))
+            zs: list[float] = []
+            dir_hit = 0
+            dir_n = 0
+            approach_frames = 0
+            distractor_frames = 0
+            episodes = 0
+            ended_ok = 0
+            in_ep = False
+            ep_ok = False
+            recognized_frames = 0
+            for _ in range(int(seek_s / dt)):
+                r_l, r_r = _readouts(session)
+                cmd = session.pilot.command(
+                    float(session.world.t),
+                    (0.0, 0.0),
+                    focused=True,
+                    frames_ok=True,
+                    link_ok=True,
+                    recognized=session.recognized_now,
+                    sector=session.aim_sector,
+                    dist_m=session.aim_dist,
+                    forward_m=session.forward_m,
+                    r_l=r_l,
+                    r_r=r_r,
+                )
+                nearest, bodies = _fov_bodies(session)
+                bearing = None if nearest is None else nearest[1]
+                nearest_dog = None if nearest is None else nearest[0]
+                phase = cmd.phase
+                zs.append(float(cmd.z))
+                if session.recognized_now:
+                    recognized_frames += 1
+                if phase == "approach":
+                    approach_frames += 1
+                    matched = _side_hit(float(cmd.z), bearing)
+                    if matched is not None:
+                        dir_n += 1
+                        if matched:
+                            dir_hit += 1
+                    if _aimed_kind(float(cmd.z), bodies) == "distractor":
+                        distractor_frames += 1
+                if phase in ("approach", "hold") and session.recognized_now:
+                    if not in_ep:
+                        in_ep = True
+                        episodes += 1
+                        ep_ok = False
+                    if phase == "hold" and nearest_dog is not None and 0.7 <= nearest_dog <= 1.3:
+                        ep_ok = True
+                else:
+                    if in_ep and ep_ok:
+                        ended_ok += 1
+                    in_ep = False
+                    ep_ok = False
+                session.step(cmd.x, cmd.z, learn=False, rate=True)
+            if in_ep and ep_ok:
+                ended_ok += 1
+            flips = 0
+            prev = 0
+            for z in zs:
+                sign = 1 if z > 0.05 else (-1 if z < -0.05 else 0)
+                if sign != 0 and prev != 0 and sign != prev:
+                    flips += 1
+                if sign != 0:
+                    prev = sign
+            pam = 0 if session.mb is None else int(session.mb.n_pam)
+            rows.append(
+                {
+                    "seed": int(seed),
+                    "steer": mode,
+                    "pam": pam,
+                    "teach_s": teach_s,
+                    "seek_s": seek_s,
+                    "word_at_switch": word_at_switch,
+                    "recognized_frames": recognized_frames,
+                    "fly_hit": fly_hit,
+                    "fly_n": fly_n,
+                    "fly_acc": None if fly_n == 0 else float(fly_hit) / float(fly_n),
+                    "direction_hit": dir_hit,
+                    "direction_n": dir_n,
+                    "direction_acc": None if dir_n == 0 else float(dir_hit) / float(dir_n),
+                    "z_flips": flips,
+                    "z_flips_per_s": float(flips) / float(seek_s),
+                    "approach_frames": approach_frames,
+                    "episodes": episodes,
+                    "episodes_at_1m": ended_ok,
+                    "hold_share": None if episodes == 0 else float(ended_ok) / float(episodes),
+                    "distractor_approach_frames": distractor_frames,
+                    "distractor_share": None if approach_frames == 0 else float(distractor_frames) / float(approach_frames),
+                }
+            )
+    return rows
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Sim recognition training: one learner, no zones, no reward")
     p.add_argument("--agents", type=int, default=3, help="1 learner + the rest are scenery peers")
@@ -835,8 +1079,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Seconds between fresh lidar windows. 0 keeps the accumulating map.",
     )
     p.add_argument("--return-auto", type=float, default=0.0, help="Idle seconds after takeover before autonomy returns. 0 stays manual.")
+    p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral", help="bilateral: yaw from R_L - R_R. sectors: the smoothed camera sector.")
     p.add_argument("--seek", action="store_true", help="Headless teacher then autonomy. Prints find/stop counts.")
+    p.add_argument("--compare-steer", action="store_true", help="Train once, then seek with sectors and with bilateral.")
     args = p.parse_args(argv)
+    if args.compare_steer:
+        import json
+
+        print(json.dumps(compare_steer(), indent=2))
+        return 0
     if args.seek:
         import json
 
@@ -855,6 +1106,7 @@ def main(argv: list[str] | None = None) -> int:
         punish=args.punish,
         lidar_refresh=args.lidar_refresh,
         return_auto_s=args.return_auto,
+        steer=args.steer,
     )
     if args.load or Path(args.state).is_file():
         try_load(session)

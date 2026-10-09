@@ -31,6 +31,7 @@ from .lidar_fresh import DEFAULT_LIDAR_REFRESH, FreshWindow, mismatch_warning
 from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
 from .onboard_link import OnboardLink
+from .hemifield import format_fly_line
 from .pilot import Pilot, TeachRepeater, clamp_velocity, format_range_line, forward_clearance, scrub_range
 from .recognize import ConspecificRecognizer
 
@@ -42,7 +43,7 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "A авто  M перехват  стрелки после M  T/X  P  G  V/C  Space E-STOP  -/+ стойка  B D/N R S L"
+    "A авто  M перехват  Y руль  стрелки после M  T/X  P  G  V/C  Space E-STOP  -/+ стойка  B D/N R S L"
 )
 
 
@@ -216,6 +217,7 @@ class LiveSession:
         lidar_refresh: float = DEFAULT_LIDAR_REFRESH,
         return_auto_s: float = 0.0,
         onboard: bool = False,
+        steer: str = "bilateral",
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -253,6 +255,7 @@ class LiveSession:
         self._lidar_saved: float | None = None
         self.marks = MarkLayer()
         self.pilot = Pilot(return_auto_s)
+        self.pilot.set_steer(steer if steer in ("bilateral", "sectors") else "bilateral")
         self.teach_pulse = TeachRepeater()
         self.aim_sector: int | None = None
         self.aim_dist: float | None = None
@@ -265,6 +268,7 @@ class LiveSession:
         self._bridge_warned = False
         self.remote: dict = {}
         self.remote_flash = None
+        self.remote_flash_r = None
         self.layout = None
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
@@ -525,7 +529,16 @@ def _apply_live_keys(session: LiveSession, inp, onboard: OnboardLink | None) -> 
         elif not session.pilot.start_auto(session.now()):
             session._log("E-STOP держит стоп. M переводит в ручное")
         else:
-            session._log("автономия: поиск, пока мозг не скажет «узнаю»")
+            session._log("автономия: поиск в одну сторону, руль %s" % ("билатерально" if session.pilot.steer == "bilateral" else "секторы"))
+    if inp.steer_toggle and session.learner_kind == "mb":
+        if onboard is not None:
+            current = str(session.remote.get("steer") or session.pilot.steer)
+            mode = "sectors" if current == "bilateral" else "bilateral"
+            onboard.post("steer", mode=mode)
+            session._log("руль: %s" % ("билатерально" if mode == "bilateral" else "секторы"))
+        else:
+            mode = session.pilot.toggle_steer()
+            session._log("руль: %s" % ("билатерально" if mode == "bilateral" else "секторы"))
     if inp.pause_learn:
         if onboard is not None:
             onboard.post("learn_off" if session.remote.get("learning") else "learn_on")
@@ -549,6 +562,9 @@ def _mirror_remote(session: LiveSession, status: dict) -> None:
     session.last_like = float(status.get("readout") or 0.0)
     session.last_match = session.last_like
     session.remote_flash = flash_from_payload(status.get("flash"))
+    session.remote_flash_r = flash_from_payload(status.get("flash_r"))
+    if status.get("steer") in ("bilateral", "sectors"):
+        session.pilot.steer = str(status["steer"])
     for line in status.get("log") or []:
         if line not in session.log:
             session.log.append(str(line))
@@ -565,6 +581,8 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         sector=session.aim_sector,
         dist_m=session.aim_dist,
         forward_m=session.forward_m,
+        r_l=0.0 if session.mb is None else float(session.mb.r_l),
+        r_r=0.0 if session.mb is None else float(session.mb.r_r),
     )
     if cmd.hint and cmd.hint != session._hint_logged:
         session._log(cmd.hint)
@@ -825,6 +843,25 @@ def _scaled(session: LiveSession, rows: list[tuple[float, float]]) -> list[tuple
     return [(t, (v - lo) / span) for t, v in rows[-400:]]
 
 
+def _fly_line(session: LiveSession, onboard: OnboardLink | None) -> str:
+    if onboard is not None:
+        remote = onboard.status or {}
+        return format_fly_line(
+            remote.get("r_l"),
+            remote.get("r_r"),
+            remote.get("r_diff"),
+            remote.get("z_fly"),
+            str(remote.get("steer") or "bilateral"),
+        )
+    return format_fly_line(
+        session.pilot.track.r_l,
+        session.pilot.track.r_r,
+        session.pilot.track.r_diff,
+        session.pilot.track.yaw_z,
+        session.pilot.steer,
+    )
+
+
 def _range_line(session: LiveSession, onboard: OnboardLink | None) -> str:
     if onboard is not None:
         remote = onboard.status or {}
@@ -890,8 +927,11 @@ def _live_view(
         lidar_warning=session.lidar_warning,
         lidar_fresh_on=session.lidar_fresh_on,
         learn_flash=session.remote_flash if session.onboard else (None if session.mb is None else session.mb.flash),
+        learn_flash_r=session.remote_flash_r if session.onboard else (None if session.mb is None else session.mb.flash_r),
         mb_layout=session.layout if session.onboard else (None if session.mb is None else session.mb.layout),
         range_line=_range_line(session, onboard),
+        fly_line=_fly_line(session, onboard),
+        steer=str(session.remote.get("steer") or session.pilot.steer) if session.onboard else session.pilot.steer,
     )
     if session.mb is not None:
         caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"
@@ -1043,6 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--onboard", default="", help="Robot IP with the fly brain on port 8090. No local Move and no UDP.")
     p.add_argument("--onboard-port", type=int, default=8090)
     p.add_argument("--return-auto", type=float, default=0.0, help="Seconds of idle takeover before autonomy returns. 0 stays manual.")
+    p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
     args = p.parse_args(argv)
     if args.onboard and args.learner != "mb":
         print("Onboard mode is the mushroom body. Ignoring --learner hebb.", file=sys.stderr)
@@ -1066,6 +1107,7 @@ def main(argv: list[str] | None = None) -> int:
         lidar_refresh=args.lidar_refresh,
         return_auto_s=args.return_auto,
         onboard=bool(args.onboard),
+        steer=args.steer,
     )
     if args.load or Path(args.state).is_file():
         try_load_live(session)
@@ -1077,6 +1119,7 @@ def main(argv: list[str] | None = None) -> int:
     pull.start()
     if args.onboard:
         board = OnboardLink(args.onboard, args.onboard_port)
+        board.post("steer", mode=args.steer)
         run_live_gui(session, pull, None, seconds=args.seconds, onboard=board)
         return 0
     link = Go2CommandLink(args.udp_host, args.udp_port)

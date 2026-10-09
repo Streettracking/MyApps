@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .hemifield import bilateral_yaw
 from .map_marks import bin_angle, feature_range
 from .raw_sense import FOV, N_AZ
 
@@ -38,6 +39,8 @@ HYST_NEED = 5
 SECTOR_MEMORY = 5
 COAST_S = 1.0
 SLOW_X = 0.20
+SIDE_EMA = 0.45
+STEER_MODES = ("bilateral", "sectors")
 
 
 def clamp_velocity(x: float, z: float) -> tuple[float, float]:
@@ -167,26 +170,37 @@ def seek_velocity(
     dist_m: float | None,
     forward_m: float | None,
     search_age: float,
+    steer: str = "sectors",
+    fly_z: float = 0.0,
 ) -> tuple[float, float, str]:
     """Return clamped (x, z, phase). x is m/s forward, z is rad/s, left positive.
 
     ``recognized`` and ``sector`` here are the controller's latched values,
     not the raw mushroom-body frame. Ranges inside the body radius are dropped.
+    ``steer='bilateral'`` takes yaw from ``fly_z`` (already deadbanded). Search
+    with the word off stays a one-way left turn in either mode.
     """
     dist_m = scrub_range(dist_m)
     forward_m = scrub_range(forward_m)
-    if not recognized or sector is None:
+    bilateral = steer == "bilateral"
+    if not recognized or (not bilateral and sector is None):
         return 0.0, search_yaw(search_age), "search"
-    ang = bin_angle(int(sector))
-    yaw = yaw_for_bearing(ang)
+    if bilateral:
+        yaw = float(fly_z)
+        centred = abs(yaw) <= 1e-6
+        wide = abs(yaw) > 0.45
+    else:
+        ang = bin_angle(int(sector))
+        yaw = yaw_for_bearing(ang)
+        centred = abs(ang) <= half_sector() + 1e-5
+        wide = abs(ang) > 0.45
     close = dist_m is not None and dist_m <= STOP_M
     blocked = forward_m is not None and forward_m < STOP_M
     if close or blocked:
         return clamp_velocity(0.0, yaw) + ("hold",)
-    centred = abs(ang) <= half_sector() + 1e-5
     if dist_m is None:
         forward = SLOW_X
-    elif centred or abs(ang) <= 0.45:
+    elif centred or not wide:
         forward = X_MAX
     else:
         forward = SLOW_X
@@ -236,6 +250,27 @@ class ApproachTrack:
         self._coast_until = -1e9
         self.raw_recognized = False
         self.raw_sector: int | None = None
+        self.r_l = 0.0
+        self.r_r = 0.0
+        self.r_diff = 0.0
+        self.yaw_z = 0.0
+        self._ema_l: float | None = None
+        self._ema_r: float | None = None
+
+    def note_sides(self, r_l: float, r_r: float) -> None:
+        """EMA of the two readouts. The mushroom bodies themselves are not smoothed."""
+        left = float(r_l)
+        right = float(r_r)
+        if self._ema_l is None:
+            self._ema_l = left
+            self._ema_r = right
+        else:
+            self._ema_l = SIDE_EMA * left + (1.0 - SIDE_EMA) * self._ema_l
+            self._ema_r = SIDE_EMA * right + (1.0 - SIDE_EMA) * float(self._ema_r)
+        self.r_l = float(self._ema_l)
+        self.r_r = float(self._ema_r)
+        self.r_diff = self.r_l - self.r_r
+        self.yaw_z = bilateral_yaw(self.r_l, self.r_r)
 
     def update(self, now: float, recognized: bool, sector: int | None) -> None:
         now = float(now)
@@ -304,8 +339,19 @@ class Pilot:
         self.who = "оператор"
         self.hint = ""
         self.track = ApproachTrack()
+        self.steer = "bilateral"
         self._search_from = 0.0
         self._idle_from: float | None = None
+
+    def set_steer(self, mode: str) -> str:
+        if mode not in STEER_MODES:
+            raise ValueError(mode)
+        self.steer = mode
+        return mode
+
+    def toggle_steer(self) -> str:
+        self.steer = "sectors" if self.steer == "bilateral" else "bilateral"
+        return self.steer
 
     @property
     def autonomy(self) -> bool:
@@ -381,10 +427,13 @@ class Pilot:
         dist_m: float | None,
         forward_m: float | None,
         manual_axes: tuple[float, float] | None = None,
+        r_l: float = 0.0,
+        r_r: float = 0.0,
     ) -> DriveCommand:
         ax = float(arrows[0]) if arrows else 0.0
         az = float(arrows[1]) if arrows else 0.0
         self.hint = ""
+        self.track.note_sides(r_l, r_r)
         if self.mode == "estop" or not link_ok:
             self.phase = "stop"
             self.who = "никто"
@@ -411,6 +460,8 @@ class Pilot:
                 dist_m,
                 forward_m,
                 float(now) - self._search_from,
+                steer=self.steer,
+                fly_z=self.track.yaw_z,
             )
             self.phase = phase
             self.who = "мозг"
@@ -443,6 +494,8 @@ class Pilot:
                         dist_m=dist_m,
                         forward_m=forward_m,
                         manual_axes=None,
+                        r_l=r_l,
+                        r_r=r_r,
                     )
             self.phase = "stop"
             self.who = "никто" if self.held_stop else "оператор"

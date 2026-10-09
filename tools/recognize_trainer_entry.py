@@ -68,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--onboard", default="", help="Robot IP. Brain stays on the dog. This window does not send UDP.")
     p.add_argument("--onboard-port", type=int, default=8090)
     p.add_argument("--return-auto", type=float, default=0.0)
+    p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
     args = p.parse_args(argv)
     if args.sim and args.onboard:
         print("--sim and --onboard are different windows. Pick one.", file=sys.stderr)
@@ -104,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             forwarded.append("--punish")
         forwarded.extend(["--lidar-refresh", str(args.lidar_refresh)])
         forwarded.extend(["--return-auto", str(args.return_auto)])
+        forwarded.extend(["--steer", args.steer])
         return recognize_train.main(forwarded)
     forwarded = [
         "--robot-ip",
@@ -137,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         forwarded.append("--reset-lidar")
     forwarded.extend(["--lidar-refresh", str(args.lidar_refresh)])
     forwarded.extend(["--return-auto", str(args.return_auto)])
+    forwarded.extend(["--steer", args.steer])
     if args.onboard:
         forwarded.extend(["--onboard", args.onboard, "--onboard-port", str(args.onboard_port)])
     return recognize_train_live.main(forwarded)

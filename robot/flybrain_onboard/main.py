@@ -48,6 +48,7 @@ def main(argv=None) -> int:
     parser.add_argument("--dry", action="store_true", help="No SportClient. For a laptop smoke test.")
     parser.add_argument("--lidar-refresh", type=float, default=1.5)
     parser.add_argument("--self-radius", type=float, default=0.6, help="Ignore lidar returns closer than this, metres.")
+    parser.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
     args = parser.parse_args(argv)
     stop = {"stop": False}
 
@@ -77,6 +78,7 @@ def main(argv=None) -> int:
         client.Init()
     drive = SportDrive(client)
     brain = make_brain(drive, state, args.npz or None, self_radius=args.self_radius)
+    brain.pilot.set_steer(args.steer)
     eyes = JpegEyes(args.preview, interval=args.lidar_refresh)
     eyes.start()
     cloud = CloudRanges(self_radius=args.self_radius)

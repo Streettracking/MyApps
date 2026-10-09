@@ -210,6 +210,28 @@ def record_teacher_step(brain: MushroomBodyRuntime, fwd: MBForward, kind: str, t
     )
 
 
+def _footer_pair(screen, font, rect, left: LearnFlash | None, right: LearnFlash | None) -> None:
+    y = rect.bottom - 56
+
+    def bits(name: str, flash: LearnFlash | None) -> str:
+        if flash is None:
+            return "%s —" % name
+        return "%s  синапсов %s  Σ|Δw| %.2f  %+.0f→%+.0f" % (
+            name,
+            flash.n_syn,
+            flash.sum_abs,
+            flash.before,
+            flash.after,
+        )
+
+    screen.blit(font.render(bits("MB_L", left), True, (220, 226, 216)), (rect.x + 10, y))
+    screen.blit(font.render(bits("MB_R", right), True, (220, 226, 216)), (rect.x + 10, y + 16))
+    screen.blit(
+        font.render("один DAN на обе половины. Зелёный — к подходу, красный — к избеганию.", True, (150, 160, 156)),
+        (rect.x + 10, y + 34),
+    )
+
+
 def flash_alpha(age: float) -> float:
     """Bright for about 1.5 s, then a quiet residue until the next event."""
     if age < 0:
@@ -231,13 +253,26 @@ def _scratch_surface(w: int, h: int):
     return surf
 
 
-def draw_learn_panel(screen, font, font_sm, rect, layout: MbLayout | None, flash: LearnFlash | None, now: float) -> None:
-    """Draw the flash. Called only while the panel is open."""
+def draw_learn_panel(
+    screen,
+    font,
+    font_sm,
+    rect,
+    layout: MbLayout | None,
+    flash: LearnFlash | None,
+    now: float,
+    flash_r: LearnFlash | None = None,
+) -> None:
+    """Draw the flash. Called only while the panel is open.
+
+    ``flash`` is MB_L and ``flash_r`` is MB_R. Both get the same PAM/PPL1 pulse.
+    """
     import pygame
 
     pygame.draw.rect(screen, (12, 16, 20), rect)
     pygame.draw.rect(screen, (70, 110, 90), rect, 1)
-    screen.blit(font_sm.render("вспышка обучения    G скрыть", True, (210, 230, 214)), (rect.x + 10, rect.y + 6))
+    title = "вспышка обучения    две половины    G скрыть" if flash_r is not None else "вспышка обучения    G скрыть"
+    screen.blit(font_sm.render(title, True, (210, 230, 214)), (rect.x + 10, rect.y + 6))
     if layout is None:
         screen.blit(font_sm.render("схема появится вместе с мозгом", True, (180, 186, 198)), (rect.x + 10, rect.y + 36))
         return
@@ -245,11 +280,24 @@ def draw_learn_panel(screen, font, font_sm, rect, layout: MbLayout | None, flash
     age = None if flash is None else float(now) - float(flash.t)
     alpha = 0.0 if age is None else flash_alpha(age)
     _lamps(screen, font_sm, rect, layout, flash, alpha)
-    graph = pygame.Rect(rect.x + 8, rect.y + 58, rect.w - 210, rect.h - 146)
-    legend = pygame.Rect(rect.right - 196, rect.y + 58, 184, graph.h)
-    _graph(screen, font_sm, graph, layout, flash, alpha)
-    _legend(screen, font_sm, legend, layout, flash)
-    _footer(screen, font_sm, rect, layout, flash)
+    if flash_r is None:
+        graph = pygame.Rect(rect.x + 8, rect.y + 58, rect.w - 210, rect.h - 146)
+        legend = pygame.Rect(rect.right - 196, rect.y + 58, 184, graph.h)
+        _graph(screen, font_sm, graph, layout, flash, alpha)
+        _legend(screen, font_sm, legend, layout, flash)
+        _footer(screen, font_sm, rect, layout, flash)
+        return
+    span = rect.h - 58 - 74
+    half_h = max(40, (span - 8) // 2)
+    top = pygame.Rect(rect.x + 8, rect.y + 58, rect.w - 16, half_h)
+    bot = pygame.Rect(rect.x + 8, top.bottom + 6, rect.w - 16, half_h)
+    _graph(screen, font_sm, top, layout, flash, alpha)
+    age_r = float(now) - float(flash_r.t)
+    alpha_r = flash_alpha(age_r)
+    _graph(screen, font_sm, bot, layout, flash_r, alpha_r)
+    screen.blit(font_sm.render("MB_L", True, (186, 214, 196)), (top.x + 6, top.bottom - 16))
+    screen.blit(font_sm.render("MB_R", True, (186, 214, 196)), (bot.x + 6, bot.bottom - 16))
+    _footer_pair(screen, font_sm, rect, flash, flash_r)
 
 
 def _lamps(screen, font, rect, layout: MbLayout, flash: LearnFlash | None, alpha: float) -> None:

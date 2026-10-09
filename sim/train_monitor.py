@@ -40,6 +40,7 @@ class MonitorInput:
     lidar_toggle: bool = False
     flash_toggle: bool = False
     autonomy_toggle: bool = False
+    steer_toggle: bool = False
     takeover: bool = False
     treat_down: bool = False
     punish_down: bool = False
@@ -109,6 +110,9 @@ class MonitorView:
     pilot_who: str = "оператор"
     pilot_hint: str = ""
     range_line: str = ""
+    fly_line: str = ""
+    steer: str = "bilateral"
+    learn_flash_r: object | None = None
     learning_on: bool = True
     autonomy_on: bool = False
     onboard: bool = False
@@ -191,6 +195,7 @@ class TrainMonitor:
         self.learn_rect = pygame.Rect(16, WIN_H - 148, 210, 46)
         self.auto_rect = pygame.Rect(236, WIN_H - 148, 230, 46)
         self.take_rect = pygame.Rect(476, WIN_H - 148, 230, 46)
+        self.steer_rect = pygame.Rect(980, WIN_H - 148, 284, 46)
         self.stand_up_rect = pygame.Rect(720, 676, 150, 32)
         self.stand_down_rect = pygame.Rect(878, 676, 130, 32)
         self.recovery_rect = pygame.Rect(1016, 676, 150, 32)
@@ -249,6 +254,8 @@ class TrainMonitor:
                     inp.autonomy_toggle = True
                 elif event.key == pygame.K_m and not getattr(event, "repeat", False):
                     inp.takeover = True
+                elif event.key == pygame.K_y and not getattr(event, "repeat", False):
+                    inp.steer_toggle = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
@@ -268,6 +275,8 @@ class TrainMonitor:
                     inp.autonomy_toggle = True
                 elif self.take_rect.collidepoint(event.pos):
                     inp.takeover = True
+                elif self.steer_rect.collidepoint(event.pos):
+                    inp.steer_toggle = True
                 elif self.show_stand and self.stand_up_rect.collidepoint(event.pos):
                     inp.stand_up = True
                 elif self.show_stand and self.stand_down_rect.collidepoint(event.pos):
@@ -316,8 +325,17 @@ class TrainMonitor:
             self._draw_marks(screen, inner, view.marks)
         self._lidar_reset_button(screen)
         self._lidar_fresh_button(screen, view)
+        # Under the lidar, clear of the journal and the mode row. The fly
+        # line is the two readouts and the yaw they produce.
+        status_y = 628
         if view.lidar_warning:
-            screen.blit(sm.render(view.lidar_warning[:78], True, (230, 176, 96)), (16, 626))
+            screen.blit(sm.render(view.lidar_warning[:52], True, (230, 176, 96)), (16, status_y))
+            status_y += 20
+        if view.fly_line:
+            screen.blit(sm.render(view.fly_line, True, (196, 214, 232)), (16, status_y))
+            status_y += 20
+        if view.range_line:
+            screen.blit(sm.render(view.range_line, True, (186, 214, 196)), (16, status_y))
 
         rx = 492
         log_n = 6
@@ -333,6 +351,7 @@ class TrainMonitor:
                 view.mb_layout,
                 view.learn_flash,
                 view.t,
+                view.learn_flash_r,
             )
             log_y = 608
             log_n = 3
@@ -416,8 +435,15 @@ class TrainMonitor:
         screen.blit(title, (720, WIN_H - 146))
         who = self.font.render(f"ведёт: {view.pilot_who}", True, (186, 192, 204))
         screen.blit(who, (720, WIN_H - 114))
-        if view.range_line:
-            screen.blit(self.font_sm.render(view.range_line, True, (186, 214, 196)), (720, 648))
+        if view.learner == "mb":
+            bilateral = view.steer != "sectors"
+            self._pill(
+                screen,
+                self.steer_rect,
+                "БИЛАТЕРАЛЬНО Y" if bilateral else "СЕКТОРЫ Y",
+                (36, 88, 132) if bilateral else (72, 68, 58),
+                self.steer_rect.collidepoint(mouse),
+            )
         if view.pilot_hint:
             hint = self.font_sm.render(view.pilot_hint, True, (232, 176, 72))
             screen.blit(hint, (720, WIN_H - 94))

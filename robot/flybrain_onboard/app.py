@@ -135,6 +135,7 @@ class BrainLoop:
             if op == "autonomy_on":
                 if self.pilot.start_auto(now):
                     self._log("автономия: поиск в одну сторону, z=+0.35, без качки")
+                    self._log("руль: %s" % ("билатерально, z от R_L−R_R" if self.pilot.steer == "bilateral" else "секторы"))
                     self._log("сырой сектор — мозг; sector_smooth — медиана контроллера")
                 else:
                     self._log("E-STOP держит стоп. M переводит в ручное")
@@ -178,6 +179,11 @@ class BrainLoop:
             elif op == "manual":
                 if self.driving():
                     self.note_manual(float(data.get("x", 0.0)), float(data.get("z", 0.0)), now)
+            elif op == "steer":
+                mode = str(data.get("mode", ""))
+                if mode in ("bilateral", "sectors"):
+                    self.pilot.set_steer(mode)
+                    self._log("руль: %s" % ("билатерально" if mode == "bilateral" else "секторы"))
             elif op == "heartbeat":
                 pass
 
@@ -242,9 +248,12 @@ class BrainLoop:
             sector = self.sector
             dist_m = self.dist_m
             forward_m = self.forward_m
+            r_l = float(self.mb.r_l)
+            r_r = float(self.mb.r_r)
         if not self.driving():
             # Watch-only, or the E-STOP block: no Move and no StopMove.
-            # A BalanceStand that StandUp already scheduled ran above.
+            # The fly's two readouts still update so the laptop can see them.
+            self.pilot.track.note_sides(r_l, r_r)
             return DriveCommand(0.0, 0.0, True, "stop", "никто", "")
         if self.pilot.mode != "auto":
             axes = manual
@@ -255,6 +264,7 @@ class BrainLoop:
         if not link_ok or not frames_ok:
             # The sport service would keep our last Move for about a second.
             # One StopMove covers that. Further ticks stay silent.
+            self.pilot.track.note_sides(r_l, r_r)
             self._stop_once()
             self.pilot.phase = "stop"
             self.pilot.who = "никто"
@@ -270,6 +280,8 @@ class BrainLoop:
             dist_m=dist_m,
             forward_m=forward_m,
             manual_axes=axes,
+            r_l=r_l,
+            r_r=r_r,
         )
         self._emit(cmd, now)
         return cmd
@@ -340,6 +352,11 @@ class BrainLoop:
                 "sector": self.sector,
                 "sector_smooth": self.pilot.track.sector_smooth,
                 "hysteresis": self.pilot.track.as_dict(),
+                "steer": self.pilot.steer,
+                "r_l": self.pilot.track.r_l,
+                "r_r": self.pilot.track.r_r,
+                "r_diff": self.pilot.track.r_diff,
+                "z_fly": self.pilot.track.yaw_z,
                 "distance_m": self.dist_m,
                 "forward_m": self.forward_m,
                 "x": self.drive.moves[-1][0] if self._moving and self.drive.moves else 0.0,
@@ -353,6 +370,7 @@ class BrainLoop:
                 "kc_n": int(self.mb.brain.n_kc),
                 "drift": float(self.mb.last_drift),
                 "flash": flash,
+                "flash_r": flash_payload(self.mb.flash_r),
                 "log": list(self.log),
             }
 
