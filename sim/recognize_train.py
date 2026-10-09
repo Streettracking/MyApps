@@ -782,6 +782,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         view.teacher_boxes = list(getattr(session, "teacher_boxes", ()) or ())
         view.yolo_state = str(getattr(session, "yolo_state", "") or "")
         view.teacher_counts = str(getattr(session, "teacher_counts", "") or "")
+        view.teacher_skips = str(getattr(session, "teacher_skips", "") or "")
+        view.teacher_flash_l = str(getattr(session, "teacher_flash_l_show", "") or "")
+        view.teacher_flash_r = str(getattr(session, "teacher_flash_r_show", "") or "")
         view.last_seen_side = str(session.pilot.last_seen_side or "")
         rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
         labelled = weak_label_now(marks, float(session.world.t)) is not None

@@ -76,21 +76,36 @@ def zone_of(box: DetBox, overlap: float, area_min: float = AREA_MIN) -> str:
     return ""
 
 
+def _center_in(box: DetBox, left: float, right: float) -> bool:
+    _x0, _x1, center = _span(box)
+    return center >= float(left) - 1e-9 and center <= float(right) + 1e-9
+
+
 def hemisphere_hits(
     boxes,
     overlap: float,
     conf_min: float = DEFAULT_CONF,
     area_min: float = AREA_MIN,
+    center_only: bool = False,
 ) -> tuple[bool, bool]:
-    """``(hit_L, hit_R)`` for boxes at or above ``conf_min``."""
+    """``(hit_L, hit_R)`` for boxes at or above ``conf_min``.
+
+    Teaching passes ``center_only``. A box whose centre sits in the other eye
+    does not count, even when the overlap lets part of its width cross.
+    A centre in the shared band hits both eyes. Screen labels stay on area.
+    """
     hit_l = False
     hit_r = False
     lo, hi = overlap_bands(overlap)
     for box in boxes:
         if float(box.conf) < float(conf_min):
             continue
-        hit_l = hit_l or _hits(box, lo, 1.0, area_min)
-        hit_r = hit_r or _hits(box, 0.0, hi, area_min)
+        if center_only:
+            hit_l = hit_l or _center_in(box, lo, 1.0)
+            hit_r = hit_r or _center_in(box, 0.0, hi)
+        else:
+            hit_l = hit_l or _hits(box, lo, 1.0, area_min)
+            hit_r = hit_r or _hits(box, 0.0, hi, area_min)
     return hit_l, hit_r
 
 
@@ -112,6 +127,30 @@ def dan_for_eyes(
     return one(hit_l, recognized_l), one(hit_r, recognized_r)
 
 
+FLASH_S = 0.45
+
+
+def teach_phrase(side: str, kind: str | None) -> str:
+    """One journal line per pulse. Empty when this side got nothing."""
+    if side == "L" and kind == "ppl1":
+        return "учитель: PPL1 Л — ложное узнавание"
+    if side == "R" and kind == "ppl1":
+        return "учитель: PPL1 П — ложное узнавание"
+    if side == "L" and kind == "pam":
+        return "учитель: PAM Л — собака в поле"
+    if side == "R" and kind == "pam":
+        return "учитель: PAM П — собака в поле"
+    return ""
+
+
+def plaque_recognized(mb, eye_l: bool, eye_r: bool, overlap: float) -> tuple[bool, bool, float]:
+    """The bits painted on the plaques. Onboard has no local brain, so the status flags are used."""
+    if mb is not None:
+        rec_l, rec_r = mb.eye_recognized()
+        return bool(rec_l), bool(rec_r), float(mb.overlap)
+    return bool(eye_l), bool(eye_r), float(overlap)
+
+
 def annotate_boxes(boxes, overlap: float, conf_min: float = DEFAULT_CONF) -> list[DetBox]:
     out: list[DetBox] = []
     for box in boxes:
@@ -125,12 +164,16 @@ def annotate_boxes(boxes, overlap: float, conf_min: float = DEFAULT_CONF) -> lis
 
 
 class TeachGate:
-    """At most ``rate`` pulses per second on each hemisphere."""
+    """At most ``rate`` pulses per second for each eye and each kind.
+
+    PAM and PPL1 keep separate clocks, so a stream of treats cannot eat the
+    punishment slot.
+    """
 
     def __init__(self, rate: float = DEFAULT_RATE):
         gap = 0.5 if float(rate) <= 0 else 1.0 / float(rate)
         self.min_gap_s = gap
-        self.last = {"L": -1e9, "R": -1e9}
+        self.last: dict[tuple[str, str], float] = {}
 
     def filter(self, now: float, kind_l: str | None, kind_r: str | None) -> tuple[str | None, str | None]:
         return self._one(now, "L", kind_l), self._one(now, "R", kind_r)
@@ -138,9 +181,11 @@ class TeachGate:
     def _one(self, now: float, side: str, kind: str | None) -> str | None:
         if kind not in ("pam", "ppl1"):
             return None
-        if float(now) - self.last[side] < self.min_gap_s - 1e-9:
+        key = (side, kind)
+        prev = self.last.get(key, -1e9)
+        if float(now) - prev < self.min_gap_s - 1e-9:
             return None
-        self.last[side] = float(now)
+        self.last[key] = float(now)
         return kind
 
 
@@ -246,6 +291,11 @@ class TeacherRuntime:
         self.pam_r = 0
         self.ppl1_l = 0
         self.ppl1_r = 0
+        self.skip_n = 0
+        self.skip_reason = ""
+        self.answered = False
+        self._teach_boxes: list[DetBox] = []
+        self._skip_at = {"L": -1e9, "R": -1e9}
         self._last_fail = -1e9
         self._gen = 0
         self._pending: tuple[int, bytes] | None = None
@@ -293,6 +343,8 @@ class TeacherRuntime:
             return
         self._gen += 1
         self.boxes = []
+        self._teach_boxes = []
+        self.answered = False
         with self._lock:
             self._pending = None
             self._result = None
@@ -311,6 +363,11 @@ class TeacherRuntime:
         with self._lock:
             self._pending = (self._gen, jpeg)
 
+    def skips_line(self) -> str:
+        if self.skip_n <= 0:
+            return "ложных узнаваний без наказания: 0"
+        return "ложных узнаваний без наказания: %d (%s)" % (int(self.skip_n), self.skip_reason or "—")
+
     def collect(
         self,
         now: float,
@@ -320,25 +377,74 @@ class TeacherRuntime:
         learning: bool,
         operator_busy: bool,
     ) -> tuple[str | None, str | None]:
-        """Update boxes. Return DAN kinds only when Y is on and the operator is idle."""
+        """DAN from the latest YOLO answer and the plaque bits passed in.
+
+        An empty answer is «no dog» and can be PPL1. No answer yet is not a
+        guess. ``recognized_*`` must be the same bits the plaques show.
+        """
         if not learning:
             self.note_learning(False)
             return None, None
         self._take_result(overlap)
         if self.boxes_hidden and not self.on:
             self.boxes = []
-        if not self.on or operator_busy or not self.boxes:
+        if not self.on or operator_busy:
             return None, None
-        hit_l, hit_r = hemisphere_hits(self.boxes, overlap, conf_min=0.0)
-        kind_l, kind_r = dan_for_eyes(hit_l, hit_r, recognized_l, recognized_r)
-        kind_l, kind_r = self.gate.filter(now, kind_l, kind_r)
+        if not self.answered or self.service_down:
+            self._note_skips(now, recognized_l, recognized_r, "нет ответа YOLO", "нет ответа YOLO")
+            return None, None
+        hit_l, hit_r = hemisphere_hits(
+            self._teach_boxes,
+            overlap,
+            conf_min=self.conf,
+            center_only=True,
+        )
+        want_l, want_r = dan_for_eyes(hit_l, hit_r, recognized_l, recognized_r)
+        kind_l, kind_r = self.gate.filter(now, want_l, want_r)
         self._count(kind_l, kind_r)
+        self._note_skips(
+            now,
+            recognized_l,
+            recognized_r,
+            self._miss_reason(recognized_l, hit_l, want_l, kind_l),
+            self._miss_reason(recognized_r, hit_r, want_r, kind_r),
+        )
         return kind_l, kind_r
 
     def visible_boxes(self, learning: bool) -> list[DetBox]:
         if not learning or self.boxes_hidden:
             return []
         return list(self.boxes)
+
+    def _miss_reason(self, recognized: bool, hit: bool, want: str | None, sent: str | None) -> str:
+        if not recognized or sent == "ppl1":
+            return ""
+        if hit:
+            return "бокс в поле"
+        if want == "ppl1":
+            return "лимит"
+        return ""
+
+    def _note_skips(self, now: float, recognized_l: bool, recognized_r: bool, reason_l: str, reason_r: str) -> None:
+        parts = []
+        if recognized_l and reason_l:
+            parts.append(("L", "Л", reason_l))
+        if recognized_r and reason_r:
+            parts.append(("R", "П", reason_r))
+        if not parts:
+            return
+        reasons = {reason for _side, _label, reason in parts}
+        if len(reasons) == 1:
+            self.skip_reason = parts[0][2]
+        else:
+            self.skip_reason = ", ".join("%s: %s" % (label, reason) for _side, label, reason in parts)
+        gap = self.gate.min_gap_s
+        for side, _label, _reason in parts:
+            prev = self._skip_at.get(side, -1e9)
+            if float(now) - prev < gap - 1e-9:
+                continue
+            self._skip_at[side] = float(now)
+            self.skip_n += 1
 
     def _count(self, kind_l: str | None, kind_r: str | None) -> None:
         if kind_l == "pam":
@@ -362,10 +468,17 @@ class TeacherRuntime:
         if boxes is None:
             self.service_down = True
             self._last_fail = time.monotonic()
+            self.answered = False
+            self._teach_boxes = []
             self.boxes = []
             return
         self.service_down = False
-        self.boxes = annotate_boxes(boxes, overlap, self.conf)
+        self.answered = True
+        self._teach_boxes = annotate_boxes(boxes, overlap, self.conf)
+        if self.boxes_hidden and not self.on:
+            self.boxes = []
+        else:
+            self.boxes = list(self._teach_boxes)
 
     def _ensure(self) -> None:
         if self._thread is not None and self._thread.is_alive():

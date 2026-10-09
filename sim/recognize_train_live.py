@@ -798,48 +798,57 @@ def _teacher_counts(session: LiveSession, teacher) -> str:
     return counts_line(teacher.pam_l, teacher.pam_r, teacher.ppl1_l, teacher.ppl1_r)
 
 
+def _flash_show(session, side: str, now: float) -> str:
+    kind = getattr(session, "teacher_flash_" + side, "")
+    until = float(getattr(session, "teacher_flash_%s_until" % side, -1.0) or -1.0)
+    if kind in ("pam", "ppl1") and float(now) <= until + 1e-9:
+        return str(kind)
+    return ""
+
+
 def _drive_teacher(session: LiveSession, jpeg: bytes | None, frame_id, state: dict, operator_busy: bool, onboard: OnboardLink | None) -> None:
-    """Look when learning is on. Teach only while Y is on. Never sends Move."""
+    """Look when learning is on. Teach only while Y is on. Never sends Move.
+
+    ``recognized`` is read here, on this tick, from the same bits the plaques
+    paint. It is not the bit that was true when the JPEG left for YOLO.
+    """
     teacher = getattr(session, "teacher", None)
     if teacher is None or session.learner_kind != "mb":
         return
+    from .yolo_teacher import FLASH_S, plaque_recognized, send_teach, teach_phrase
+
     learning = _learning_now(session)
     teacher.note_learning(learning)
     if learning and jpeg and teacher.wants_frame(learning) and state.get("frame") != frame_id:
         teacher.offer_frame(jpeg)
         state["frame"] = frame_id
-    if getattr(session, "mb", None) is not None:
-        rec_l, rec_r = session.mb.eye_recognized()
-        overlap = float(session.mb.overlap)
-    else:
-        rec_l = bool(getattr(session, "eye_l_recognized", False))
-        rec_r = bool(getattr(session, "eye_r_recognized", False))
-        overlap = float(getattr(session, "overlap", 0.4))
+    rec_l, rec_r, overlap = plaque_recognized(
+        getattr(session, "mb", None),
+        getattr(session, "eye_l_recognized", False),
+        getattr(session, "eye_r_recognized", False),
+        getattr(session, "overlap", 0.4),
+    )
     now = session.now() if hasattr(session, "now") else float(session.world.t)
     kind_l, kind_r = teacher.collect(now, overlap, rec_l, rec_r, learning, operator_busy)
     session.teacher_boxes = teacher.visible_boxes(learning)
     session.yolo_state = teacher.status_text(learning)
     session.teacher_counts = _teacher_counts(session, teacher)
-    if not kind_l and not kind_r:
-        return
-    from .yolo_teacher import send_teach
-
-    if onboard is not None:
-        send_teach(onboard, kind_l, kind_r)
-    elif session.mb is not None:
-        session.mb.teach_sides(kind_l, kind_r, now)
-    text = " ".join(
-        bit
-        for bit, kind in (
-            ("PAM Л" if kind_l == "pam" else "PPL1 Л" if kind_l == "ppl1" else "", kind_l),
-            ("PAM П" if kind_r == "pam" else "PPL1 П" if kind_r == "ppl1" else "", kind_r),
-        )
-        if bit
-    )
-    if text and (text != state.get("log") or now - float(state.get("log_t") or -10) > 2.0):
-        session._log("учитель: " + text)
-        state["log"] = text
-        state["log_t"] = now
+    session.teacher_skips = teacher.skips_line()
+    if kind_l in ("pam", "ppl1") or kind_r in ("pam", "ppl1"):
+        if onboard is not None:
+            send_teach(onboard, kind_l, kind_r)
+        elif session.mb is not None:
+            session.mb.teach_sides(kind_l, kind_r, now)
+        for side, kind in (("L", kind_l), ("R", kind_r)):
+            phrase = teach_phrase(side, kind)
+            if not phrase:
+                continue
+            session._log(phrase)
+            attr = "l" if side == "L" else "r"
+            setattr(session, "teacher_flash_" + attr, kind)
+            setattr(session, "teacher_flash_%s_until" % attr, now + FLASH_S)
+    session.teacher_flash_l_show = _flash_show(session, "l", now)
+    session.teacher_flash_r_show = _flash_show(session, "r", now)
 
 
 def run_live_gui(
@@ -1152,6 +1161,9 @@ def _live_view(
         last_seen_side=str(session.pilot.last_seen_side or ""),
         yolo_state=str(getattr(session, "yolo_state", "") or ""),
         teacher_counts=str(getattr(session, "teacher_counts", "") or ""),
+        teacher_skips=str(getattr(session, "teacher_skips", "") or ""),
+        teacher_flash_l=str(getattr(session, "teacher_flash_l_show", "") or ""),
+        teacher_flash_r=str(getattr(session, "teacher_flash_r_show", "") or ""),
         teacher_boxes=list(getattr(session, "teacher_boxes", ()) or ()),
     )
     if session.mb is not None:

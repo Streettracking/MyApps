@@ -133,6 +133,9 @@ class MonitorView:
     last_seen_side: str = ""
     yolo_state: str = ""
     teacher_counts: str = ""
+    teacher_skips: str = ""
+    teacher_flash_l: str = ""
+    teacher_flash_r: str = ""
     teacher_boxes: list = field(default_factory=list)
     eye_l_recognized: bool = False
     eye_r_recognized: bool = False
@@ -535,6 +538,10 @@ class TrainMonitor:
         if view.pilot_hint:
             hint = self.font_sm.render(view.pilot_hint, True, (232, 176, 72))
             screen.blit(hint, (720, WIN_H - 94))
+        if view.teacher_skips and view.learner == "mb":
+            quiet = view.teacher_skips.endswith(": 0")
+            skips = self.font_sm.render(view.teacher_skips, True, (168, 172, 180) if quiet else (255, 92, 84))
+            screen.blit(skips, (16, WIN_H - 192))
         if view.teacher_counts and view.learner == "mb":
             counts = self.font_sm.render(view.teacher_counts, True, (232, 214, 160))
             screen.blit(counts, (16, WIN_H - 172))
@@ -735,17 +742,39 @@ class TrainMonitor:
 
         height = min(52, max(32, inner.h // 3))
         mid = inner.x + inner.w // 2
-        self._eye_plaque(screen, pygame.Rect(inner.x, inner.y, mid - inner.x, height), "П", view.eye_r_recognized)
-        self._eye_plaque(screen, pygame.Rect(mid, inner.y, inner.right - mid, height), "Л", view.eye_l_recognized)
+        self._eye_plaque(
+            screen,
+            pygame.Rect(inner.x, inner.y, mid - inner.x, height),
+            "П",
+            view.eye_r_recognized,
+            view.teacher_flash_r,
+        )
+        self._eye_plaque(
+            screen,
+            pygame.Rect(mid, inner.y, inner.right - mid, height),
+            "Л",
+            view.eye_l_recognized,
+            view.teacher_flash_l,
+        )
 
-    def _eye_plaque(self, screen, rect, name: str, recognized: bool) -> None:
+    def _eye_plaque(self, screen, rect, name: str, recognized: bool, flash: str = "") -> None:
         import pygame
 
-        fill = (28, 132, 72) if recognized else (62, 66, 74)
-        ink = (248, 255, 248) if recognized else (214, 218, 224)
+        if flash == "ppl1":
+            fill, edge, ink = (196, 36, 44), (255, 214, 214), (255, 244, 244)
+            border = 6
+        elif flash == "pam":
+            fill, edge, ink = (32, 196, 92), (214, 255, 224), (248, 255, 248)
+            border = 6
+        elif recognized:
+            fill, edge, ink = (28, 132, 72), (244, 248, 244), (248, 255, 248)
+            border = 3
+        else:
+            fill, edge, ink = (62, 66, 74), (150, 156, 166), (214, 218, 224)
+            border = 3
         pygame.draw.rect(screen, fill, rect)
-        pygame.draw.rect(screen, (244, 248, 244) if recognized else (150, 156, 166), rect, 3)
-        word = "УЗНАЮ" if recognized else "—"
+        pygame.draw.rect(screen, edge, rect, border)
+        word = "УЗНАЮ" if recognized or flash else "—"
         label = self.font_ind.render("%s: %s" % (name, word), True, ink)
         if label.get_width() > rect.w - 8:
             label = self.font.render("%s: %s" % (name, word), True, ink)

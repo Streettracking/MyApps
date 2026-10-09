@@ -18,11 +18,15 @@ from sim.yolo_teacher import (
     STEER_KEY,
     TEACHER_KEY,
     DetBox,
+    TeachGate,
     TeacherRuntime,
     YoloClient,
     dan_for_eyes,
+    hemisphere_hits,
+    plaque_recognized,
     send_teach,
     should_query,
+    teach_phrase,
     yolo_status,
     zone_of,
 )
@@ -235,6 +239,165 @@ class KeyTests(unittest.TestCase):
             & (np.abs(frame[:, :, 2].astype(int) - 40) < 50)
         )
         self.assertGreater(int(orange.sum()), 10)
+        pygame.quit()
+
+
+def _ready(boxes=()):
+    runtime = TeacherRuntime(conf=0.5, rate=2.0)
+    runtime.on = True
+    runtime._learning = True
+    runtime.answered = True
+    runtime.service_down = False
+    runtime._teach_boxes = list(boxes)
+    runtime.boxes = list(boxes)
+    return runtime
+
+
+class PunishTests(unittest.TestCase):
+    def test_empty_answer_punishes_the_plaque_bit(self):
+        runtime = _ready([])
+        self.assertEqual(runtime.collect(0.0, 0.4, True, False, True, False), ("ppl1", None))
+        self.assertEqual(runtime.ppl1_l, 1)
+        self.assertEqual(runtime.skip_n, 0)
+
+    def test_no_answer_yet_does_not_invent_ppl1(self):
+        runtime = TeacherRuntime(conf=0.5, rate=2.0)
+        runtime.on = True
+        runtime._learning = True
+        self.assertFalse(runtime.answered)
+        self.assertEqual(runtime.collect(0.0, 0.4, True, False, True, False), (None, None))
+        self.assertEqual(runtime.skip_reason, "нет ответа YOLO")
+        self.assertIn("нет ответа YOLO", runtime.skips_line())
+        self.assertEqual(runtime.ppl1_l, 0)
+        runtime.collect(0.1, 0.4, True, False, True, False)
+        self.assertEqual(runtime.skip_n, 1)
+
+    def test_weak_box_and_other_hemisphere_do_not_block_ppl1(self):
+        weak = DetBox(0.80, 0.2, 0.96, 0.8, 0.40)
+        runtime = _ready([weak])
+        self.assertEqual(runtime.collect(0.0, 0.4, True, False, True, False), ("ppl1", None))
+        spill = DetBox(0.05, 0.1, 0.45, 0.9, 0.92)
+        self.assertEqual(hemisphere_hits([spill], 0.4, 0.5, center_only=False), (True, True))
+        self.assertEqual(hemisphere_hits([spill], 0.4, 0.5, center_only=True), (False, True))
+        runtime = _ready([spill])
+        self.assertEqual(runtime.collect(0.0, 0.4, True, False, True, False), ("ppl1", "pam"))
+        middle = DetBox(0.42, 0.2, 0.58, 0.8, 0.88)
+        self.assertEqual(hemisphere_hits([middle], 0.4, 0.5, center_only=True), (True, True))
+        runtime = _ready([middle])
+        self.assertEqual(runtime.collect(0.0, 0.4, True, True, True, False), ("pam", "pam"))
+        self.assertEqual(runtime.skip_reason, "бокс в поле")
+
+    def test_pam_and_ppl1_do_not_share_a_slot(self):
+        gate = TeachGate(2.0)
+        self.assertEqual(gate.filter(0.0, "pam", "pam"), ("pam", "pam"))
+        self.assertEqual(gate.filter(0.1, "ppl1", "ppl1"), ("ppl1", "ppl1"))
+        self.assertEqual(gate.filter(0.2, "ppl1", None), (None, None))
+        self.assertEqual(gate.filter(0.49, "pam", None), (None, None))
+        dog = DetBox(0.80, 0.2, 0.96, 0.8, 0.93)
+        runtime = _ready([dog])
+        self.assertEqual(runtime.collect(0.0, 0.4, True, False, True, False), ("pam", None))
+        runtime._teach_boxes = []
+        self.assertEqual(runtime.collect(0.1, 0.4, True, False, True, False), ("ppl1", None))
+        self.assertEqual(runtime.collect(0.2, 0.4, True, False, True, False), (None, None))
+        self.assertEqual(runtime.skip_reason, "лимит")
+        self.assertIn("(лимит)", runtime.skips_line())
+
+    def test_phrases_and_onboard_plaque_bits(self):
+        self.assertEqual(teach_phrase("L", "ppl1"), "учитель: PPL1 Л — ложное узнавание")
+        self.assertEqual(teach_phrase("R", "ppl1"), "учитель: PPL1 П — ложное узнавание")
+        self.assertEqual(teach_phrase("L", "pam"), "учитель: PAM Л — собака в поле")
+        self.assertEqual(teach_phrase("R", "pam"), "учитель: PAM П — собака в поле")
+
+        class Brain:
+            overlap = 0.25
+
+            def eye_recognized(self):
+                return False, True
+
+        self.assertEqual(plaque_recognized(Brain(), True, False, 0.4), (False, True, 0.25))
+        self.assertEqual(plaque_recognized(None, True, False, 0.4), (True, False, 0.4))
+
+        from sim.recognize_train_live import _drive_teacher
+
+        class Session:
+            learner_kind = "mb"
+            mb = None
+            onboard = False
+            learn = True
+            eye_l_recognized = True
+            eye_r_recognized = False
+            overlap = 0.4
+            log = []
+
+            def now(self):
+                return 3.0
+
+            def _log(self, text):
+                self.log.append(text)
+
+        session = Session()
+        session.teacher = _ready([])
+        _drive_teacher(session, None, 1, {}, False, None)
+        self.assertEqual(session.log, ["учитель: PPL1 Л — ложное узнавание"])
+        self.assertEqual(session.teacher_flash_l_show, "ppl1")
+        self.assertEqual(session.teacher_flash_r_show, "")
+        self.assertTrue(session.teacher_skips.endswith(": 0"))
+        session.teacher.answered = False
+        session.eye_l_recognized = True
+        _drive_teacher(session, None, 2, {}, False, None)
+        self.assertEqual(session.teacher.skip_reason, "нет ответа YOLO")
+        self.assertIn("нет ответа YOLO", session.teacher_skips)
+
+
+class FlashTests(unittest.TestCase):
+    def test_plaques_flash_and_the_skip_line_is_drawn(self):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        import pygame
+        import numpy as np
+
+        pygame.init()
+        from sim.train_monitor import MonitorView, TrainMonitor
+
+        mon = TrainMonitor("punish")
+        camera = np.zeros((96, 160, 3), dtype=np.uint8)
+        camera[:] = (24, 26, 32)
+        original = camera.copy()
+        view = MonitorView(
+            camera=camera,
+            learner="mb",
+            learning_on=True,
+            eye_l_recognized=True,
+            eye_r_recognized=False,
+            teacher_flash_l="ppl1",
+            teacher_flash_r="pam",
+            teacher_skips="ложных узнаваний без наказания: 3 (нет ответа YOLO)",
+            teacher_counts="учитель: PAM_L 1 / PAM_R 0 / PPL1_L 1 / PPL1_R 0",
+            yolo_state="учит",
+            log_lines=["  3.0s  учитель: PPL1 Л — ложное узнавание"],
+            keys_hint="Y учитель",
+        )
+        mon.draw(view)
+        np.testing.assert_array_equal(camera, original)
+        shot = __import__("pathlib").Path("/opt/cursor/artifacts/teacher_punish_flash.png")
+        shot.parent.mkdir(parents=True, exist_ok=True)
+        mon.save_screenshot(str(shot))
+        frame = pygame.surfarray.array3d(mon.screen)
+        red = (
+            (np.abs(frame[:, :, 0].astype(int) - 196) < 24)
+            & (np.abs(frame[:, :, 1].astype(int) - 36) < 24)
+            & (np.abs(frame[:, :, 2].astype(int) - 44) < 24)
+        )
+        green = (
+            (np.abs(frame[:, :, 0].astype(int) - 32) < 24)
+            & (np.abs(frame[:, :, 1].astype(int) - 196) < 24)
+            & (np.abs(frame[:, :, 2].astype(int) - 92) < 24)
+        )
+        self.assertGreater(int(red.sum()), 40)
+        self.assertGreater(int(green.sum()), 40)
+        red_x = np.where(red)[0]
+        green_x = np.where(green)[0]
+        self.assertGreater(float(red_x.mean()), float(green_x.mean()))
         pygame.quit()
 
 
