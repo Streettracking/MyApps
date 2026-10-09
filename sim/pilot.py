@@ -45,6 +45,8 @@ STEER_MODES = ("bilateral", "sectors")
 EYE_CONFIRM_S = 3.0
 # Drop out of the walk after this many frames with one eye dark.
 EYE_LOSE_N = 5
+# After this, a new search uses the default left turn instead of the last side.
+SEARCH_MEMORY_S = 10.0
 
 
 def clamp_velocity(x: float, z: float) -> tuple[float, float]:
@@ -136,25 +138,49 @@ def cloud_forward(ranges) -> float | None:
     return float(min(found))
 
 
-def search_yaw(age: float) -> float:
-    """Slow turn to the left, then a pause so the camera frame can settle.
+def search_yaw(age: float, sign: float = 1.0) -> float:
+    """One-way turn, then a pause. ``sign`` is +1 left and −1 right.
 
-    The sign does not flip. The old left-right sweep was this function, not
-    the mushroom body.
+    The sign does not flip inside one search. The old left-right sweep was
+    this function, not the mushroom body. The default sign is still left.
     """
     period = SEARCH_TURN_S + SEARCH_PAUSE_S
     u = float(age) % period
     if u < SEARCH_TURN_S:
-        return SEARCH_TURN
+        return SEARCH_TURN if float(sign) >= 0.0 else -SEARCH_TURN
     return 0.0
 
 
-def phase_label(phase: str, steer: str = "bilateral") -> str:
+def sight_side(recognized_l: bool, recognized_r: bool, r_l: float, r_r: float) -> str | None:
+    """Which way the dog was last seen.
+
+    One eye names that hemisphere. Both eyes use the sign of ``R_L − R_R``.
+    A zero difference returns ``""`` so the caller keeps the stored side.
+    Neither eye returns None and the caller does not touch the memory.
+    """
+    left = bool(recognized_l)
+    right = bool(recognized_r)
+    if left and not right:
+        return "L"
+    if right and not left:
+        return "R"
+    if left and right:
+        diff = float(r_l) - float(r_r)
+        if diff > 1e-6:
+            return "L"
+        if diff < -1e-6:
+            return "R"
+        return ""
+    return None
+
+
+def phase_label(phase: str, steer: str = "bilateral", search_sign: float = 1.0) -> str:
     """Short Russian name for a pilot phase. Sector mode keeps the old approach word."""
+    if phase == "search":
+        return "поиск ←" if float(search_sign) >= 0.0 else "поиск →"
     if phase == "approach" and steer == "sectors":
         return "подход"
     names = {
-        "search": "поиск",
         "align_l": "доворот (Л)",
         "align_r": "доворот (П)",
         "approach": "подтверждено — иду",
@@ -252,7 +278,7 @@ class EyeConfirm:
         if phase == "align_r":
             return 0.0, -SEARCH_TURN, "align_r"
         if phase == "search":
-            return 0.0, search_yaw(search_age), "search"
+            return 0.0, search_yaw(search_age, 1.0), "search"
         x, z, stepped = seek_velocity(
             True,
             None,
@@ -463,6 +489,10 @@ class Pilot:
         self.steer = "bilateral"
         self._search_from = 0.0
         self._idle_from: float | None = None
+        self.last_seen_side = ""
+        self.last_seen_at = -1e9
+        self.search_sign = 1.0
+        self._search_locked = False
 
     def set_steer(self, mode: str) -> str:
         if mode not in STEER_MODES:
@@ -520,6 +550,7 @@ class Pilot:
         self.took_over = False
         self.held_stop = False
         self._search_from = float(now)
+        self._search_locked = False
         self._idle_from = None
         self.track.reset()
         self.eyes.reset()
@@ -537,6 +568,31 @@ class Pilot:
         self.who = "оператор"
         self.hint = ""
         self._idle_from = None
+
+    def note_sighting(self, now: float, recognized_l: bool, recognized_r: bool) -> None:
+        """Remember which way the dog was seen. A dark frame does not erase it."""
+        side = sight_side(recognized_l, recognized_r, self.track.r_l, self.track.r_r)
+        if side is None:
+            return
+        if side == "":
+            if self.last_seen_side in ("L", "R"):
+                self.last_seen_at = float(now)
+            return
+        self.last_seen_side = side
+        self.last_seen_at = float(now)
+
+    def _arm_search(self, now: float) -> None:
+        """Lock the turn sign once, at the moment search starts. No swing after that."""
+        if self._search_locked:
+            return
+        age = float(now) - float(self.last_seen_at)
+        fresh = self.last_seen_side in ("L", "R") and 0.0 <= age <= SEARCH_MEMORY_S
+        if fresh and self.last_seen_side == "R":
+            self.search_sign = -1.0
+        else:
+            self.search_sign = 1.0
+        self._search_locked = True
+        self._search_from = float(now)
 
     def command(
         self,
@@ -583,6 +639,7 @@ class Pilot:
                 recognized_l = bool(recognized)
             if recognized_r is None:
                 recognized_r = bool(recognized)
+            self.note_sighting(float(now), bool(recognized_l), bool(recognized_r))
             if self.steer == "bilateral":
                 x, z, phase = self.eyes.velocity(
                     float(now),
@@ -604,6 +661,12 @@ class Pilot:
                     steer=self.steer,
                     fly_z=self.track.yaw_z,
                 )
+            if phase == "search":
+                self._arm_search(float(now))
+                z = search_yaw(float(now) - self._search_from, self.search_sign)
+                x = 0.0
+            else:
+                self._search_locked = False
             self.phase = phase
             self.who = "мозг"
             stop = abs(x) < 1e-6 and abs(z) < 1e-6

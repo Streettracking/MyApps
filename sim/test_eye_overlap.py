@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from sim.hemifield import clamp_overlap, hemifield, overlap_bands
+from sim.hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield, overlap_bands
 from sim.pilot import EYE_CONFIRM_S, EYE_LOSE_N, SEARCH_TURN, EyeConfirm, Pilot, phase_label
 from sim.raw_sense import N_RAW, OFF_BODY, OFF_LIDAR
 from sim.train_monitor import eye_tone
@@ -49,6 +49,8 @@ def _auto(pilot: Pilot, now: float, *, left: bool, right: bool, dist: float = 3.
 
 class OverlapTests(unittest.TestCase):
     def test_bands_and_clamp(self):
+        self.assertEqual(DEFAULT_OVERLAP, 0.4)
+        self.assertEqual(overlap_bands(0.4), (0.3, 0.7))
         self.assertEqual(overlap_bands(0.2), (0.4, 0.6))
         self.assertEqual(overlap_bands(0.0), (0.5, 0.5))
         self.assertEqual(overlap_bands(0.5), (0.25, 0.75))
@@ -279,6 +281,77 @@ class OverlayTests(unittest.TestCase):
         import pygame
 
         pygame.quit()
+
+
+class SearchSideTests(unittest.TestCase):
+    def test_lost_target_searches_toward_the_last_side_without_swinging(self):
+        pilot = Pilot()
+        pilot.start_auto(0.0)
+        _auto(pilot, 0.0, left=True, right=True, r_l=4.0, r_r=1.0)
+        self.assertEqual(pilot.last_seen_side, "L")
+        cmd = None
+        for step in range(1, EYE_LOSE_N + 1):
+            cmd = _auto(pilot, 0.05 * step, left=False, right=False, r_l=0.0, r_r=9.0)
+        assert cmd is not None
+        self.assertEqual(cmd.phase, "search")
+        self.assertGreater(cmd.z, 0.0)
+        self.assertEqual(phase_label(cmd.phase, search_sign=pilot.search_sign), "поиск ←")
+        later = _auto(pilot, 0.05 * EYE_LOSE_N + 0.2, left=False, right=False, r_l=0.0, r_r=9.0)
+        self.assertEqual(later.phase, "search")
+        self.assertGreater(later.z, 0.0)
+        self.assertEqual(pilot.search_sign, 1.0)
+        paused = _auto(pilot, 0.05 * EYE_LOSE_N + 1.2, left=False, right=False)
+        self.assertEqual(paused.z, 0.0)
+        self.assertEqual(pilot.search_sign, 1.0)
+        again = _auto(pilot, 0.05 * EYE_LOSE_N + 1.6, left=False, right=False)
+        self.assertGreater(again.z, 0.0)
+        self.assertEqual(pilot.search_sign, 1.0)
+
+    def test_right_eye_timeout_searches_right(self):
+        pilot = Pilot()
+        pilot.start_auto(0.0)
+        _auto(pilot, 0.0, left=False, right=True, r_l=0.0, r_r=3.0)
+        gave = _auto(pilot, EYE_CONFIRM_S, left=False, right=True, r_l=0.0, r_r=3.0)
+        self.assertEqual(gave.phase, "search")
+        self.assertEqual(gave.x, 0.0)
+        self.assertAlmostEqual(gave.z, -SEARCH_TURN)
+        self.assertEqual(pilot.last_seen_side, "R")
+        self.assertEqual(phase_label("search", search_sign=pilot.search_sign), "поиск →")
+
+    def test_old_sighting_falls_back_to_the_left(self):
+        pilot = Pilot()
+        pilot.start_auto(0.0)
+        _auto(pilot, 0.0, left=True, right=True, r_l=1.0, r_r=4.0)
+        self.assertEqual(pilot.last_seen_side, "R")
+        pilot.stop_auto()
+        pilot.start_auto(12.0)
+        cmd = _auto(pilot, 12.0, left=False, right=False)
+        self.assertEqual(cmd.phase, "search")
+        self.assertGreater(cmd.z, 0.0)
+        self.assertEqual(pilot.search_sign, 1.0)
+
+    def test_zero_difference_keeps_the_stored_side(self):
+        pilot = Pilot()
+        pilot.start_auto(0.0)
+        _auto(pilot, 0.0, left=True, right=True, r_l=4.0, r_r=1.0)
+        _auto(pilot, 0.2, left=True, right=True, r_l=2.0, r_r=2.0)
+        self.assertEqual(pilot.last_seen_side, "L")
+        self.assertAlmostEqual(pilot.last_seen_at, 0.2)
+
+
+class DeployArgTests(unittest.TestCase):
+    def test_start_forwards_overlap_and_status_still_matches_main(self):
+        from robot.deploy_flybrain import _remote_args, _start_cmd
+
+        cmd = _start_cmd(extra=["--overlap", "0.4", "--steer", "sectors"])
+        self.assertIn("python3 /root/flybrain/main.py --overlap 0.4 --steer sectors", cmd)
+        self.assertIn("grep -qx /root/flybrain/main.py", cmd)
+        argv = "python3\n/root/flybrain/main.py\n--overlap\n0.4".split("\n")
+        self.assertIn("/root/flybrain/main.py", argv)
+        wrapper = "bash -lc 'nohup setsid python3 /root/flybrain/main.py --overlap 0.4'"
+        self.assertNotIn("/root/flybrain/main.py", wrapper.split("\n"))
+        with self.assertRaises(SystemExit):
+            _remote_args(["0.4; rm"])
 
 
 if __name__ == "__main__":

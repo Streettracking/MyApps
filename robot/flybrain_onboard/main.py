@@ -21,6 +21,8 @@ for candidate in (HERE, HERE.parent.parent, HERE.parent):
         sys.path.insert(0, str(candidate))
         break
 
+from sim.hemifield import DEFAULT_OVERLAP  # noqa: E402
+
 
 def _pid_path(explicit: str) -> Path | None:
     if explicit:
@@ -52,8 +54,8 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--overlap",
         type=float,
-        default=0.2,
-        help="Shared fraction of the field, 0..0.5. 0 is the old hard midline. Default 0.2.",
+        default=DEFAULT_OVERLAP,
+        help="Shared fraction of the field, 0..0.5. 0 is the old hard midline. Default 0.4.",
     )
     args = parser.parse_args(argv)
     stop = {"stop": False}

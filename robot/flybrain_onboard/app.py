@@ -26,6 +26,7 @@ from sim.frame_sense import features_from_frames
 from sim.learn_flash import flash_payload
 from sim.map_marks import MarkLayer
 from sim.mb_train import MbTrainer, default_npz
+from sim.hemifield import DEFAULT_OVERLAP
 from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, phase_label
 from sim.pilot import forward_clearance, scrub_range
 
@@ -358,7 +359,9 @@ class BrainLoop:
                 "mode": self.pilot.mode,
                 "label": self.pilot.label(),
                 "phase": self.pilot.phase,
-                "phase_ru": phase_label(self.pilot.phase, self.pilot.steer),
+                "phase_ru": phase_label(self.pilot.phase, self.pilot.steer, self.pilot.search_sign),
+                "last_seen_side": self.pilot.last_seen_side or None,
+                "search_sign": 1 if self.pilot.search_sign >= 0 else -1,
                 "who": self.pilot.who,
                 "took_over": bool(self.pilot.took_over),
                 "learning": bool(self.learn),
@@ -407,7 +410,7 @@ def make_brain(
     state_path: str,
     npz_path: str | None = None,
     self_radius: float = 0.6,
-    overlap: float = 0.2,
+    overlap: float = DEFAULT_OVERLAP,
 ) -> BrainLoop:
     mb = MbTrainer(npz_path or default_npz(), seed=1, eta=0.2, dan="teacher", overlap=overlap)
     mb.learn = False
