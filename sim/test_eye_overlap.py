@@ -13,7 +13,16 @@ from pathlib import Path
 import numpy as np
 
 from sim.hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield, overlap_bands
-from sim.pilot import EYE_CONFIRM_S, EYE_LOSE_N, SEARCH_TURN, EyeConfirm, Pilot, phase_label
+from sim.pilot import (
+    EYE_CONFIRM_S,
+    EYE_LOSE_N,
+    SEARCH_TURN,
+    EyeConfirm,
+    Pilot,
+    eyes_state_label,
+    format_eyes_line,
+    phase_label,
+)
 from sim.raw_sense import N_RAW, OFF_BODY, OFF_LIDAR
 from sim.train_monitor import eye_tone
 
@@ -240,6 +249,102 @@ class StateAndStatusTests(unittest.TestCase):
         self.assertTrue(loop.status()["recognized_R"])
 
 
+class EyesLineTests(unittest.TestCase):
+    def test_labels(self):
+        self.assertEqual(eyes_state_label(True, True), "ОБА ВИДЯТ → ИДУ")
+        self.assertEqual(eyes_state_label(True, False), "ОДИН ГЛАЗ → ДОВОРОТ")
+        self.assertEqual(eyes_state_label(False, False), "НЕТ → ПОИСК")
+        self.assertEqual(
+            format_eyes_line(8, 1, True, True),
+            "R_L +8   R_R +1   ОБА ВИДЯТ → ИДУ",
+        )
+        self.assertEqual(
+            format_eyes_line(None, None, False, True),
+            "R_L —   R_R —   ОДИН ГЛАЗ → ДОВОРОТ",
+        )
+
+
+class OnboardEyeDriveTests(unittest.TestCase):
+    def _loop(self):
+        from robot.flybrain_onboard.app import BrainLoop
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import MbTrainer, default_npz
+
+        brain = MbTrainer(default_npz(), seed=1, overlap=0.4)
+        return BrainLoop(SportDrive(None), brain, "/tmp/mb_eye_drive.npz")
+
+    def _arm(self, loop, now: float) -> None:
+        loop.handle({"op": "autonomy_on"}, now)
+        loop.frames_ok = True
+        loop.last_frame_t = now
+        loop.last_hb = now
+        loop.dist_m = 3.0
+        loop.forward_m = 3.0
+
+    def test_both_eyes_walk_and_yaw_follows_the_readouts(self):
+        loop = self._loop()
+        self._arm(loop, 0.0)
+        loop.recognized = True
+        loop.recognized_l = True
+        loop.recognized_r = True
+        loop.mb.r_l = 8.0
+        loop.mb.r_r = 1.0
+        cmd = loop.tick(0.0)
+        self.assertEqual(cmd.phase, "approach")
+        self.assertAlmostEqual(cmd.x, 0.4)
+        self.assertGreater(cmd.z, 0.2)
+        self.assertAlmostEqual(loop.drive.moves[-1][0], 0.4)
+        self.assertGreater(loop.drive.moves[-1][2], 0.0)
+        self.assertEqual(loop.status()["eyes_ru"], "ОБА ВИДЯТ → ИДУ")
+
+        other = self._loop()
+        self._arm(other, 0.0)
+        other.recognized = True
+        other.recognized_l = True
+        other.recognized_r = True
+        other.mb.r_l = 1.0
+        other.mb.r_r = 8.0
+        cmd = other.tick(0.0)
+        self.assertAlmostEqual(cmd.x, 0.4)
+        self.assertLess(cmd.z, -0.2)
+        self.assertEqual(other.status()["eyes_ru"], "ОБА ВИДЯТ → ИДУ")
+
+    def test_one_eye_turns_and_a_loss_searches_that_side(self):
+        loop = self._loop()
+        self._arm(loop, 0.0)
+        loop.recognized_l = False
+        loop.recognized_r = True
+        loop.mb.r_r = 6.0
+        cmd = loop.tick(0.0)
+        self.assertEqual(cmd.phase, "align_r")
+        self.assertEqual(cmd.x, 0.0)
+        self.assertAlmostEqual(cmd.z, -SEARCH_TURN)
+        self.assertEqual(loop.drive.moves[-1][0], 0.0)
+        self.assertEqual(loop.status()["eyes_ru"], "ОДИН ГЛАЗ → ДОВОРОТ")
+        loop.recognized_r = False
+        lost = loop.tick(0.2)
+        self.assertEqual(lost.phase, "search")
+        self.assertEqual(lost.x, 0.0)
+        self.assertLess(lost.z, 0.0)
+        self.assertEqual(loop.status()["last_seen_side"], "R")
+        self.assertEqual(loop.status()["eyes_ru"], "НЕТ → ПОИСК")
+
+        left = self._loop()
+        self._arm(left, 1.0)
+        left.recognized_l = True
+        left.recognized_r = False
+        left.mb.r_l = 6.0
+        turn = left.tick(1.0)
+        self.assertEqual(turn.phase, "align_l")
+        self.assertEqual(turn.x, 0.0)
+        self.assertAlmostEqual(turn.z, SEARCH_TURN)
+        left.recognized_l = False
+        found = left.tick(1.2)
+        self.assertEqual(found.phase, "search")
+        self.assertGreater(found.z, 0.0)
+        self.assertEqual(left.status()["last_seen_side"], "L")
+
+
 class OverlayTests(unittest.TestCase):
     def test_tones(self):
         self.assertEqual(eye_tone(False, False, 0.0), "grey")
@@ -280,6 +385,48 @@ class OverlayTests(unittest.TestCase):
         monitor.save_screenshot(str(shot))
         import pygame
 
+        pygame.quit()
+
+    def test_plaques_mark_each_eye_and_do_not_paint_the_camera(self):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        from sim.train_monitor import MonitorView, TrainMonitor
+
+        monitor = TrainMonitor("eyes")
+        camera = np.zeros((96, 160, 3), dtype=np.uint8)
+        camera[:] = (18, 22, 28)
+        original = camera.copy()
+        view = MonitorView(
+            camera=camera,
+            learner="mb",
+            onboard=True,
+            overlap=0.4,
+            eye_l_recognized=True,
+            eye_r_recognized=False,
+            eyes_line="R_L +8   R_R +1   ОДИН ГЛАЗ → ДОВОРОТ",
+        )
+        monitor.draw(view)
+        np.testing.assert_array_equal(camera, original)
+        import pygame
+
+        frame = pygame.surfarray.array3d(monitor.screen)
+        right = frame[260:450, 90:130]
+        left = frame[30:210, 90:130]
+        green = (
+            (np.abs(right[:, :, 0].astype(int) - 28) < 20)
+            & (np.abs(right[:, :, 1].astype(int) - 132) < 30)
+            & (np.abs(right[:, :, 2].astype(int) - 72) < 24)
+        )
+        gray = (
+            (np.abs(left[:, :, 0].astype(int) - 62) < 18)
+            & (np.abs(left[:, :, 1].astype(int) - 66) < 18)
+            & (np.abs(left[:, :, 2].astype(int) - 74) < 18)
+        )
+        self.assertGreater(int(green.sum()), 200)
+        self.assertGreater(int(gray.sum()), 200)
+        shot = Path("/opt/cursor/artifacts/eyes_onboard.png")
+        shot.parent.mkdir(parents=True, exist_ok=True)
+        monitor.save_screenshot(str(shot))
         pygame.quit()
 
 

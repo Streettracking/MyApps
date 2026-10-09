@@ -141,6 +141,7 @@ class MonitorView:
     eye_l_ready: bool = False
     eye_r_ready: bool = False
     phase_ru: str = ""
+    eyes_line: str = ""
 
 
 def eye_tone(ready: bool, recognized: bool, percent: float) -> str:
@@ -394,6 +395,7 @@ class TrainMonitor:
         if cam_inner is not None and view.learner == "mb":
             self._camera_overlap(screen, cam_inner, view)
             self._draw_det_boxes(screen, cam_inner, view.teacher_boxes)
+            self._eye_plaques(screen, cam_inner, view)
         elif cam_inner is not None:
             self._camera_halves(screen, cam_inner, view)
         lid_title = view.lidar_mode or "карта лидара"
@@ -726,9 +728,52 @@ class TrainMonitor:
             overlay.blit(tag, (tip[0] + 12, tip[1] - 18 + i * 16))
         screen.blit(overlay, inner.topleft)
 
+    def _eye_plaques(self, screen, inner, view: MonitorView) -> None:
+        """Large «Л» / «П» plates on the preview. Image left is П, image right is Л."""
+        import pygame
+
+        height = min(52, max(32, inner.h // 3))
+        mid = inner.x + inner.w // 2
+        self._eye_plaque(screen, pygame.Rect(inner.x, inner.y, mid - inner.x, height), "П", view.eye_r_recognized)
+        self._eye_plaque(screen, pygame.Rect(mid, inner.y, inner.right - mid, height), "Л", view.eye_l_recognized)
+
+    def _eye_plaque(self, screen, rect, name: str, recognized: bool) -> None:
+        import pygame
+
+        fill = (28, 132, 72) if recognized else (62, 66, 74)
+        ink = (248, 255, 248) if recognized else (214, 218, 224)
+        pygame.draw.rect(screen, fill, rect)
+        pygame.draw.rect(screen, (244, 248, 244) if recognized else (150, 156, 166), rect, 3)
+        word = "УЗНАЮ" if recognized else "—"
+        label = self.font_ind.render("%s: %s" % (name, word), True, ink)
+        if label.get_width() > rect.w - 8:
+            label = self.font.render("%s: %s" % (name, word), True, ink)
+        screen.blit(label, label.get_rect(center=rect.center))
+
+    def _eyes_banner(self, screen, view: MonitorView, rx: int, col_w: int) -> None:
+        import pygame
+
+        both = bool(view.eye_l_recognized and view.eye_r_recognized)
+        one = bool(view.eye_l_recognized or view.eye_r_recognized)
+        if both:
+            fill, ink = (22, 96, 58), (214, 255, 226)
+        elif one:
+            fill, ink = (96, 74, 24), (255, 236, 190)
+        else:
+            fill, ink = (42, 46, 54), (214, 218, 224)
+        bar = pygame.Rect(rx, 46, col_w, 38)
+        pygame.draw.rect(screen, fill, bar, border_radius=6)
+        label = self.font_ind.render(view.eyes_line, True, ink)
+        if label.get_width() > bar.w - 16:
+            label = self.font.render(view.eyes_line, True, ink)
+        screen.blit(label, label.get_rect(center=bar.center))
+
     def _draw_mb_head(self, screen, view: MonitorView, rx: int) -> None:
         sm = self.font_sm
         col_w = WIN_W - rx - 16
+        if view.eyes_line:
+            self._eyes_banner(screen, view, rx, col_w)
+            return
         if view.recognized:
             phrase, tone = "УЗНАЮ СОРОДИЧА", (90, 230, 130)
         else:
@@ -748,8 +793,8 @@ class TrainMonitor:
         col_w = WIN_W - rx - 16
         self._draw_mb_head(screen, view, rx)
         raw = f"сырой MBON {view.likeness:+.0f}    {view.readout_caption}"
-        screen.blit(sm.render(raw[:88], True, (150, 156, 168)), (rx, 84))
-        self._progress_box(screen, view, pygame.Rect(rx, 106, col_w, 78))
+        screen.blit(sm.render(raw[:88], True, (150, 156, 168)), (rx, 90))
+        self._progress_box(screen, view, pygame.Rect(rx, 110, col_w, 74))
 
         plot_w = (col_w - 8) // 2
         _plot(screen, pygame.Rect(rx, 192, plot_w, 96), view.peer_curve, 0.0, 1.0, (80, 200, 120), sm, "собака в кадре")
@@ -963,26 +1008,6 @@ class TrainMonitor:
         py = inner.bottom - pad.get_height() - 6
         screen.blit(pad, (px, py))
         screen.blit(pct, (px + 5, py + 2))
-        self._eye_badge(
-            screen,
-            inner.x,
-            x0,
-            inner.y,
-            "П",
-            view.eye_r_ready,
-            view.eye_r_recognized,
-            view.eye_r_confidence,
-        )
-        self._eye_badge(
-            screen,
-            x1,
-            inner.right,
-            inner.y,
-            "Л",
-            view.eye_l_ready,
-            view.eye_l_recognized,
-            view.eye_l_confidence,
-        )
 
     def _zone_tag(self, screen, x_lo: int, x_hi: int, inner, name: str) -> None:
         import pygame
@@ -996,44 +1021,6 @@ class TrainMonitor:
         y = inner.bottom - pad.get_height() - 28
         screen.blit(pad, (x, y))
         screen.blit(label, (x + 5, y + 2))
-
-    def _eye_badge(
-        self,
-        screen,
-        x_lo: int,
-        x_hi: int,
-        y: int,
-        name: str,
-        ready: bool,
-        recognized: bool,
-        percent: float,
-    ) -> None:
-        import pygame
-
-        tone = eye_tone(ready, recognized, percent)
-        ink = {"green": (120, 230, 150), "yellow": (240, 206, 80), "grey": (168, 172, 178)}[tone]
-        bar_ink = {"green": (70, 190, 110), "yellow": (210, 170, 50), "grey": (90, 94, 100)}[tone]
-        word = "УЗНАЮ"
-        pct = "…" if not ready else "%d%%" % int(round(float(percent)))
-        title = self.font_sm.render("%s  %s  %s" % (name, word, pct), True, ink)
-        width = max(title.get_width() + 12, 108)
-        height = title.get_height() + 12
-        span = max(0, x_hi - x_lo)
-        if span > 8 and width > span - 4:
-            width = max(48, span - 4)
-        x = x_lo + max(2, (span - width) // 2)
-        if x + width > x_hi and span > width:
-            x = x_hi - width
-        badge = pygame.Surface((width, height), pygame.SRCALPHA)
-        badge.fill((8, 12, 16, 188))
-        pygame.draw.rect(badge, ink, pygame.Rect(0, 0, width, height), 1)
-        badge.blit(title, (6, 2))
-        bar = pygame.Rect(6, height - 7, max(8, width - 12), 4)
-        pygame.draw.rect(badge, (36, 40, 46), bar)
-        filled = int(bar.w * float(np.clip(percent if ready else 0.0, 0.0, 100.0)) / 100.0)
-        if filled > 0:
-            pygame.draw.rect(badge, bar_ink, pygame.Rect(bar.x, bar.y, filled, bar.h))
-        screen.blit(badge, (x, y + 4))
 
     def _camera_halves(self, screen, inner, view: MonitorView) -> None:
         """Centre line on the displayed camera. The JPEG is not touched.

@@ -32,7 +32,7 @@ from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
 from .onboard_link import OnboardLink
 from .hemifield import DEFAULT_OVERLAP, format_fly_line
-from .pilot import phase_label
+from .pilot import format_eyes_line, phase_label
 from .pilot import Pilot, TeachRepeater, clamp_velocity, format_range_line, forward_clearance, scrub_range
 from .recognize import ConspecificRecognizer
 
@@ -1178,6 +1178,12 @@ def _live_view(
             eye_l_ready=bool(conf_l.ready),
             eye_r_ready=bool(conf_r.ready),
             phase_ru=phase_label(session.pilot.phase, session.pilot.steer, session.pilot.search_sign),
+            eyes_line=format_eyes_line(
+                session.pilot.track.r_l,
+                session.pilot.track.r_r,
+                bool(conf_l.ready and conf_l.recognized),
+                bool(conf_r.ready and conf_r.recognized),
+            ),
             session_sep=prog.session_sep(),
             total_sep=prog.total_sep(),
             session_acc=prog.session_acc(),
@@ -1219,6 +1225,13 @@ def _live_view(
             eye_l_ready=bool(session.eye_l_ready),
             eye_r_ready=bool(session.eye_r_ready),
             phase_ru=session.phase_ru or phase_label(session.pilot.phase, session.pilot.steer, session.pilot.search_sign),
+            eyes_line=format_eyes_line(
+                remote.get("r_l") if "r_l" in remote else None,
+                remote.get("r_r") if "r_r" in remote else None,
+                bool(session.eye_l_recognized),
+                bool(session.eye_r_recognized),
+                str(remote.get("eyes_ru") or "") or None,
+            ),
             onboard=True,
             **common,
         )

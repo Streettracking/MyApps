@@ -18,7 +18,7 @@ import numpy as np
 
 from .frame_sense import sim_previews
 from .hemifield import DEFAULT_OVERLAP, format_fly_line
-from .pilot import phase_label
+from .pilot import format_eyes_line, phase_label
 from .lidar_fresh import DEFAULT_LIDAR_REFRESH, SimLidarBank, mismatch_warning
 from .map_marks import MarkLayer
 from .pilot import (
@@ -455,6 +455,12 @@ class RecognizeTrainSim:
                 eye_l_ready=bool(conf_l.ready),
                 eye_r_ready=bool(conf_r.ready),
                 phase_ru=phase_label(self.pilot.phase, self.pilot.steer, self.pilot.search_sign),
+                eyes_line=format_eyes_line(
+                    self.pilot.track.r_l,
+                    self.pilot.track.r_r,
+                    bool(conf_l.ready and conf_l.recognized),
+                    bool(conf_r.ready and conf_r.recognized),
+                ),
                 last_seen_side=str(self.pilot.last_seen_side or ""),
                 yolo_state=str(getattr(self, "yolo_state", "") or ""),
                 teacher_counts=str(getattr(self, "teacher_counts", "") or ""),

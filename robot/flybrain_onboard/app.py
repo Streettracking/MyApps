@@ -27,7 +27,7 @@ from sim.learn_flash import flash_payload
 from sim.map_marks import MarkLayer
 from sim.mb_train import MbTrainer, default_npz
 from sim.hemifield import DEFAULT_OVERLAP
-from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, phase_label
+from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, eyes_state_label, phase_label
 from sim.pilot import forward_clearance, scrub_range
 
 try:
@@ -405,6 +405,7 @@ class BrainLoop:
                 "z_fly": self.pilot.track.yaw_z,
                 "recognized_L": bool(self.recognized_l),
                 "recognized_R": bool(self.recognized_r),
+                "eyes_ru": eyes_state_label(bool(self.recognized_l), bool(self.recognized_r)),
                 "confidence_L": float(self.confidence_l),
                 "confidence_R": float(self.confidence_r),
                 "confidence_L_ready": bool(self.confidence_l_ready),

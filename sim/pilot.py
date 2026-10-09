@@ -191,6 +191,27 @@ def phase_label(phase: str, steer: str = "bilateral", search_sign: float = 1.0) 
     return names.get(phase, phase)
 
 
+def eyes_state_label(recognized_l: bool, recognized_r: bool) -> str:
+    """What the two eyes mean for the walk. Shown on the trainer panel."""
+    if recognized_l and recognized_r:
+        return "ОБА ВИДЯТ → ИДУ"
+    if recognized_l or recognized_r:
+        return "ОДИН ГЛАЗ → ДОВОРОТ"
+    return "НЕТ → ПОИСК"
+
+
+def format_eyes_line(r_l, r_r, recognized_l: bool, recognized_r: bool, label: str | None = None) -> str:
+    """Panel line: the two readouts and the walk those eyes produce."""
+
+    def num(value) -> str:
+        if value is None:
+            return "—"
+        return "%+.0f" % float(value)
+
+    phrase = label or eyes_state_label(bool(recognized_l), bool(recognized_r))
+    return "R_L %s   R_R %s   %s" % (num(r_l), num(r_r), phrase)
+
+
 class EyeConfirm:
     """Walk only when both hemispheres recognize. One eye turns in place.
 
@@ -344,7 +365,11 @@ def seek_velocity(
     blocked = forward_m is not None and forward_m < STOP_M
     if close or blocked:
         return clamp_velocity(0.0, yaw) + ("hold",)
-    if dist_m is None:
+    # Both eyes already agreed. Yaw still follows R_L−R_R, but the walk stays
+    # at full speed. Sector mode still creeps when the bearing is wide or unknown.
+    if bilateral:
+        forward = X_MAX
+    elif dist_m is None:
         forward = SLOW_X
     elif centred or not wide:
         forward = X_MAX
