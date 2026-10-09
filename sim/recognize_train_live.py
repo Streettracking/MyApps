@@ -749,7 +749,7 @@ def run_live_gui(
 ) -> None:
     from .train_monitor import MonitorView, TrainMonitor
 
-    from .frame_record import FrameRecorder, OperatorMarks, note_operator
+    from .frame_record import FrameRecorder, OperatorMarks, note_operator, weak_label_now
 
     mon = TrainMonitor("Go2 recognition trainer")
     rec = FrameRecorder(ROOT / "logs" / "yolo_frames", fps=float(getattr(session, "rec_fps", 2.0)))
@@ -881,10 +881,12 @@ def run_live_gui(
                 session.pending_teach = teach
             view = _live_view(session, camera, disp_lidar, error, link, inp.focused, command_name, onboard)
             rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
+            labelled = weak_label_now(marks, session.now()) is not None
             view.record_on = rec_on
             view.record_saved = rec_n
             view.record_bytes = rec_bytes
-            if rec_on and camera is not None and camera_jpeg and rec.due():
+            view.record_idle = rec_on and not labelled
+            if rec_on and labelled and camera is not None and camera_jpeg and rec.due():
                 _offer_live_frame(session, rec, marks, camera, camera_jpeg, onboard)
             mon.draw(view)
             if inp.screenshot:

@@ -120,6 +120,7 @@ class MonitorView:
     record_on: bool = False
     record_saved: int = 0
     record_bytes: int = 0
+    record_idle: bool = False
 
 
 def _surf_from_rgb(rgb: np.ndarray):
@@ -472,7 +473,10 @@ class TrainMonitor:
         from .frame_record import format_disk
 
         hot = self.record_rect.collidepoint(pygame.mouse.get_pos())
-        if view.record_on:
+        if view.record_on and view.record_idle:
+            color = (150, 48, 42) if not hot else (190, 64, 52)
+            text = "ЗАПИСЬ %s · жми T/X  U" % int(view.record_saved)
+        elif view.record_on:
             color = (150, 48, 42) if not hot else (190, 64, 52)
             text = "ЗАПИСЬ %s · %s  U" % (int(view.record_saved), format_disk(view.record_bytes))
         else:

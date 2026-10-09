@@ -24,6 +24,14 @@ _DOG = ("T", "D")
 _NONE = ("X", "N")
 
 
+def _meta_has_label(meta: dict) -> bool:
+    """True only for a dog or no_dog weak label. Unlabelled frames are not files."""
+    operator = meta.get("operator") if isinstance(meta, dict) else None
+    if not isinstance(operator, dict):
+        return False
+    return operator.get("weak_label") in ("dog", "no_dog")
+
+
 def jpeg_complete(blob: bytes) -> bool:
     """A finished JPEG starts with FFD8 and ends with FFD9."""
     return len(blob) >= 4 and blob[:2] == b"\xff\xd8" and blob[-2:] == b"\xff\xd9"
@@ -129,6 +137,12 @@ def note_operator(marks: OperatorMarks, t: float, inp) -> None:
         marks.note("N", t)
 
 
+def weak_label_now(marks: OperatorMarks, t: float) -> str | None:
+    """dog / no_dog when T/D or X/N is inside the label window, else None."""
+    _events, weak = marks.export(t)
+    return weak
+
+
 def make_meta(
     marks: OperatorMarks,
     t_s: float,
@@ -174,9 +188,10 @@ def make_meta(
 class FrameRecorder:
     """Queue JPEGs and write them off the teleop thread.
 
-    ``offer`` returns immediately. Identical bytes and near-duplicate
-    thumbnails are dropped in the writer. At most ``fps`` frames are queued
-    per second.
+    ``offer`` returns immediately. A frame with no T/X/D/N label in the
+    window is not queued and does not use a rate-limit slot. Identical bytes
+    and near-duplicate thumbnails are dropped in the writer. At most ``fps``
+    labelled frames are queued per second.
     """
 
     def __init__(self, root: Path | str, fps: float = 2.0) -> None:
@@ -235,8 +250,10 @@ class FrameRecorder:
         return clock - self._last_offer >= self.min_interval
 
     def offer(self, jpeg: bytes, meta: dict, fp: np.ndarray | None, now: float | None = None) -> bool:
-        """Queue one frame. False when recording is off, rate-limited, or the queue is full."""
+        """Queue one labelled frame. False when there is no label, recording is off, rate-limited, or the queue is full."""
         if not jpeg_complete(jpeg):
+            return False
+        if not _meta_has_label(meta):
             return False
         with self._lock:
             if not self.enabled or self.session_dir is None:

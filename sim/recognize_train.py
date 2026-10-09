@@ -647,7 +647,7 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
 
 
 def _run_gui(session, mon, shot, seconds, rec, marks):
-    from .frame_record import note_operator
+    from .frame_record import note_operator, weak_label_now
 
     while True:
         inp = mon.pump()
@@ -708,10 +708,12 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
             keys_hint=SIM_KEYS if session.learner_kind == "mb" else HEBB_KEYS,
         )
         rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
+        labelled = weak_label_now(marks, float(session.world.t)) is not None
         view.record_on = rec_on
         view.record_saved = rec_n
         view.record_bytes = rec_bytes
-        if rec_on and view.camera is not None and rec.due():
+        view.record_idle = rec_on and not labelled
+        if rec_on and labelled and view.camera is not None and rec.due():
             _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z)
         mon.draw(view)
         if inp.screenshot:
