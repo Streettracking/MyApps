@@ -5,6 +5,11 @@ not call SportClient at all. StopMove is one edge, and only after this
 process itself sent Move (a link or frame loss, or the step from moving
 to stopped). E-STOP sends StopMove once and then blocks. StandUp,
 StandDown, and RecoveryStand run only when the operator asks.
+
+StandUp locks the Go2. BalanceStand follows about 0.7 s later, from
+tick, so the HTTP handler and the main loop do not sleep. The first
+Move after a takeover or an autonomy start sends that unlock itself
+when the timer has not fired yet.
 """
 
 from __future__ import annotations
@@ -62,6 +67,7 @@ class BrainLoop:
         self._moving = False
         self._sent_move = False
         self._last_send = 0.0
+        self._move_log_t = -1e9
         self._prev_camera = None
         self._prev_near = None
         self._learn_block_log = 0.0
@@ -105,6 +111,7 @@ class BrainLoop:
         if self.pilot.mode == "estop":
             return
         self.pilot.estop()
+        self.drive.cancel_balance_timer()
         self.drive.stop()
         self._sent_move = False
         self._moving = False
@@ -152,11 +159,11 @@ class BrainLoop:
             elif op == "takeover":
                 self.on_takeover()
             elif op == "stand_up":
-                self.drive.stand_up()
-                self._log("StandUp")
+                code = self.drive.stand_up(now)
+                self._log(f"StandUp code={code}")
             elif op == "stand_down":
-                self.drive.stand_down()
-                self._log("StandDown")
+                code = self.drive.stand_down()
+                self._log(f"StandDown code={code}")
             elif op == "recovery_stand":
                 if self.drive.recovery_stand():
                     self._log("RecoveryStand")
@@ -216,6 +223,9 @@ class BrainLoop:
 
     def tick(self, now: float) -> DriveCommand:
         now = float(now)
+        # Watch-only still finishes a stand the operator already asked for.
+        # The HTTP thread only scheduled it.
+        self._release_stand_lock(now)
         link_ok = (now - self.last_hb) <= LINK_HOLD_S
         frames_ok = self.frames_ok and (now - self.last_frame_t) <= LINK_HOLD_S
         recent_manual = (now - self.last_manual_t) <= MANUAL_HOLD_S
@@ -229,7 +239,8 @@ class BrainLoop:
             dist_m = self.dist_m
             forward_m = self.forward_m
         if not self.driving():
-            # Watch-only, or the E-STOP block. Do not touch SportClient.
+            # Watch-only, or the E-STOP block: no Move and no StopMove.
+            # A BalanceStand that StandUp already scheduled ran above.
             return DriveCommand(0.0, 0.0, True, "stop", "никто", "")
         if self.pilot.mode != "auto":
             axes = manual
@@ -259,15 +270,52 @@ class BrainLoop:
         self._emit(cmd, now)
         return cmd
 
+    def _release_stand_lock(self, now: float) -> None:
+        if self.pilot.mode == "estop":
+            self.drive.cancel_balance_timer()
+            return
+        due = self.drive.balance_due
+        if due is None or now < due:
+            return
+        self._balance_once()
+
+    def _balance_once(self) -> None:
+        with self._lock:
+            if self.drive.pose == "balance_unavailable":
+                self.drive.balance_due = None
+                return
+            if not self.drive.needs_balance():
+                self.drive.balance_due = None
+                return
+            code = self.drive.balance_stand()
+            missing = self.drive.pose == "balance_unavailable"
+        if missing:
+            self._log("BalanceStand нет в SDK")
+        else:
+            self._log(f"BalanceStand code={code}")
+
+    def _log_manual_move(self, x: float, z: float, code, now: float) -> None:
+        """One line a second, manual axes only, with the sport-service code."""
+        if self.pilot.mode != "manual":
+            return
+        if float(now) - self._move_log_t < 1.0:
+            return
+        self._move_log_t = float(now)
+        self._log(f"Move x={x:.2f} z={z:.2f} code={code}")
+
     def _emit(self, cmd: DriveCommand, now: float) -> None:
         if cmd.stop or (abs(cmd.x) < 1e-6 and abs(cmd.z) < 1e-6):
             self._stop_once()
             return
+        if self.drive.needs_balance():
+            self._balance_once()
         if (not self._sent_move) or (now - self._last_send >= 0.10):
-            self.drive.move(cmd.x, cmd.z)
+            code = self.drive.move(cmd.x, cmd.z)
+            sent = self.drive.moves[-1]
             self._sent_move = True
             self._moving = True
             self._last_send = now
+            self._log_manual_move(sent[0], sent[2], code, now)
 
     def status(self) -> dict:
         flash = flash_payload(self.mb.flash)

@@ -609,8 +609,11 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
     """Buttons and, only after takeover, manual axes. Never UDP."""
     if now - state["poll"] >= 0.10:
         onboard.poll()
-        _mirror_remote(session, onboard.status)
         state["poll"] = now
+    # post() already wrote onboard.status. Mirror it on this frame, including
+    # when the poll interval has not elapsed, so M and a held arrow send
+    # op=manual from took_over and mode=manual without waiting for the next GET.
+    _mirror_remote(session, onboard.status)
     _note_bridge(session, now, state)
     if inp.stand_up:
         onboard.post("stand_up")
