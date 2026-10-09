@@ -98,9 +98,12 @@ python tools\recognize_trainer_entry.py
 $env:GO2_SSH_PASS = "<пароль root>"
 $env:GO2_HOST = "192.168.35.213"
 python robot\deploy_flybrain.py start
+python robot\deploy_flybrain.py start --state logs\mb_train_state.npz
 python robot\deploy_flybrain.py status
 python robot\deploy_flybrain.py stop
 ```
+
+Без `--state` на собаку уезжает чистый мозг: файл `logs\mb_train_state.npz` из клона не копируется, а старый `/root/flybrain/state/mb_train_state.npz` стирается. С `--state PATH` копируется именно этот файл, уже без object-массивов. Коннектом на собаке — `artifacts/connectome_mb_v1_np1.npz`: те же числа, а имена клеток лежат в массивах `<U`, pickle не нужен. Его собирает `python tools\pack_connectome_np1.py`. Старый `connectome_mb_v1.npz` с object-массивами numpy 2 на робот не кладётся. Если такой файл всё же открывают на numpy 1.24, загрузчик перед чтением подставляет `numpy._core` → `numpy.core`.
 
 Файлы оказываются в `/root/flybrain/`, процесс `python3 /root/flybrain/main.py`, журнал `/root/flybrain/flybrain.log`. `stop` гасит только pid из `/root/flybrain/flybrain.pid`, и только если в его командной строке есть `flybrain`. `Move` спорт-сервис держит около секунды. Этот процесс не вызывает `Damp` и `SwitchJoystick`. Пульт Unitree перехватом окна не является: вместе с `Move` он может спорить, а отпускание стика автономию не гасит. Перехват оператора — `M`.
 
@@ -122,7 +125,7 @@ python robot\deploy_preview_server.py
 Сборка одного exe. Коннектом нужен внутри пакета (`--add-data`). На Windows разделитель `;`, на Linux `:`.
 
 ```powershell
-pyinstaller --onefile --noconfirm --name recognize_trainer --collect-all pygame --add-data "artifacts\connectome_mb_v1.npz;artifacts" --hidden-import sim.recognize --hidden-import sim.recognize_train --hidden-import sim.recognize_train_live --hidden-import sim.frame_sense --hidden-import sim.train_monitor --hidden-import sim.go2_udp --hidden-import sim.raw_sense --hidden-import sim.world --hidden-import sim.mb_runtime --hidden-import sim.mb_train --hidden-import sim.mb_confidence --hidden-import sim.map_marks --hidden-import sim.lidar_fresh --hidden-import sim.learn_flash --hidden-import sim.pilot --hidden-import sim.onboard_link --hidden-import numpy tools\recognize_trainer_entry.py
+pyinstaller --onefile --noconfirm --name recognize_trainer --collect-all pygame --add-data "artifacts\connectome_mb_v1.npz;artifacts" --add-data "artifacts\connectome_mb_v1_np1.npz;artifacts" --hidden-import sim.recognize --hidden-import sim.recognize_train --hidden-import sim.recognize_train_live --hidden-import sim.frame_sense --hidden-import sim.train_monitor --hidden-import sim.go2_udp --hidden-import sim.raw_sense --hidden-import sim.world --hidden-import sim.mb_runtime --hidden-import sim.mb_train --hidden-import sim.mb_confidence --hidden-import sim.map_marks --hidden-import sim.lidar_fresh --hidden-import sim.learn_flash --hidden-import sim.pilot --hidden-import sim.onboard_link --hidden-import sim.npz_compat --hidden-import numpy tools\recognize_trainer_entry.py
 ```
 
 `recognize_trainer.exe` — живой тренажёр, DAN по умолчанию `T`. `recognize_trainer.exe --sim` — симулятор без робота. `recognize_trainer.exe --dan familiarity` — знакомство вместо лакомства. Файл состояния по умолчанию `logs\mb_train_state.npz` рядом с текущим каталогом. Для `--learner hebb` состояние — `logs\recognizer_state.json`.

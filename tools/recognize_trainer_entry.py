@@ -19,6 +19,7 @@ from pathlib import Path
 # Static imports so PyInstaller traces the trainer and the connectome runtime.
 import sim.frame_sense  # noqa: F401
 import sim.learn_flash  # noqa: F401
+import sim.npz_compat  # noqa: F401
 import sim.onboard_link  # noqa: F401
 import sim.pilot  # noqa: F401
 import sim.lidar_fresh  # noqa: F401

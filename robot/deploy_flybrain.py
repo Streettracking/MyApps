@@ -2,8 +2,12 @@
 """Copy the onboard fly brain to one Go2 and start it by hand.
 
     GO2_SSH_PASS=... python robot/deploy_flybrain.py start
+    GO2_SSH_PASS=... python robot/deploy_flybrain.py start --state logs/mb_train_state.npz
     GO2_SSH_PASS=... python robot/deploy_flybrain.py stop
     GO2_SSH_PASS=... python robot/deploy_flybrain.py status
+
+``start`` with no ``--state`` leaves a clean brain. The connectome copied
+to the dog is ``connectome_mb_v1_np1.npz`` (no pickled object arrays).
 
 The password is only ``GO2_SSH_PASS``. This script does not install
 packages, does not write a systemd unit, and does not touch the preview
@@ -37,6 +41,7 @@ SIM_FILES = (
     "lidar_fresh.py",
     "map_marks.py",
     "pilot.py",
+    "npz_compat.py",
 )
 
 FORBIDDEN = (
@@ -76,7 +81,19 @@ def _mkdir(sftp, path: str) -> None:
             sftp.mkdir(cur)
 
 
-def _upload(sftp) -> None:
+def _connectome_np1() -> Path:
+    """Pickle-free connectome. Built from the numpy 2 file when missing."""
+    dest = ROOT / "artifacts" / "connectome_mb_v1_np1.npz"
+    src = ROOT / "artifacts" / "connectome_mb_v1.npz"
+    if dest.is_file():
+        return dest
+    sys.path.insert(0, str(ROOT))
+    from sim.npz_compat import write_pickle_free
+
+    return write_pickle_free(src, dest)
+
+
+def _upload(sftp, state_path: str = "") -> None:
     _mkdir(sftp, REMOTE + "/sim")
     _mkdir(sftp, REMOTE + "/artifacts")
     _mkdir(sftp, REMOTE + "/state")
@@ -88,11 +105,16 @@ def _upload(sftp) -> None:
         handle.write("")
     for name in SIM_FILES:
         sftp.put(str(ROOT / "sim" / name), f"{REMOTE}/sim/{name}")
-    npz = ROOT / "artifacts" / "connectome_mb_v1.npz"
-    sftp.put(str(npz), REMOTE + "/artifacts/connectome_mb_v1.npz")
-    state = ROOT / "logs" / "mb_train_state.npz"
-    if state.is_file():
-        sftp.put(str(state), REMOTE + "/state/mb_train_state.npz")
+    sftp.put(str(_connectome_np1()), REMOTE + "/artifacts/connectome_mb_v1_np1.npz")
+    if state_path:
+        import tempfile
+
+        sys.path.insert(0, str(ROOT))
+        from sim.npz_compat import write_pickle_free
+
+        plain = Path(tempfile.mkdtemp(prefix="flybrain-state-")) / "mb_train_state.npz"
+        write_pickle_free(state_path, plain)
+        sftp.put(str(plain), REMOTE + "/state/mb_train_state.npz")
 
 
 def _start_cmd() -> str:
@@ -131,10 +153,20 @@ def _status_cmd() -> str:
 
 
 def main(argv=None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    action = args[0] if args else "start"
-    if action not in ("start", "stop", "status"):
-        print("use start, stop, or status", file=sys.stderr)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Copy the onboard fly brain and start it by hand")
+    parser.add_argument("action", nargs="?", default="start", choices=("start", "stop", "status"))
+    parser.add_argument(
+        "--state",
+        default="",
+        help="mb_train_state.npz to copy onto the dog. Omit this for a clean brain.",
+    )
+    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    action = args.action
+    state_path = args.state
+    if state_path and not Path(state_path).is_file():
+        print("No state file at %s" % state_path, file=sys.stderr)
         return 2
     if not PASSWORD:
         print("Set GO2_SSH_PASS. This script does not contain a password.", file=sys.stderr)
@@ -151,9 +183,15 @@ def main(argv=None) -> int:
         if action == "start":
             sftp = client.open_sftp()
             try:
-                _upload(sftp)
+                _upload(sftp, state_path)
             finally:
                 sftp.close()
+            if state_path:
+                print("state %s" % state_path)
+            else:
+                print(_run(client, "rm -f /root/flybrain/state/mb_train_state.npz"))
+                print("clean brain: no --state file copied")
+            print(_run(client, "rm -f /root/flybrain/artifacts/connectome_mb_v1.npz"))
             print(_run(client, _start_cmd(), wait=1.5))
         elif action == "stop":
             print(_run(client, _stop_cmd()))

@@ -16,6 +16,7 @@ import numpy as np
 from .learn_flash import LearnFlash, MbLayout, build_layout, record_teacher_step
 from .mb_confidence import Confidence, ConfidenceCalibrator, TrainProgress
 from .mb_runtime import MBForward, MushroomBodyRuntime
+from .npz_compat import open_npz
 from .raw_sense import RawProjector, probe_features
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,8 +24,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def default_npz() -> Path:
     if getattr(sys, "frozen", False):
-        return Path(getattr(sys, "_MEIPASS")) / "artifacts" / "connectome_mb_v1.npz"
-    return ROOT / "artifacts" / "connectome_mb_v1.npz"
+        folder = Path(getattr(sys, "_MEIPASS")) / "artifacts"
+    else:
+        folder = ROOT / "artifacts"
+    plain = folder / "connectome_mb_v1_np1.npz"
+    if plain.is_file():
+        return plain
+    return folder / "connectome_mb_v1.npz"
 
 
 def bin_kc(kc: np.ndarray, n: int = 48) -> np.ndarray:
@@ -160,7 +166,7 @@ class MbTrainer:
             self.dan = dan
         self.last_drift = self.brain.weight_drift()
         self.flash = None
-        with np.load(path, allow_pickle=True) as z:
+        with open_npz(path) as z:
             self.progress.load_arrays(z)
             self.cal.load_arrays(z)
             if "lidar_refresh" in z.files:

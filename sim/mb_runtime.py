@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .npz_compat import as_plain, open_npz, scalar_str
+
 ACTIONS = ("Approach_A", "Avoid_A", "Approach_B", "Avoid_B", "Explore", "Freeze")
 
 
@@ -21,7 +23,7 @@ class MBForward:
 
 class MushroomBodyRuntime:
     def __init__(self, npz_path: str | Path, eta: float = 0.01, seed: int = 0):
-        z = np.load(npz_path, allow_pickle=True)
+        z = open_npz(npz_path)
         self.root_ids = z["root_ids"].astype(np.int64)
         self.roles = z["roles"]
         self.cell_types = z["cell_types"].astype(str)
@@ -80,6 +82,7 @@ class MushroomBodyRuntime:
             self.novelty_posts = np.unique(self.kc_mbon_post[self.mask_av]).astype(np.int32)
         else:
             self.novelty_posts = np.arange(self.n_mbon, dtype=np.int32)
+        z.close()
 
     @staticmethod
     def _to_local(pre, post, w, map_pre, map_post):
@@ -245,17 +248,18 @@ class MushroomBodyRuntime:
         dest = Path(path)
         dest.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(
-            kc_mbon_w=self.kc_mbon_w,
-            kc_fam=self.kc_fam,
+            kc_mbon_w=np.asarray(self.kc_mbon_w, dtype=np.float32),
+            kc_fam=np.asarray(self.kc_fam, dtype=np.float32),
             proj_seed=np.int32(proj_seed),
-            dan=np.array(dan),
+            dan=np.asarray(str(dan), dtype="<U32"),
         )
         if extra:
-            payload.update(extra)
+            for key, value in extra.items():
+                payload[key] = as_plain(value)
         np.savez(dest, **payload)
 
     def load_mb(self, path: str | Path) -> tuple[int, str]:
-        z = np.load(path, allow_pickle=True)
+        z = open_npz(path)
         w = np.asarray(z["kc_mbon_w"], dtype=np.float32)
         if w.shape != self.kc_mbon_w.shape:
             raise ValueError(f"KC→MBON shape {w.shape} does not match this brain {self.kc_mbon_w.shape}")
@@ -264,7 +268,8 @@ class MushroomBodyRuntime:
         if fam is not None and fam.shape == self.kc_fam.shape:
             self.kc_fam = fam
         seed = int(z["proj_seed"]) if "proj_seed" in z.files else 0
-        dan = str(z["dan"]) if "dan" in z.files else "teacher"
+        dan = scalar_str(z["dan"]) if "dan" in z.files else "teacher"
+        z.close()
         return seed, dan
 
     def weight_drift(self) -> float:
