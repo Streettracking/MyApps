@@ -193,3 +193,80 @@ class TrainerDockTests(unittest.TestCase):
             self.assertEqual(theme_name(), "light")
         finally:
             pygame.quit()
+
+
+class ResizeGuardTests(unittest.TestCase):
+    def test_trainer_does_not_call_the_suspect_apis(self):
+        import re
+        from pathlib import Path
+
+        from sim.ui_guard import no_caption, no_cursor, no_present, no_snap
+
+        root = Path(__file__).resolve().parent
+        text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in root.glob("*.py")
+            if path.name != "ui_guard.py" and not path.name.startswith("test_")
+        )
+        found = re.findall(
+            r"pygame\.(?:mouse\.set_cursor|scrap\b|time\.set_timer|event\.set_grab|event\.set_blocked|display\.set_icon)",
+            text,
+        )
+        self.assertEqual(found, [])
+        self.assertTrue(no_cursor())
+        self.assertFalse(no_caption())
+        self.assertFalse(no_snap())
+        self.assertFalse(no_present())
+
+    def test_resize_does_not_build_a_window_wrapper(self):
+        import pygame
+
+        import sim.train_monitor as monitor
+        from sim.train_monitor import TrainMonitor
+
+        handle = tempfile.NamedTemporaryFile(prefix="recognizer-ui-", suffix=".json", delete=False)
+        handle.close()
+        os.environ["RECOGNIZER_UI_CONFIG"] = handle.name
+        os.environ.pop("RECOGNIZER_SDL_WINDOW_ON_RESIZE", None)
+        os.environ.pop("RECOGNIZER_NO_SDL_WINDOW", None)
+        calls = []
+        real_borrow = monitor.borrowed_window
+        real_throw = monitor.throwaway_window
+
+        def spy_borrow():
+            calls.append("borrow")
+            return None
+
+        def spy_throw():
+            calls.append("throw")
+            return None
+
+        monitor.borrowed_window = spy_borrow
+        monitor.throwaway_window = spy_throw
+        pygame.init()
+        try:
+            mon = TrainMonitor("guard")
+            mon._on_resize(1100, 700)
+            mon._on_resize(1200, 720)
+            mon._on_resize(1200, 720)
+            self.assertEqual(calls, [])
+            self.assertIs(mon.window, pygame.display.get_surface())
+            os.environ["RECOGNIZER_NO_PRESENT"] = "1"
+            plain = mon.present_into((400, 300))
+            self.assertEqual(plain.get_size(), (400, 300))
+            os.environ.pop("RECOGNIZER_NO_PRESENT", None)
+            os.environ["RECOGNIZER_SDL_WINDOW_ON_RESIZE"] = "1"
+            mon._save_at = -10.0
+            mon._on_resize(1300, 740)
+            self.assertEqual(calls, ["throw"])
+        finally:
+            monitor.borrowed_window = real_borrow
+            monitor.throwaway_window = real_throw
+            os.environ.pop("RECOGNIZER_SDL_WINDOW_ON_RESIZE", None)
+            os.environ.pop("RECOGNIZER_NO_PRESENT", None)
+            os.environ.pop("RECOGNIZER_UI_CONFIG", None)
+            try:
+                os.remove(handle.name)
+            except OSError:
+                pass
+            pygame.quit()

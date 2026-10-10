@@ -1213,19 +1213,20 @@ def _saved_viewer_size() -> tuple:
 
 
 def _remember_viewer(window) -> None:
+    from .ui_guard import borrowed_window, no_sdl_window, sdl_window_on_resize, throwaway_window
     from .ui_settings import save_brain_window
 
     box = {"x": None, "y": None, "w": max(320, int(window.get_width())), "h": max(240, int(window.get_height()))}
-    try:
-        from pygame._sdl2.video import Window
-
-        win = Window.from_display_module()
-        pos = win.position
-        size = win.size
-        box["x"], box["y"] = int(pos[0]), int(pos[1])
-        box["w"], box["h"] = max(320, int(size[0])), max(240, int(size[1]))
-    except Exception:
-        pass
+    if not no_sdl_window():
+        try:
+            win = throwaway_window() if sdl_window_on_resize() else borrowed_window()
+            if win is not None:
+                pos = win.position
+                size = win.size
+                box["x"], box["y"] = int(pos[0]), int(pos[1])
+                box["w"], box["h"] = max(320, int(size[0])), max(240, int(size[1]))
+        except Exception:
+            pass
     save_brain_window(box)
 
 
@@ -1270,7 +1271,10 @@ def run_viewer(port: int = VIEW_PORT) -> int:
     drag = None
     shot = os.environ.get("MB_VIEW_SHOT") or ""
     shot_done = False
-    pygame.key.set_repeat(180, 40)
+    from .ui_guard import no_key_repeat
+
+    if not no_key_repeat():
+        pygame.key.set_repeat(180, 40)
     running = True
     try:
         while running:

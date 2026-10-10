@@ -735,6 +735,9 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
     finally:
         from .mb_view3d import close_brain
 
+        flush = getattr(mon, "flush_settings", None)
+        if flush is not None:
+            flush()
         close_brain(session)
         teacher = getattr(session, "teacher", None)
         if teacher is not None:

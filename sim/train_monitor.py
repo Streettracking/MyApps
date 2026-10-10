@@ -12,6 +12,19 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .sdl_thread import require_main_thread
+from .ui_guard import (
+    borrowed_window,
+    flatten_theme_colors,
+    force_setmode,
+    no_caption,
+    no_card_cache,
+    no_present,
+    no_sdl_window,
+    no_snap,
+    sdl_window_on_resize,
+    throwaway_window,
+    tuple_colors,
+)
 from .dock_layout import (
     BLOCK_TITLES,
     BLOCKS,
@@ -540,7 +553,10 @@ class TrainMonitor:
         from .tabnum import reset_fonts
 
         reset_fonts()
-        pygame.display.set_caption(title)
+        if tuple_colors():
+            flatten_theme_colors()
+        if not no_caption():
+            pygame.display.set_caption(title)
         self._persist = persist_enabled()
         self._settings = load_settings() if self._persist else default_settings()
         apply_theme(self._settings.get("theme") if self._persist else "light")
@@ -721,35 +737,76 @@ class TrainMonitor:
         }
 
     def _try_maximize(self) -> None:
+        win = borrowed_window()
+        if win is None:
+            return
         try:
-            from pygame._sdl2.video import Window
-
-            Window.from_display_module().maximize()
+            win.maximize()
         except Exception:
             return
 
-    def _save_ui(self) -> None:
-        if not self._persist:
-            return
-        data = default_settings()
-        data.update(self._settings)
-        data["theme"] = theme_name()
-        data["fullscreen"] = bool(self.fullscreen)
-        data["layout"] = self.dock.to_dict()
+    def _apply_window_box(self, data: dict, borrowed: bool) -> bool:
+        """Read x, y, size from one kept Window, or from a throwaway when bisecting."""
         try:
-            from pygame._sdl2.video import Window
-
-            win = Window.from_display_module()
+            win = borrowed_window() if borrowed else throwaway_window()
+            if win is None:
+                return False
             pos = win.position
             size = win.size
             data["x"], data["y"] = int(pos[0]), int(pos[1])
             data["w"], data["h"] = int(size[0]), int(size[1])
             data["maximized"] = bool(getattr(win, "maximized", False))
+            return True
         except Exception:
-            if self._window_size:
-                data["w"], data["h"] = int(self._window_size[0]), int(self._window_size[1])
+            return False
+
+    def _save_ui(self, geometry_only: bool = False) -> None:
+        if not self._persist:
+            return
+        import time
+
+        data = default_settings()
+        data.update(self._settings)
+        data["theme"] = theme_name()
+        data["fullscreen"] = bool(self.fullscreen)
+        data["layout"] = self.dock.to_dict()
+        # Resize must not build a Window. from_display_module stores that
+        # Python object in the SDL window and does not keep it alive.
+        used_window = False
+        if not no_sdl_window() and (sdl_window_on_resize() or not geometry_only):
+            used_window = self._apply_window_box(data, borrowed=not sdl_window_on_resize())
+        if not used_window and self._window_size:
+            data["w"], data["h"] = int(self._window_size[0]), int(self._window_size[1])
         self._settings = data
+        if geometry_only:
+            now = time.monotonic()
+            if now - float(getattr(self, "_save_at", -10.0)) < 0.5:
+                self._save_pending = data
+                return
+        self._save_at = time.monotonic()
+        self._save_pending = None
         save_settings(data)
+
+    def _flush_save(self) -> None:
+        if getattr(self, "_save_pending", None) is None:
+            return
+        import time
+
+        if time.monotonic() - float(getattr(self, "_save_at", -10.0)) < 0.5:
+            return
+        self.flush_settings()
+
+    def flush_settings(self) -> None:
+        """Write a resize that was held back so a MoveWindow storm stays on the event pump."""
+        pending = getattr(self, "_save_pending", None)
+        if pending is None or not self._persist:
+            return
+        import time
+
+        self._save_pending = None
+        self._save_at = time.monotonic()
+        self._settings = pending
+        save_settings(pending)
 
     def _drop_surface_caches(self) -> None:
         """Forget pictures taken from a canvas or window that is about to go away."""
@@ -885,17 +942,21 @@ class TrainMonitor:
         if self.fullscreen:
             return
         self._window_size = (w, h)
-        # pygame 2 has already resized the display by the time VIDEORESIZE
-        # arrives. A second set_mode frees that surface while its events are
-        # still queued, and the next event.get walks a dead window.
-        if self.window is None or self.window.get_size() != (w, h):
+        # Windows frees the window surface inside the resize message, and
+        # pygame's event watch points the existing Surface at the new pixels.
+        # get_surface() picks that object up. A second set_mode frees it
+        # again while events still name it. RECOGNIZER_FORCE_SETMODE is the
+        # 7518 path that called set_mode on every resize.
+        self._bind_display()
+        live = self.window
+        already = live is not None and live.get_size() == (w, h)
+        if force_setmode() or not already:
             self._drop_surface_caches()
             self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
-            # set_mode frees the previous display. Events already queued for
-            # it point at that window; delivering them is a use-after-free.
+            self._bind_display()
             pygame.event.clear()
         self._clamp_scroll(w, h)
-        self._save_ui()
+        self._save_ui(geometry_only=True)
 
     def _clamp_scroll(self, ww: int | None = None, wh: int | None = None) -> None:
         if ww is None or wh is None:
@@ -917,6 +978,18 @@ class TrainMonitor:
                 return scrollbar_geom(WIN_W, WIN_H, 0, 0)
             size = self.window.get_size()
         return scrollbar_geom(int(size[0]), int(size[1]), self.scroll_x, self.scroll_y)
+
+    def _bind_display(self) -> None:
+        """Point self.window at the surface SDL is using right now."""
+        import pygame
+
+        live = pygame.display.get_surface()
+        if live is None:
+            return
+        previous = self.window
+        self.window = live
+        if previous is not None and previous is not live:
+            self._drop_surface_caches()
 
     def _sync_canvas(self, ww: int, wh: int) -> None:
         _scale, logical_w, logical_h, _cw, _ch = fit_window(ww, wh)
@@ -954,6 +1027,11 @@ class TrainMonitor:
         source = self.screen
         if source is None:
             source = pygame.Surface((logical_w, logical_h))
+        if no_present():
+            out = pygame.Surface((max(1, ww), max(1, wh)))
+            out.fill(BG_BOT)
+            out.blit(source, (-int(self.scroll_x), -int(self.scroll_y)))
+            return out
         sw, sh = source.get_size()
         target_w = content_w
         target_h = max(1, int(round(sh * (content_w / float(max(sw, 1))))))
@@ -1170,6 +1248,8 @@ class TrainMonitor:
         import pygame
 
         require_main_thread()
+        self._bind_display()
+        self._flush_save()
         inp = MonitorInput()
         pending_size = None
         pending_full = False
@@ -1291,6 +1371,7 @@ class TrainMonitor:
         import pygame
 
         require_main_thread()
+        self._bind_display()
         self._last_view = view
         if self.window is not None and not self._minimized:
             ww, wh = self.window.get_size()
@@ -1528,7 +1609,7 @@ class TrainMonitor:
         body = pygame.Rect(content.x, content.y, content.w, content.h)
         log_source = self.journal_rect
         self.log_rows = max(5, (log_source.h - 34) // 16) if log_source is not None else 5
-        if self._brain_panel_fresh(view, content):
+        if not no_snap() and self._brain_panel_fresh(view, content):
             screen.blit(self._brain_panel_cache[2], content.topleft)
             return
         previous = screen.get_clip()
@@ -1537,7 +1618,7 @@ class TrainMonitor:
             self._draw_brain_body(screen, view, body)
         finally:
             screen.set_clip(previous)
-        if screen.get_rect().contains(content):
+        if not no_snap() and screen.get_rect().contains(content):
             self._brain_panel_cache = (
                 (int(content.w), int(content.h)),
                 self._brain_sig(view, content),
@@ -1576,7 +1657,7 @@ class TrainMonitor:
         self.log_rows = int(log_n)
         lines = tuple(view.log_lines[-log_n:])
         key = (int(content.w), int(content.h), lines, theme_name())
-        cached = self._journal_cache
+        cached = None if no_snap() else self._journal_cache
         if cached is not None and cached[0] == key:
             screen.blit(cached[1], content.topleft)
             return
@@ -1587,7 +1668,7 @@ class TrainMonitor:
                 break
             screen.blit(self.font_sm.render(line[:width_chars], True, LABEL), (content.x + 4, y))
             y += 16
-        if screen.get_rect().contains(content):
+        if not no_snap() and screen.get_rect().contains(content):
             self._journal_cache = (key, _snap(screen, content))
 
     def _draw_controls_block(self, screen, view: MonitorView) -> None:
@@ -1719,9 +1800,10 @@ class TrainMonitor:
             pygame.draw.rect(face, (*CARD, CARD_ALPHA), face.get_rect(), border_radius=radius)
             pygame.draw.rect(face, (*LINE, 255), face.get_rect(), width=1, border_radius=radius)
             sprite.blit(face, (14, 10))
-            if len(self._card_cache) > 64:
-                self._card_cache.clear()
-            self._card_cache[key] = sprite
+            if not no_card_cache():
+                if len(self._card_cache) > 64:
+                    self._card_cache.clear()
+                self._card_cache[key] = sprite
         screen.blit(sprite, (rect.x - 14, rect.y - 10))
 
     def _inset(self, screen, rect, radius: int = 12) -> None:
