@@ -254,14 +254,21 @@ class EyesLineTests(unittest.TestCase):
         self.assertEqual(eyes_state_label(True, True), "ОБА ВИДЯТ → ИДУ")
         self.assertEqual(eyes_state_label(True, False), "ОДИН ГЛАЗ → ДОВОРОТ")
         self.assertEqual(eyes_state_label(False, False), "НЕТ → ПОИСК")
-        self.assertEqual(
-            format_eyes_line(8, 1, True, True),
-            "R_L +8   R_R +1   ОБА ВИДЯТ → ИДУ",
-        )
-        self.assertEqual(
-            format_eyes_line(None, None, False, True),
-            "R_L —   R_R —   ОДИН ГЛАЗ → ДОВОРОТ",
-        )
+        both = format_eyes_line(8, 1, True, True)
+        one = format_eyes_line(None, None, False, True)
+        wide = format_eyes_line(-168, 84, False, False)
+        self.assertEqual(len(both), len(one))
+        self.assertEqual(len(both), len(wide))
+        self.assertEqual(both.index("R_L"), one.index("R_L"))
+        self.assertEqual(both.index("R_R"), one.index("R_R"))
+        self.assertEqual(both.index("R_R"), wide.index("R_R"))
+        self.assertEqual(both.index("ОБА"), one.index("ОДИ"))
+        self.assertEqual(both.index("ОБА"), wide.index("НЕТ"))
+        self.assertIn("+8", both)
+        self.assertIn("+1", both)
+        self.assertIn("-", one)
+        self.assertIn("ОБА ВИДЯТ → ИДУ", both)
+        self.assertIn("ОДИН ГЛАЗ → ДОВОРОТ", one)
 
 
 class OnboardEyeDriveTests(unittest.TestCase):

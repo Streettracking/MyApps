@@ -451,9 +451,9 @@ class LiveSession:
         return "лидар копится на карте сервера"
 
     def _lidar_caption(self) -> str:
-        if self.lidar_fresh_on:
-            return f"свежий лидар {self.lidar_interval:.1f} с"
-        return "лидар копится"
+        from .tabnum import format_lidar_caption
+
+        return format_lidar_caption(self.lidar_fresh_on, self.lidar_interval)
 
     def _sync_lidar_warning(self) -> None:
         if not self._weights_from_disk:

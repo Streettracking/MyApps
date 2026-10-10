@@ -170,17 +170,11 @@ def bilateral_yaw(r_l: float, r_r: float) -> float:
 
 
 def format_fly_line(r_l, r_r, diff, z, steer: str) -> str:
-    """One monitor line: the two readouts, their difference, and the fly's yaw."""
+    """One monitor line: the two readouts, their difference, and the fly's yaw.
 
-    def num(value) -> str:
-        if value is None:
-            return "—"
-        return "%+.0f" % float(value)
-
-    def yaw(value) -> str:
-        if value is None:
-            return "—"
-        return "%+.2f" % float(value)
+    Every number is a fixed-width signed field, so the labels stay put.
+    """
+    from .tabnum import format_fly_line as _line
 
     name = "билатерально" if steer == "bilateral" else "секторы"
-    return "муха L %s   R %s   Δ %s   z %s   %s" % (num(r_l), num(r_r), num(diff), yaw(z), name)
+    return _line(r_l, r_r, diff, z, name)

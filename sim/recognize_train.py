@@ -507,9 +507,9 @@ class RecognizeTrainSim:
         )
 
     def _lidar_caption(self) -> str:
-        if self.lidar_fresh_on:
-            return f"свежий лидар {self.lidar_interval:.1f} с"
-        return "лидар копится"
+        from .tabnum import format_lidar_caption
+
+        return format_lidar_caption(self.lidar_fresh_on, self.lidar_interval)
 
     def _scaled(self, rows: list[tuple[float, float]]) -> list[tuple[float, float]]:
         """Map MBON scores into 0..1 for the shared plot, using this run's own range."""

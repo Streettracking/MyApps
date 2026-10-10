@@ -303,7 +303,7 @@ class PunishTests(unittest.TestCase):
         self.assertEqual(runtime.collect(0.1, 0.4, True, False, True, False), ("ppl1", None))
         self.assertEqual(runtime.collect(0.2, 0.4, True, False, True, False), (None, None))
         self.assertEqual(runtime.skip_reason, "лимит")
-        self.assertIn("(лимит)", runtime.skips_line())
+        self.assertIn("лимит", runtime.skips_line())
 
     def test_phrases_and_onboard_plaque_bits(self):
         self.assertEqual(teach_phrase("L", "ppl1"), "учитель: PPL1 Л — ложное узнавание")
@@ -343,7 +343,9 @@ class PunishTests(unittest.TestCase):
         self.assertEqual(session.log, ["учитель: PPL1 Л — ложное узнавание"])
         self.assertEqual(session.teacher_flash_l_show, "ppl1")
         self.assertEqual(session.teacher_flash_r_show, "")
-        self.assertTrue(session.teacher_skips.endswith(": 0"))
+        from sim.tabnum import skips_are_quiet
+
+        self.assertTrue(skips_are_quiet(session.teacher_skips))
         session.teacher.answered = False
         session.eye_l_recognized = True
         _drive_teacher(session, None, 2, {}, False, None)
@@ -510,6 +512,163 @@ class FlashTests(unittest.TestCase):
         red_x = np.where(red)[0]
         green_x = np.where(green)[0]
         self.assertGreater(float(red_x.mean()), float(green_x.mean()))
+        pygame.quit()
+
+
+class FixedColumnTests(unittest.TestCase):
+    def test_readout_labels_share_columns_across_values(self):
+        from sim.hemifield import format_fly_line
+        from sim.pilot import format_eyes_line, format_range_line
+        from sim.tabnum import (
+            format_drift,
+            format_familiar,
+            format_kc,
+            format_lifetime,
+            format_pilot_mode,
+            format_pilot_rest,
+            format_session_counts,
+            label_index,
+        )
+        from sim.yolo_teacher import counts_line
+
+        eyes = [
+            format_eyes_line(8, 1, True, True),
+            format_eyes_line(None, None, False, True),
+            format_eyes_line(-168, 84, False, False),
+        ]
+        flies = [
+            format_fly_line(12, 3, 9, 0.2, "bilateral"),
+            format_fly_line(-84, 168, -252, -1.0, "sectors"),
+            format_fly_line(None, None, None, None, "bilateral"),
+        ]
+        ranges = [
+            format_range_line(1.5, 3.0, 2, 2, {"window": 8, "votes": 3}),
+            format_range_line(12.25, None, None, 7, {"window": 8, "votes": 8, "coast": True}),
+        ]
+        counts = [counts_line(0, 1, 0, 0), counts_line(922, 3, 1204, 8)]
+        groups = (
+            (eyes, ("R_L", "R_R")),
+            (flies, ("муха", "Δ", " z ")),
+            (ranges, ("дальн", "вперёд", "сектор")),
+            (counts, ("PAM_L", "PAM_R", "PPL1_L", "PPL1_R")),
+        )
+        for lines, tokens in groups:
+            self.assertEqual(len({len(line) for line in lines}), 1)
+            for token in tokens:
+                indexes = {label_index(line, token) for line in lines}
+                self.assertEqual(len(indexes), 1, token)
+        self.assertEqual(label_index(eyes[0], "ОБА"), label_index(eyes[1], "ОДИ"))
+        self.assertEqual(label_index(eyes[0], "ОБА"), label_index(eyes[2], "НЕТ"))
+        life = [format_lifetime(1, 2, True), format_lifetime(40, 6, True), format_lifetime(0, 0, False)]
+        session = [
+            format_session_counts(1, 0, 4, "звук выкл"),
+            format_session_counts(12, 120, 3661, "звук недоступен"),
+        ]
+        familiar = [format_familiar("сессия", 4, 1), format_familiar("сессия", 3661, 20)]
+        drift = [format_drift(0.0), format_drift(-12.5), format_drift(2048.0)]
+        kc = [format_kc(0, 5137), format_kc(514, 5137), format_kc(2000, 8)]
+        modes = [format_pilot_mode("РУЧНОЕ"), format_pilot_mode("АВТОНОМИЯ"), format_pilot_mode("РУЧНОЕ · ПЕРЕХВАТ")]
+        rests = [
+            format_pilot_rest("оператор", "доворот (Л)", "L"),
+            format_pilot_rest("мозг", "НЕТ → ПОИСК", ""),
+            format_pilot_rest("оператор", "подтверждено — иду", "R"),
+        ]
+        for lines, tokens in (
+            (life, ("PAM", "PPL1", "всего")),
+            (session, ("PAM", "PPL1", "звук")),
+            (familiar, ("знакомство",)),
+            (drift, ("дрейф",)),
+            (kc, ("KC", "из")),
+            (modes, ()),
+            (rests, ("ведёт:",)),
+        ):
+            self.assertEqual(len({len(line) for line in lines}), 1, lines[0][:24])
+            for token in tokens:
+                self.assertEqual(len({label_index(line, token) for line in lines}), 1, token)
+        self.assertEqual(label_index(rests[0], "видели"), label_index(rests[2], "видели"))
+        self.assertTrue(all(line[0] in "+-" or line.strip()[:1] in "+-" or "дрейф" in line for line in drift))
+
+    def test_drawn_label_pixels_ignore_the_numbers(self):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        import pygame
+
+        pygame.init()
+        import numpy as np
+
+        from sim.hemifield import format_fly_line
+        from sim.pilot import format_eyes_line, format_range_line
+        from sim.tabnum import format_lidar_caption, phrase, signed
+        from sim.train_monitor import MonitorView, TrainMonitor
+        from sim.yolo_teacher import DetBox, counts_line
+
+        def view(scale: int) -> MonitorView:
+            camera = np.zeros((90, 160, 3), dtype=np.uint8)
+            camera[:] = (40, 42, 46)
+            pam = 2 if scale == 0 else 922
+            return MonitorView(
+                title="тренировка узнавания",
+                camera=camera,
+                learner="mb",
+                learning_on=True,
+                eyes_line=format_eyes_line(8 if scale == 0 else -168, 1 if scale == 0 else 84, scale == 0, False),
+                fly_line=format_fly_line(12 if scale == 0 else -40, 3 if scale == 0 else 200, 9, 0.2 if scale == 0 else -0.8, "bilateral"),
+                range_line=format_range_line(1.2 if scale == 0 else 18.5, 3.0, 1 if scale == 0 else 7, 2, None),
+                teacher_counts=counts_line(pam, 0 if scale == 0 else 4, 1, 0 if scale == 0 else 15),
+                teacher_skips="ложных узнаваний без наказания: %s  %s"
+                % (
+                    signed(3 if scale == 0 else 28),
+                    phrase("лимит" if scale == 0 else "нет ответа YOLO", 36),
+                ),
+                teacher_boxes=[DetBox(0.62, 0.2, 0.84, 0.8, 0.51 if scale == 0 else 0.93, "Л")],
+                n_pam=pam,
+                n_ppl1=1 if scale == 0 else 40,
+                total_pam=pam,
+                total_ppl1=6,
+                session_time=4 if scale == 0 else 3661,
+                total_time=10 if scale == 0 else 7200,
+                drift=0.4 if scale == 0 else -18.6,
+                kc_on=12 if scale == 0 else 2000,
+                kc_n=5137,
+                likeness=4 if scale == 0 else -120,
+                readout_caption="сырой выход: подход – избегание",
+                pilot_mode="РУЧНОЕ" if scale == 0 else "АВТОНОМИЯ",
+                pilot_who="оператор" if scale == 0 else "мозг",
+                phase_ru="доворот (Л)" if scale == 0 else "подтверждено — иду",
+                last_seen_side="L" if scale == 0 else "R",
+                lidar_mode=format_lidar_caption(True, 1.5 if scale == 0 else 10),
+                lidar_fresh_on=True,
+                record_on=True,
+                record_saved=3 if scale == 0 else 128,
+                record_bytes=4000 if scale == 0 else 5_000_000,
+                overlap=0.4,
+                t=4 if scale == 0 else 48,
+                hemi_l=8 if scale == 0 else -30,
+                hemi_r=1 if scale == 0 else 12,
+                yolo_state="учит",
+                recog_line="узнавание: только камера",
+                keys_hint="A авто  K руль  Y учитель  H рамки  F11 экран",
+            )
+
+        mon = TrainMonitor("columns")
+        mon.draw(view(0))
+        first = pygame.surfarray.array3d(mon.screen).copy()
+        rows_a = list(mon._fixed_rows)
+        mon.draw(view(1))
+        second = pygame.surfarray.array3d(mon.screen).copy()
+        rows_b = list(mon._fixed_rows)
+        self.assertEqual(len(rows_a), len(rows_b))
+        self.assertGreaterEqual(len(rows_a), 8)
+        for (xa, ya, ta, sa, cell, height), (xb, yb, tb, sb, cell_b, height_b) in zip(rows_a, rows_b):
+            self.assertEqual((xa, ya, sa, cell, height), (xb, yb, sb, cell_b, height_b))
+            self.assertEqual(len(ta), len(tb))
+            for i, (ca, cb) in enumerate(zip(ta, tb)):
+                if ca != cb or ca == " ":
+                    continue
+                x0 = xa + i * cell
+                block_a = first[x0 : x0 + cell, ya : ya + height]
+                block_b = second[x0 : x0 + cell, ya : ya + height]
+                np.testing.assert_array_equal(block_a, block_b)
         pygame.quit()
 
 

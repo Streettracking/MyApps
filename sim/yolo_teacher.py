@@ -221,12 +221,9 @@ def send_teach(link, kind_l: str | None, kind_r: str | None) -> None:
 
 
 def counts_line(pam_l: int, pam_r: int, ppl1_l: int, ppl1_r: int) -> str:
-    return "учитель: PAM_L %d / PAM_R %d / PPL1_L %d / PPL1_R %d" % (
-        int(pam_l),
-        int(pam_r),
-        int(ppl1_l),
-        int(ppl1_r),
-    )
+    from .tabnum import format_counts
+
+    return format_counts(pam_l, pam_r, ppl1_l, ppl1_r)
 
 
 class YoloClient:
@@ -364,9 +361,10 @@ class TeacherRuntime:
             self._pending = (self._gen, jpeg)
 
     def skips_line(self) -> str:
-        if self.skip_n <= 0:
-            return "ложных узнаваний без наказания: 0"
-        return "ложных узнаваний без наказания: %d (%s)" % (int(self.skip_n), self.skip_reason or "—")
+        from .tabnum import format_skips
+
+        reason = "" if self.skip_n <= 0 else (self.skip_reason or "—")
+        return format_skips(self.skip_n, reason)
 
     def collect(
         self,

@@ -201,15 +201,15 @@ def eyes_state_label(recognized_l: bool, recognized_r: bool) -> str:
 
 
 def format_eyes_line(r_l, r_r, recognized_l: bool, recognized_r: bool, label: str | None = None) -> str:
-    """Panel line: the two readouts and the walk those eyes produce."""
+    """Panel line: the two readouts and the walk those eyes produce.
 
-    def num(value) -> str:
-        if value is None:
-            return "—"
-        return "%+.0f" % float(value)
+    Readouts are fixed-width signed fields. The walk phrase has its own field,
+    so «ОБА ВИДЯТ» and «НЕТ» start on the same column.
+    """
+    from .tabnum import format_eyes_line as _line
 
-    phrase = label or eyes_state_label(bool(recognized_l), bool(recognized_r))
-    return "R_L %s   R_R %s   %s" % (num(r_l), num(r_r), phrase)
+    text = label or eyes_state_label(bool(recognized_l), bool(recognized_r))
+    return _line(r_l, r_r, text)
 
 
 class EyeConfirm:
@@ -381,22 +381,16 @@ def seek_velocity(
 
 def format_range_line(dist, forward, sector, sector_smooth, hysteresis) -> str:
     """One monitor line: filtered ranges, raw sector, smoothed sector."""
+    from .tabnum import format_range_line as _line
 
-    def metres(value) -> str:
-        if value is None:
-            return "—"
-        return "%.2f м" % float(value)
-
-    raw = "—" if sector is None else str(int(sector))
-    smooth = "—" if sector_smooth is None else str(int(sector_smooth))
     gate = ""
     if isinstance(hysteresis, dict) and hysteresis.get("window"):
-        gate = "  %s/%s" % (int(hysteresis.get("votes") or 0), int(hysteresis["window"]))
+        gate = "%d/%d" % (int(hysteresis.get("votes") or 0), int(hysteresis["window"]))
         if hysteresis.get("coast"):
             gate += " держу"
         elif hysteresis.get("latched"):
             gate += " подход"
-    return "дальн %s   вперёд %s   сектор %s→%s%s" % (metres(dist), metres(forward), raw, smooth, gate)
+    return _line(dist, forward, sector, sector_smooth, gate)
 
 
 class ApproachTrack:
