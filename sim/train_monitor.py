@@ -425,6 +425,7 @@ class TrainMonitor:
         self._open_display()
         self.font = _ui_font(15)
         self.font_sm = _ui_font(14)
+        self.font_tiny = _ui_font(11)
         self.font_big = _ui_font(26)
         self.font_ind = _ui_font(18)
         self._bg = None
@@ -432,6 +433,7 @@ class TrainMonitor:
         self._content = (0, 0, WIN_W, WIN_H)
         self.cam_inner = None
         self.lid_inner = None
+        self.eye_lamps: dict = {}
         self._fixed_rows: list = []
         self._anchors: list = []
         self.clock = pygame.time.Clock()
@@ -1211,19 +1213,50 @@ class TrainMonitor:
             overlay.blit(self.font_sm.render("%", True, PEACH), (ox + 4 * cell, oy))
         screen.blit(overlay, inner.topleft)
 
-    def _eye_lamp_color(self, recognized: bool, ready: bool, percent: float, flash: str) -> tuple:
-        if flash == "ppl1":
-            return RED
-        if flash == "pam":
-            return GREEN
+    def _eye_lamp_color(self, recognized: bool, ready: bool, percent: float) -> tuple:
+        """Recognition only. Teacher PAM/PPL1 is a separate lamp on the camera."""
         if recognized:
             return GREEN
         if ready and float(percent) > 0.0:
             return PEACH
         return LAMP_OFF
 
+    def _teacher_sees(self, view: MonitorView) -> tuple:
+        """``(sees_L, sees_R)`` from box centres. Image right is Л, image left is П."""
+        from .yolo_teacher import DEFAULT_CONF, hemisphere_hits
+
+        return hemisphere_hits(
+            view.teacher_boxes,
+            view.overlap,
+            conf_min=DEFAULT_CONF,
+            center_only=True,
+        )
+
+    def _teacher_lamp_color(self, flash: str, sees: bool) -> tuple:
+        if flash == "pam":
+            return GREEN
+        if flash == "ppl1":
+            return RED
+        if sees:
+            return PEACH
+        return LAMP_OFF
+
+    def _teacher_caption(self, flash: str, sees: bool) -> str:
+        if flash == "pam":
+            return "уч PAM"
+        if flash == "ppl1":
+            return "уч PPL1"
+        if sees:
+            return "уч видит"
+        return "уч"
+
     def _eye_plaques(self, screen, inner, view: MonitorView) -> None:
-        """Lamp and a word on the preview. Image left is П, image right is Л."""
+        """Recognition lamp and a teacher lamp on the preview.
+
+        Image left is П, image right is Л. The teacher lamp sits beside
+        «узнаю»: green flash is PAM, red is PPL1, amber is a dog in that
+        eye's field, an empty ring is no dog.
+        """
         import pygame
 
         height = 36
@@ -1231,50 +1264,68 @@ class TrainMonitor:
         veil = pygame.Surface((inner.w, height), pygame.SRCALPHA)
         veil.fill((*CARD, 210))
         screen.blit(veil, (inner.x, inner.y))
-        self._eye_plaque(
-            screen,
-            pygame.Rect(inner.x, inner.y, mid - inner.x, height),
-            "П",
-            view.eye_r_recognized,
-            view.eye_r_ready,
-            view.eye_r_confidence,
-            view.teacher_flash_r,
-        )
-        self._eye_plaque(
-            screen,
-            pygame.Rect(mid, inner.y, inner.right - mid, height),
-            "Л",
-            view.eye_l_recognized,
-            view.eye_l_ready,
-            view.eye_l_confidence,
-            view.teacher_flash_l,
-        )
+        sees_l, sees_r = self._teacher_sees(view)
+        self.eye_lamps = {
+            "П": self._eye_plaque(
+                screen,
+                pygame.Rect(inner.x, inner.y, mid - inner.x, height),
+                "П",
+                view.eye_r_recognized,
+                view.eye_r_ready,
+                view.eye_r_confidence,
+                view.teacher_flash_r,
+                sees_r,
+            ),
+            "Л": self._eye_plaque(
+                screen,
+                pygame.Rect(mid, inner.y, inner.right - mid, height),
+                "Л",
+                view.eye_l_recognized,
+                view.eye_l_ready,
+                view.eye_l_confidence,
+                view.teacher_flash_l,
+                sees_l,
+            ),
+        }
 
-    def _eye_plaque(self, screen, rect, name: str, recognized: bool, ready: bool, percent: float, flash: str = "") -> None:
-        color = self._eye_lamp_color(recognized, ready, percent, flash)
-        radius = 9 if flash in ("pam", "ppl1") else 7
-        self._lamp(screen, (rect.x + 18, rect.centery), color, radius)
-        word = "УЗНАЮ" if recognized or flash else "—"
-        self._cells(
-            screen,
-            format_plaque(name, word),
-            rect.x + 34,
-            rect.centery - 8,
-            VALUE,
-        )
+    def _eye_plaque(
+        self,
+        screen,
+        rect,
+        name: str,
+        recognized: bool,
+        ready: bool,
+        percent: float,
+        flash: str = "",
+        sees: bool = False,
+    ) -> dict:
+        from .tabnum import cell_px
+
+        recog = (rect.x + 18, rect.centery)
+        self._lamp(screen, recog, self._eye_lamp_color(recognized, ready, percent), 7)
+        word = "УЗНАЮ" if recognized else "—"
+        text_x = rect.x + 34
+        self._cells(screen, format_plaque(name, word), text_x, rect.centery - 8, VALUE)
+        teacher_x = text_x + cell_px(14) * len(format_plaque(name, word)) + 16
+        teacher = (teacher_x, rect.centery)
+        flashing = flash in ("pam", "ppl1")
+        self._lamp(screen, teacher, self._teacher_lamp_color(flash, sees), 8 if flashing else 6)
+        caption = self.font_tiny.render(self._teacher_caption(flash, sees), True, INK_DIM)
+        screen.blit(caption, (teacher_x + 12, rect.centery - caption.get_height() // 2))
+        return {"recog": recog, "teacher": teacher}
 
     def _eyes_banner(self, screen, view: MonitorView, rx: int, col_w: int, y: int) -> int:
         self._lamp(
             screen,
             (rx + 10, y + 12),
-            self._eye_lamp_color(view.eye_r_recognized, view.eye_r_ready, view.eye_r_confidence, view.teacher_flash_r),
+            self._eye_lamp_color(view.eye_r_recognized, view.eye_r_ready, view.eye_r_confidence),
             5,
         )
         screen.blit(self.font_sm.render("П", True, PEACH), (rx + 20, y + 2))
         self._lamp(
             screen,
             (rx + 52, y + 12),
-            self._eye_lamp_color(view.eye_l_recognized, view.eye_l_ready, view.eye_l_confidence, view.teacher_flash_l),
+            self._eye_lamp_color(view.eye_l_recognized, view.eye_l_ready, view.eye_l_confidence),
             5,
         )
         screen.blit(self.font_sm.render("Л", True, PEACH), (rx + 62, y + 2))

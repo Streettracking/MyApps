@@ -470,6 +470,26 @@ class SimGuiTests(unittest.TestCase):
                 pygame.quit()
 
 
+def _filled(frame, xy, rgb, radius: int = 8, tol: int = 34) -> int:
+    x, y = int(xy[0]), int(xy[1])
+    patch = frame[max(0, x - radius): x + radius + 1, max(0, y - radius): y + radius + 1]
+    dist = abs(patch.astype(int) - __import__("numpy").array(rgb)).max(axis=2)
+    return int((dist < tol).sum())
+
+
+def _ring(frame, xy, radius: int = 8) -> int:
+    import numpy as np
+
+    x, y = int(xy[0]), int(xy[1])
+    patch = frame[max(0, x - radius): x + radius + 1, max(0, y - radius): y + radius + 1]
+    ring = (
+        (np.abs(patch[:, :, 0].astype(int) - 176) < 22)
+        & (np.abs(patch[:, :, 1].astype(int) - 174) < 22)
+        & (np.abs(patch[:, :, 2].astype(int) - 170) < 22)
+    )
+    return int(ring.sum())
+
+
 class FlashTests(unittest.TestCase):
     def test_plaques_flash_and_the_skip_line_is_drawn(self):
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -504,22 +524,83 @@ class FlashTests(unittest.TestCase):
         shot.parent.mkdir(parents=True, exist_ok=True)
         mon.save_screenshot(str(shot))
         frame = pygame.surfarray.array3d(mon.screen)
-        band = frame[:1100, 70:150, :]
-        red = (
-            (np.abs(band[:, :, 0].astype(int) - 217) < 24)
-            & (np.abs(band[:, :, 1].astype(int) - 136) < 24)
-            & (np.abs(band[:, :, 2].astype(int) - 128) < 24)
+        right = mon.eye_lamps["Л"]
+        left = mon.eye_lamps["П"]
+        self.assertGreater(right["teacher"][0], left["teacher"][0])
+        self.assertGreater(_filled(frame, right["teacher"], (217, 136, 128)), 12)
+        self.assertGreater(_filled(frame, left["teacher"], (141, 181, 150)), 12)
+        self.assertLess(_filled(frame, left["recog"], (141, 181, 150)), 8)
+        self.assertLess(_filled(frame, left["recog"], (217, 136, 128)), 8)
+        self.assertGreater(_filled(frame, right["recog"], (141, 181, 150)), 12)
+        self.assertLess(_filled(frame, right["recog"], (217, 136, 128)), 8)
+        banner = (mon.panel_rect.x + 10, mon.panel_rect.y + 12)
+        self.assertLess(_filled(frame, banner, (217, 136, 128), radius=6), 6)
+        self.assertLess(_filled(frame, banner, (141, 181, 150), radius=6), 6)
+        pygame.quit()
+
+    def test_teacher_lamp_is_amber_when_yolo_sees_that_eye(self):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        import pygame
+        import numpy as np
+
+        pygame.init()
+        from sim.train_monitor import MonitorView, TrainMonitor
+        from sim.yolo_teacher import DetBox
+
+        mon = TrainMonitor("teacher lamps")
+        camera = np.zeros((96, 160, 3), dtype=np.uint8)
+        camera[:] = (24, 26, 32)
+        lidar = np.zeros((64, 64, 3), dtype=np.uint8)
+        yy, xx = np.ogrid[:64, :64]
+        lidar[np.abs(np.hypot(xx - 31.5, yy - 31.5) - 22) < 1.4] = (0, 40, 255)
+        shared = dict(
+            camera=camera,
+            lidar=lidar,
+            learner="mb",
+            overlap=0.4,
+            eye_l_recognized=True,
+            eye_r_recognized=False,
+            learning_on=True,
+            yolo_state="учит",
         )
-        green = (
-            (np.abs(band[:, :, 0].astype(int) - 141) < 30)
-            & (np.abs(band[:, :, 1].astype(int) - 181) < 30)
-            & (np.abs(band[:, :, 2].astype(int) - 150) < 30)
+        mon.draw(MonitorView(teacher_boxes=[DetBox(0.78, 0.2, 0.94, 0.8, 0.88)], **shared))
+        frame = pygame.surfarray.array3d(mon.screen)
+        self.assertGreater(_filled(frame, mon.eye_lamps["Л"]["teacher"], (201, 120, 91)), 8)
+        self.assertLess(_filled(frame, mon.eye_lamps["П"]["teacher"], (201, 120, 91)), 8)
+        self.assertGreater(_ring(frame, mon.eye_lamps["П"]["teacher"]), 8)
+        mon.draw(MonitorView(teacher_boxes=[DetBox(0.45, 0.2, 0.55, 0.8, 0.4)], **shared))
+        frame = pygame.surfarray.array3d(mon.screen)
+        self.assertGreater(_ring(frame, mon.eye_lamps["Л"]["teacher"]), 8)
+        self.assertGreater(_ring(frame, mon.eye_lamps["П"]["teacher"]), 8)
+        mon.draw(
+            MonitorView(
+                teacher_boxes=[DetBox(0.45, 0.2, 0.55, 0.8, 0.8)],
+                teacher_flash_l="ppl1",
+                **shared,
+            )
         )
-        self.assertGreater(int(red.sum()), 20)
-        self.assertGreater(int(green.sum()), 20)
-        red_x = np.where(red)[0]
-        green_x = np.where(green)[0]
-        self.assertGreater(float(red_x.mean()), float(green_x.mean()))
+        frame = pygame.surfarray.array3d(mon.screen)
+        self.assertGreater(_filled(frame, mon.eye_lamps["Л"]["teacher"], (217, 136, 128)), 12)
+        self.assertGreater(_filled(frame, mon.eye_lamps["П"]["teacher"], (201, 120, 91)), 8)
+        self.assertGreater(_filled(frame, mon.eye_lamps["Л"]["recog"], (141, 181, 150)), 12)
+        mon.draw(
+            MonitorView(
+                teacher_flash_r="pam",
+                teacher_flash_l="ppl1",
+                teacher_boxes=[DetBox(0.78, 0.2, 0.94, 0.8, 0.88)],
+                **shared,
+            )
+        )
+        out = __import__("pathlib").Path("/opt/cursor/artifacts")
+        out.mkdir(parents=True, exist_ok=True)
+        pygame.image.save(mon.present_into((1024, 768)), str(out / "trainer_window_4x3.png"))
+        pygame.image.save(mon.present_into((1600, 900)), str(out / "trainer_window_16x9.png"))
+        shown = pygame.surfarray.array3d(mon.present_into((1024, 768)))
+        blue = (shown[:, :, 2] > 180) & (shown[:, :, 0] < 50) & (shown[:, :, 1] < 90)
+        xs, ys = np.where(blue)
+        self.assertGreater(len(xs), 10)
+        self.assertAlmostEqual(int(xs.max() - xs.min()), int(ys.max() - ys.min()), delta=4)
         pygame.quit()
 
 
