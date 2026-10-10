@@ -233,6 +233,80 @@ class BrainTests(unittest.TestCase):
         self.assertLess(float(x1[0]), float(x0[0]))
         self.assertGreater(float(y1[0]), float(y0[0]))
 
+    def test_eyes_follow_the_plaques_and_frames_start_off(self):
+        import pygame
+
+        from sim.mb_view3d import BrainCloud, _hemi_recognized, _keys, demo_packet, eye_layout, packet_from_session, render_frame
+
+        cloud = BrainCloud()
+        eyes, arrow = eye_layout(cloud)
+        by_side = {item["side"]: item for item in eyes}
+        self.assertEqual(by_side[1]["label"], "глаз Л")
+        self.assertEqual(by_side[0]["label"], "глаз П")
+        left_kc = cloud.kc_pos[cloud.kc_side == 1]
+        right_kc = cloud.kc_pos[cloud.kc_side == 0]
+        self.assertLess(float(by_side[1]["pos"][0]), float(left_kc[:, 0].mean()))
+        self.assertGreater(float(by_side[0]["pos"][0]), float(right_kc[:, 0].mean()))
+        self.assertGreater(float(by_side[1]["pos"][2]), float(by_side[1]["calyx"][2]))
+        self.assertGreater(float(by_side[0]["pos"][2]), float(by_side[0]["calyx"][2]))
+        self.assertGreater(float(arrow[1][2]), float(arrow[0][2]))
+        self.assertEqual(demo_packet(cloud)["rec_l"], True)
+        self.assertEqual(demo_packet(cloud)["rec_r"], False)
+
+        class MB:
+            last_fwd = None
+            last_fwd_r = None
+            r_l = 0.0
+            r_r = 0.0
+            brain = None
+            brain_r = None
+            flash = None
+            flash_r = None
+
+            def eye_recognized(self):
+                return True, False
+
+        class Sim:
+            onboard = False
+            mb = MB()
+
+        packet = packet_from_session(Sim(), 1.0)
+        self.assertTrue(packet["rec_l"])
+        self.assertFalse(packet["rec_r"])
+
+        class Live:
+            onboard = True
+            eye_l_recognized = False
+            eye_r_recognized = True
+            mb = None
+            remote = {"recognized_L": True, "recognized_R": False, "r_l": 1.0, "r_r": 2.0}
+
+        packet = packet_from_session(Live(), 1.0)
+        self.assertFalse(packet["rec_l"])
+        self.assertTrue(packet["rec_r"])
+        self.assertFalse(_hemi_recognized(object(), "l"))
+
+        pygame.init()
+        try:
+            plain = render_frame(cloud, demo_packet(cloud), size=(640, 480))
+            boxed = render_frame(cloud, demo_packet(cloud), size=(640, 480), frames=True)
+            self.assertFalse(pygame.surfarray.array3d(plain).sum() == pygame.surfarray.array3d(boxed).sum())
+        finally:
+            pygame.quit()
+
+        class _Key:
+            def __init__(self, key):
+                self.key = key
+                self.repeat = False
+
+        pygame.init()
+        try:
+            frames = [False]
+            _keys(type("O", (), {"toggle": lambda self: None, "nudge": lambda *a: None, "reset": lambda self: None})(), _Key(pygame.K_f), frames)
+        finally:
+            pygame.quit()
+        self.assertTrue(frames[0])
+
     def test_udp_packet_is_local_and_rate_limited(self):
         from sim.mb_view3d import HOST, VIEW_PORT, BrainView, compact_ids, packet_from_session
         import numpy as np

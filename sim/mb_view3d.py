@@ -580,7 +580,7 @@ def _scale(color, k: float):
     return tuple(int(max(0, min(255, round(channel * k)))) for channel in color)
 
 
-def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0) -> None:
+def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False) -> None:
     """Perspective point cloud. Inactive cells stay dim; active KC add light."""
     import pygame
 
@@ -594,7 +594,9 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     spin = "A вращение вкл" if auto else "A вращение выкл"
     surface.blit(small.render(note, True, _INK), (16, 34))
     surface.blit(small.render("чашечка, ножка, доли α/β α′/β′ γ   " + spin, True, _INK), (16, 52))
-    hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD PgUp/PgDn   Home сброс   A вращение"
+    hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   A вращение   F каркас"
+    if frames:
+        hint += " вкл"
     tiny = pygame.font.Font(None, 15)
     surface.blit(tiny.render(hint, True, (168, 170, 176)), (12, h - 20))
     cx, cy, fov = w * 0.50, h * 0.54, min(w, h) * 1.05
@@ -604,10 +606,13 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     r_r = float(packet.get("r_r") or 0.0)
     flash_l = str(packet.get("flash_l") or "")
     flash_r = str(packet.get("flash_r") or "")
+    rec_l = bool(packet.get("rec_l"))
+    rec_r = bool(packet.get("rec_r"))
     sx, sy, depth = _project(cloud.kc_pos, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
     fog = _depth_t(depth)
     _draw_grid(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
-    _draw_hulls(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+    if frames:
+        _draw_hulls(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
     idle = pygame.Surface((w, h), pygame.SRCALPHA)
     glow = pygame.Surface((w, h), pygame.SRCALPHA)
     order = np.argsort(-depth)
@@ -653,6 +658,7 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     _draw_spheres(surface, cloud.pam_pos, cloud.pam_side, "pam", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h, pan_x, pan_y)
     _draw_spheres(surface, cloud.ppl_pos, cloud.ppl_side, "ppl1", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h, pan_x, pan_y)
     _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+    _draw_eyes(surface, cloud, rec_l, rec_r, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
     _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
 
 
@@ -770,6 +776,114 @@ def _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov, pan_x: fl
     surface.blit(layer, (0, 0))
 
 
+def eye_layout(cloud: BrainCloud):
+    """Eyes sit lateral to their own hemisphere and look anterior (+z).
+
+    Anatomical left is «глаз Л» / MB_L, the same side as the trainer plaque Л
+    (image right, the dog's left eye). Image left is «глаз П».
+    """
+    eyes = []
+    for side, label in ((1, "глаз Л"), (0, "глаз П")):
+        mask = cloud.kc_side == side
+        if not np.any(mask):
+            continue
+        cal = np.asarray(cloud.calyx_pos[mask].mean(axis=0), dtype=np.float64)
+        kc = cloud.kc_pos[mask]
+        lateral = -1.0 if side == 1 else 1.0
+        edge = float(kc[:, 0].min() if side == 1 else kc[:, 0].max())
+        pos = np.array([
+            edge + lateral * 0.42,
+            float(cal[1]) + 0.10,
+            float(cal[2]) + 0.70,
+        ], dtype=np.float64)
+        eyes.append({"side": side, "label": label, "pos": pos, "calyx": cal})
+    if not eyes:
+        return eyes, None
+    mid_z = float(np.mean([item["pos"][2] for item in eyes]))
+    top = float(np.percentile(cloud.kc_pos[:, 1], 96))
+    start = np.array([0.0, top + 0.28, mid_z - 0.15], dtype=np.float64)
+    tip = start + np.array([0.0, 0.0, 0.85], dtype=np.float64)
+    return eyes, (start, tip)
+
+
+def _dashed(surface, start, end, color, dash: int = 7, gap: int = 5) -> None:
+    import pygame
+
+    x0, y0 = float(start[0]), float(start[1])
+    x1, y1 = float(end[0]), float(end[1])
+    length = math.hypot(x1 - x0, y1 - y0)
+    if length < 2.0:
+        return
+    ux, uy = (x1 - x0) / length, (y1 - y0) / length
+    travel = 0.0
+    while travel < length:
+        stop = min(length, travel + dash)
+        pygame.draw.line(
+            surface,
+            color,
+            (int(x0 + ux * travel), int(y0 + uy * travel)),
+            (int(x0 + ux * stop), int(y0 + uy * stop)),
+            1,
+        )
+        travel += dash + gap
+
+
+def _draw_eyes(surface, cloud, rec_l: bool, rec_r: bool, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y) -> None:
+    import pygame
+
+    eyes, arrow = eye_layout(cloud)
+    if not eyes:
+        return
+    font = pygame.font.Font(None, 18)
+    link = (138, 146, 158)
+    for item in eyes:
+        pair = np.vstack((item["pos"], item["calyx"]))
+        px, py, dep = _project(pair, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+        if dep[0] > 0.3 and dep[1] > 0.3:
+            _dashed(surface, (px[0], py[0]), (px[1], py[1]), link)
+    for item in eyes:
+        recognized = rec_l if item["side"] == 1 else rec_r
+        pos = item["pos"].reshape(1, 3)
+        gaze = (item["pos"] + np.array([0.0, 0.0, 0.22])).reshape(1, 3)
+        px, py, dep = _project(pos, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+        gx, gy, _gdep = _project(gaze, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+        if dep[0] <= 0.3:
+            continue
+        x, y = int(px[0]), int(py[0])
+        body = (168, 196, 214) if recognized else (118, 132, 146)
+        if recognized:
+            halo = _glow((150, 196, 220), 34)
+            surface.blit(halo, (x - halo.get_width() // 2, y - halo.get_height() // 2), special_flags=pygame.BLEND_ADD)
+        sprite = _sphere(body, 16, 230 if recognized else 200)
+        surface.blit(sprite, (x - 8, y - 8))
+        dx, dy = float(gx[0]) - float(px[0]), float(gy[0]) - float(py[0])
+        norm = math.hypot(dx, dy) or 1.0
+        pupil = (int(x + dx / norm * 3.0), int(y + dy / norm * 3.0))
+        pygame.draw.circle(surface, (28, 34, 42), pupil, 2)
+        label = font.render(item["label"], True, _INK)
+        lateral = -1 if item["side"] == 1 else 1
+        surface.blit(label, (x + lateral * 14 - (label.get_width() if lateral < 0 else 0), y - 8))
+    if arrow is None:
+        return
+    pts = np.vstack(arrow)
+    px, py, dep = _project(pts, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+    if dep[0] <= 0.3 or dep[1] <= 0.3:
+        return
+    color = (214, 218, 224)
+    x0, y0 = int(px[0]), int(py[0])
+    x1, y1 = int(px[1]), int(py[1])
+    pygame.draw.line(surface, color, (x0, y0), (x1, y1), 1)
+    dx, dy = x1 - x0, y1 - y0
+    norm = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / norm, dy / norm
+    left = (int(x1 - ux * 8 - uy * 4), int(y1 - uy * 8 + ux * 4))
+    right = (int(x1 - ux * 8 + uy * 4), int(y1 - uy * 8 - ux * 4))
+    pygame.draw.line(surface, color, (x1, y1), left, 1)
+    pygame.draw.line(surface, color, (x1, y1), right, 1)
+    caption = font.render("вперёд", True, _INK)
+    surface.blit(caption, (x1 - caption.get_width() // 2, y1 - caption.get_height() - 4))
+
+
 def _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x: float = 0.0, pan_y: float = 0.0) -> None:
     import pygame
 
@@ -788,12 +902,12 @@ def _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x: floa
         surface.blit(label, (int(px[0]) - label.get_width() // 2, int(py[0]) - label.get_height() // 2))
 
 
-def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = YAW0, pitch: float = PITCH0, dist: float = DIST0, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0):
+def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = YAW0, pitch: float = PITCH0, dist: float = DIST0, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False):
     import pygame
 
     pygame.font.init()
     surface = pygame.Surface(size)
-    paint(surface, cloud, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y)
+    paint(surface, cloud, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames)
     return surface
 
 
@@ -808,6 +922,8 @@ def demo_packet(cloud: BrainCloud) -> dict:
         "kc_r": [int(i) for i in right[::40][:KC_CAP]],
         "flash_l": "pam",
         "flash_r": "ppl1",
+        "rec_l": True,
+        "rec_r": False,
         "edges": [],
     }
 
@@ -982,8 +1098,28 @@ def packet_from_session(session, now: float) -> dict:
         "kc_r": kc_r,
         "flash_l": _flash_kind(session, "l", now),
         "flash_r": _flash_kind(session, "r", now),
+        "rec_l": _hemi_recognized(session, "l"),
+        "rec_r": _hemi_recognized(session, "r"),
         "edges": edges,
     }
+
+
+def _hemi_recognized(session, side: str) -> bool:
+    """Same bits as the trainer plaques. Л is the dog's left eye."""
+    name = "eye_l_recognized" if side == "l" else "eye_r_recognized"
+    if hasattr(session, name):
+        return bool(getattr(session, name))
+    mb = getattr(session, "mb", None)
+    if mb is not None and hasattr(mb, "eye_recognized"):
+        try:
+            left, right = mb.eye_recognized()
+        except (TypeError, ValueError):
+            return False
+        return bool(left if side == "l" else right)
+    remote = getattr(session, "remote", None) if getattr(session, "onboard", False) else None
+    if isinstance(remote, dict):
+        return bool(remote.get("recognized_L" if side == "l" else "recognized_R", False))
+    return False
 
 
 def drive_brain(session, inp, now: float, mon=None) -> None:
@@ -1044,8 +1180,9 @@ def run_viewer(port: int = VIEW_PORT) -> int:
         print("окно мозга: порт %s занят (%s)" % (port, exc), file=sys.stderr)
         return 1
     sock.setblocking(False)
-    packet = {"r_l": 0.0, "r_r": 0.0, "kc_l": [], "kc_r": [], "flash_l": "", "flash_r": "", "edges": []}
+    packet = {"r_l": 0.0, "r_r": 0.0, "kc_l": [], "kc_r": [], "flash_l": "", "flash_r": "", "rec_l": False, "rec_r": False, "edges": []}
     orbit = Orbit()
+    frames = [False]
     drag = None
     pygame.key.set_repeat(180, 40)
     while True:
@@ -1055,7 +1192,7 @@ def run_viewer(port: int = VIEW_PORT) -> int:
             if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_j):
                 return 0
             if event.type == pygame.KEYDOWN:
-                _keys(orbit, event)
+                _keys(orbit, event, frames)
             if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 2, 3):
                 shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
                 drag = ("pan" if event.button != 1 or shifted else "orbit", event.pos)
@@ -1083,16 +1220,20 @@ def run_viewer(port: int = VIEW_PORT) -> int:
             packet = fresh
         dt = clock.tick(30) / 1000.0
         orbit.tick(dt, drag is not None)
-        paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y)
+        paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y, frames=frames[0])
         pygame.display.flip()
 
 
-def _keys(orbit: Orbit, event) -> None:
+def _keys(orbit: Orbit, event, frames=None) -> None:
     """Camera keys for this window only. Trainer hotkeys live in the other process."""
     import pygame
 
     key = event.key
     repeat = bool(getattr(event, "repeat", False))
+    if key == pygame.K_f and not repeat:
+        if frames is not None:
+            frames[0] = not frames[0]
+        return
     if key == pygame.K_a and not repeat:
         orbit.toggle()
         return
