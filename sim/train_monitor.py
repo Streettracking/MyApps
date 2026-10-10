@@ -198,12 +198,46 @@ class MonitorView:
     recog_line: str = ""
 
 
+def content_rect(ww: int, wh: int) -> tuple:
+    """Letterbox the 1920×1080 canvas into a window. Returns ``(ox, oy, cw, ch)``.
+
+    Scale is uniform, so a circle on the canvas stays a circle. Extra space
+    is a bar on the short axis (letterbox or pillarbox), not a stretch.
+    """
+    ww = int(ww)
+    wh = int(wh)
+    if ww < 1 or wh < 1:
+        return (0, 0, max(ww, 1), max(wh, 1))
+    scale = min(ww / float(WIN_W), wh / float(WIN_H))
+    cw = max(1, min(ww, int(round(WIN_W * scale))))
+    ch = max(1, min(wh, int(round(WIN_H * scale))))
+    return (ww - cw) // 2, (wh - ch) // 2, cw, ch
+
+
+def logical_from_window(pos, ww: int, wh: int) -> tuple:
+    """Window pixels → canvas pixels. A click in the bar is ``(-1, -1)``."""
+    ox, oy, cw, ch = content_rect(ww, wh)
+    x, y = int(pos[0]), int(pos[1])
+    if x < ox or y < oy or x >= ox + cw or y >= oy + ch:
+        return (-1, -1)
+    lx = int(round((x - ox) * WIN_W / float(cw)))
+    ly = int(round((y - oy) * WIN_H / float(ch)))
+    return (max(0, min(WIN_W - 1, lx)), max(0, min(WIN_H - 1, ly)))
+
+
+def window_from_logical(pos, ww: int, wh: int) -> tuple:
+    """Canvas pixels → window pixels, including the letterbox offset."""
+    ox, oy, cw, ch = content_rect(ww, wh)
+    wx = ox + int(round(float(pos[0]) * cw / float(WIN_W)))
+    wy = oy + int(round(float(pos[1]) * ch / float(WIN_H)))
+    return wx, wy
+
+
 def monitor_layout(w: int, h: int) -> dict:
     """Rects for one logical 1920×1080 frame. The camera slot is at least half the width.
 
-    The OS window is a normal resizable frame. Each presented frame is this
-    canvas scaled into that window (the same idea as pygame.SCALED, without
-    the flag that drops the title bar).
+    The OS window is a normal resizable frame. Each presented frame keeps this
+    canvas's aspect: uniform scale, then bars filled with the page background.
     """
     m = 16
     header = 48
@@ -394,6 +428,10 @@ class TrainMonitor:
         self.font_big = _ui_font(26)
         self.font_ind = _ui_font(18)
         self._bg = None
+        self._win_bg = None
+        self._content = (0, 0, WIN_W, WIN_H)
+        self.cam_inner = None
+        self.lid_inner = None
         self._fixed_rows: list = []
         self._anchors: list = []
         self.clock = pygame.time.Clock()
@@ -460,9 +498,9 @@ class TrainMonitor:
         """Bordered resizable window. Drawing stays on a 1920×1080 surface.
 
         Fullscreen is only the FULLSCREEN flag (F11 or --fullscreen). The
-        logical canvas is scaled into the window each frame, which is the
-        SCALED behaviour without that flag: SCALED on Windows opens a
-        borderless frame that cannot be minimized.
+        logical canvas is letterboxed into the window each frame, which is
+        the SCALED behaviour without that flag and without stretching.
+        SCALED on Windows opens a borderless frame that cannot be minimized.
         """
         import pygame
 
@@ -498,16 +536,14 @@ class TrainMonitor:
         return self.fullscreen
 
     def _logical_pos(self, pos) -> tuple:
-        """Window pixels → the 1920×1080 canvas."""
+        """Window pixels → the 1920×1080 canvas. Bars do not hit a button."""
         win = self.window
         if win is None:
             return (int(pos[0]), int(pos[1]))
         ww, wh = win.get_size()
         if ww < 2 or wh < 2:
             return (int(pos[0]), int(pos[1]))
-        x = int(round(float(pos[0]) * WIN_W / float(ww)))
-        y = int(round(float(pos[1]) * WIN_H / float(wh)))
-        return (max(0, min(WIN_W - 1, x)), max(0, min(WIN_H - 1, y)))
+        return logical_from_window(pos, ww, wh)
 
     def _mouse(self) -> tuple:
         import pygame
@@ -530,7 +566,7 @@ class TrainMonitor:
         self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
 
     def _present(self) -> None:
-        """Scale the logical canvas into the OS window. A minimized window skips the blit."""
+        """Letterbox the logical canvas into the OS window. A minimized window skips the blit."""
         import pygame
 
         if self._minimized or self.window is None:
@@ -539,12 +575,26 @@ class TrainMonitor:
         if ww < 64 or wh < 64:
             self._minimized = True
             return
-        if (ww, wh) == (WIN_W, WIN_H):
-            frame = self.screen
-        else:
-            frame = pygame.transform.smoothscale(self.screen, (ww, wh))
+        frame = self.present_into((ww, wh))
         self.window.blit(frame, (0, 0))
         pygame.display.flip()
+
+    def present_into(self, size) -> "object":
+        """Composite the canvas into ``size`` with bars. Aspect stays 16:9."""
+        import pygame
+
+        ww, wh = int(size[0]), int(size[1])
+        ox, oy, cw, ch = content_rect(ww, wh)
+        self._content = (ox, oy, cw, ch)
+        if (cw, ch) == (WIN_W, WIN_H):
+            scaled = self.screen
+        else:
+            scaled = pygame.transform.smoothscale(self.screen, (cw, ch))
+        if ox == 0 and oy == 0 and (cw, ch) == (ww, wh):
+            return scaled
+        out = self._window_bg((ww, wh)).copy()
+        out.blit(scaled, (ox, oy))
+        return out
 
     def pump(self) -> MonitorInput:
         import pygame
@@ -686,6 +736,7 @@ class TrainMonitor:
         self._record_button(screen, view)
 
         cam_inner = self._frame(screen, self.cam_rect, view.camera, "камера", view.sensor_error)
+        self.cam_inner = cam_inner
         if cam_inner is not None and view.learner == "mb":
             self._camera_overlap(screen, cam_inner, view)
             self._draw_det_boxes(screen, cam_inner, view.teacher_boxes)
@@ -695,6 +746,7 @@ class TrainMonitor:
         lid_title = view.lidar_mode or "карта лидара"
         lid_msg = "" if view.lidar is not None else view.lidar_hold
         inner = self._frame(screen, self.lid_rect, view.lidar, lid_title, lid_msg)
+        self.lid_inner = inner
         if inner is not None and view.marks:
             self._draw_marks(screen, inner, view.marks)
         self._lidar_reset_button(screen)
@@ -809,16 +861,30 @@ class TrainMonitor:
             return "звук вкл"
         return "звук выкл"
 
+    def _gradient(self, surface) -> None:
+        import pygame
+
+        width, height = surface.get_size()
+        for row in range(height):
+            tone = _mix(BG_TOP, BG_BOT, row / max(height - 1, 1))
+            pygame.draw.line(surface, tone, (0, row), (width, row))
+
+    def _window_bg(self, size):
+        import pygame
+
+        if self._win_bg is None or self._win_bg.get_size() != tuple(size):
+            bg = pygame.Surface((int(size[0]), int(size[1])))
+            self._gradient(bg)
+            self._win_bg = bg
+        return self._win_bg
+
     def _fill_bg(self, screen) -> None:
         import pygame
 
         size = screen.get_size()
         if self._bg is None or self._bg.get_size() != size:
-            width, height = size
-            bg = pygame.Surface((width, height))
-            for row in range(height):
-                tone = _mix(BG_TOP, BG_BOT, row / max(height - 1, 1))
-                pygame.draw.line(bg, tone, (0, row), (width, row))
+            bg = pygame.Surface(size)
+            self._gradient(bg)
             self._bg = bg
         screen.blit(self._bg, (0, 0))
 

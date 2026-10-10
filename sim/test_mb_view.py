@@ -94,7 +94,7 @@ class WindowTests(unittest.TestCase):
 
         from sim.recognize_train import SIM_KEYS
         from sim.recognize_train_live import LIVE_KEYS
-        from sim.train_monitor import TrainMonitor
+        from sim.train_monitor import TrainMonitor, window_from_logical
 
         self.assertIn("J мозг", SIM_KEYS)
         self.assertIn("J мозг", LIVE_KEYS)
@@ -105,9 +105,7 @@ class WindowTests(unittest.TestCase):
         logical = mon._logical_pos((ww // 2, wh // 2))
         self.assertAlmostEqual(logical[0], 960, delta=2)
         self.assertAlmostEqual(logical[1], 540, delta=2)
-        center = mon.brain_rect.center
-        wx = int(round(center[0] * ww / 1920.0))
-        wy = int(round(center[1] * wh / 1080.0))
+        wx, wy = window_from_logical(mon.brain_rect.center, ww, wh)
         pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(wx, wy), button=1))
         clicked = mon.pump()
         self.assertTrue(clicked.brain_toggle)
@@ -120,6 +118,83 @@ class WindowTests(unittest.TestCase):
         beep = mon.pump()
         self.assertTrue(beep.beep_toggle)
         self.assertFalse(beep.brain_toggle)
+        pygame.quit()
+
+    def test_letterbox_keeps_aspect_and_bars_miss_buttons(self):
+        import pygame
+        import numpy as np
+
+        from sim.train_monitor import (
+            BG_TOP,
+            WIN_H,
+            WIN_W,
+            MonitorView,
+            TrainMonitor,
+            content_rect,
+            logical_from_window,
+            window_from_logical,
+        )
+
+        sizes = {
+            "4:3": (1024, 768),
+            "16:10": (1280, 800),
+            "16:9": (1600, 900),
+            "narrow": (700, 900),
+            "wide": (1500, 640),
+        }
+        for name, (ww, wh) in sizes.items():
+            ox, oy, cw, ch = content_rect(ww, wh)
+            self.assertAlmostEqual(cw / float(ch), WIN_W / float(WIN_H), delta=0.01, msg=name)
+            self.assertGreaterEqual(ox, 0)
+            self.assertGreaterEqual(oy, 0)
+            self.assertLessEqual(ox + cw, ww)
+            self.assertLessEqual(oy + ch, wh)
+            self.assertEqual(logical_from_window((ww // 2, wh // 2), ww, wh)[0], 960, msg=name)
+        self.assertEqual(content_rect(WIN_W, WIN_H), (0, 0, WIN_W, WIN_H))
+        self.assertGreater(content_rect(1024, 768)[1], 0)
+        self.assertGreater(content_rect(1500, 640)[0], 0)
+        self.assertEqual(logical_from_window((4, 4), 1024, 768), (-1, -1))
+
+        pygame.init()
+        mon = TrainMonitor("aspect")
+        camera = np.zeros((90, 160, 3), dtype=np.uint8)
+        camera[:] = (20, 24, 32)
+        lidar = np.zeros((80, 80, 3), dtype=np.uint8)
+        lidar[:] = (12, 14, 18)
+        yy, xx = np.ogrid[:80, :80]
+        ring = np.abs(np.hypot(xx - 39.5, yy - 39.5) - 28) < 1.6
+        lidar[ring] = (0, 40, 255)
+        mon.draw(MonitorView(camera=camera, lidar=lidar, learner="mb", lidar_mode="карта"))
+        cam = mon.cam_inner
+        lid = mon.lid_inner
+        self.assertIsNotNone(cam)
+        self.assertIsNotNone(lid)
+        self.assertAlmostEqual(cam.w / float(cam.h), 160 / 90.0, delta=0.03)
+        self.assertAlmostEqual(lid.w, lid.h, delta=1)
+
+        for name, size in (("4:3", (1024, 768)), ("narrow", (700, 900)), ("wide", (1500, 640))):
+            mon._on_resize(*size)
+            self.assertEqual(mon.window.get_size(), size)
+            shown = pygame.surfarray.array3d(mon.present_into(size))
+            blue = (shown[:, :, 2] > 180) & (shown[:, :, 0] < 50) & (shown[:, :, 1] < 90)
+            xs, ys = np.where(blue)
+            self.assertGreater(len(xs), 20, msg=name)
+            self.assertAlmostEqual(int(xs.max() - xs.min()), int(ys.max() - ys.min()), delta=4, msg=name)
+            ox, oy, cw, ch = content_rect(*size)
+            if oy > 8:
+                bar = shown[size[0] // 2, 2]
+                self.assertLess(int(np.abs(bar.astype(int) - np.array(BG_TOP)).max()), 8, msg=name)
+            if ox > 8:
+                bar = shown[2, size[1] // 2]
+                self.assertLess(int(np.abs(bar.astype(int) - np.array(BG_TOP)).max()), 30, msg=name)
+            wx, wy = window_from_logical(mon.brain_rect.center, *size)
+            self.assertNotEqual(logical_from_window((wx, wy), *size), (-1, -1), msg=name)
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(4, 4), button=1))
+            missed = mon.pump()
+            self.assertFalse(missed.brain_toggle, msg=name)
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(wx, wy), button=1))
+            hit = mon.pump()
+            self.assertTrue(hit.brain_toggle, msg=name)
         pygame.quit()
 
 
