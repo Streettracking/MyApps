@@ -72,6 +72,8 @@ def default_settings() -> dict:
         "w": None,
         "h": None,
         "layout": None,
+        "embed_3d": True,
+        "unclean_exit": False,
     }
 
 
@@ -88,6 +90,26 @@ def load_settings() -> dict:
     if raw.get("layout"):
         data["layout"] = raw["layout"]
     return data
+
+
+def begin_gui_session() -> None:
+    """Arm the crash latch. A previous native exit leaves embedded 3D off."""
+    if not persist_enabled():
+        return
+    data = load_settings()
+    if data.get("unclean_exit"):
+        data["embed_3d"] = False
+    data["unclean_exit"] = True
+    save_settings(data)
+
+
+def end_gui_session() -> None:
+    """Clear the latch. A native crash skips this, so the next start stays dark."""
+    if not persist_enabled():
+        return
+    data = load_settings()
+    data["unclean_exit"] = False
+    save_settings(data)
 
 
 def save_settings(data: dict) -> None:

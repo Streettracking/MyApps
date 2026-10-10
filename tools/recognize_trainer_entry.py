@@ -37,11 +37,15 @@ import sim.recognize  # noqa: F401
 import sim.recognize_train as recognize_train
 import sim.recognize_train_live as recognize_train_live
 import sim.mb_view3d  # noqa: F401
+import sim.embed_brain  # noqa: F401
 import sim.train_monitor  # noqa: F401
 import sim.world  # noqa: F401
 
 
 def main(argv: list[str] | None = None) -> int:
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     from sim.ui_settings import install_crash_log
 
     install_crash_log()
@@ -179,4 +183,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     sys.exit(main())

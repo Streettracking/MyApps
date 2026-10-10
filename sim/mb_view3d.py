@@ -101,7 +101,8 @@ def compact_ids(vec, cap: int = KC_CAP) -> list:
     """Local KC indices that fired. Capped so one datagram stays small."""
     if vec is None:
         return []
-    arr = np.asarray(vec)
+    # Copy first. A view into a buffer the next step reuses is how the exe died in here.
+    arr = np.ravel(np.array(vec, copy=True))
     if arr.size == 0:
         return []
     idx = np.flatnonzero(arr > 0)
@@ -573,11 +574,11 @@ def _scale(color, k: float):
     return tuple(int(max(0, min(255, round(channel * k)))) for channel in color)
 
 
-def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None) -> None:
+def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None, software_only: bool = False) -> None:
     """Perspective view. FlyWire shell when the cache exists, else the soma cloud."""
     from .mb_flywire import paint_scene
 
-    if paint_scene(surface, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast, hint=hint):
+    if paint_scene(surface, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast, hint=hint, software_only=software_only):
         return
     import pygame
 
@@ -1008,7 +1009,7 @@ class BrainView:
 def _sample_edges(brain, active, side: int) -> list:
     if brain is None or not active:
         return []
-    ids = np.asarray(active, dtype=np.int32)
+    ids = np.array(active, dtype=np.int32, copy=True)
     mask = np.isin(brain.kc_mbon_pre, ids)
     idx = np.flatnonzero(mask)
     if idx.size == 0:

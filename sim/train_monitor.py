@@ -570,12 +570,15 @@ def _cached_brain_surface(size, yaw, pitch, dist, pan_x, pan_y, frames, packet):
         frames=frames,
         fast=True,
         hint="ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   кнопка «каркас»",
+        software_only=True,
     )
     if len(_BRAIN_CACHE) > 6:
         _BRAIN_CACHE.clear()
     _BRAIN_CACHE[key] = surface
     finished = time.monotonic()
-    allow_at = max(finished, started + _BRAIN_MIN_INTERVAL)
+    # The next paint of this size waits out the interval after this one returns,
+    # so a slow software frame still absorbs the following wheel step.
+    allow_at = finished + _BRAIN_MIN_INTERVAL
     _cached_brain_surface.last = ((w, h), allow_at, surface)
     return surface
 
@@ -610,6 +613,12 @@ class TrainMonitor:
         self.brain_frames = False
         self.brain_packet = None
         self.brain3d_rect = None
+        self.embed_3d = bool(self._settings.get("embed_3d", True))
+        self.use_embed_process = False
+        self._embed = None
+        self._card_cache: dict = {}
+        self._journal_cache = None
+        self._brain_panel_cache = None
         self._last_view = None
         self.screen = None
         self.window = None
@@ -789,6 +798,7 @@ class TrainMonitor:
         data["theme"] = theme_name()
         data["fullscreen"] = bool(self.fullscreen)
         data["layout"] = self.dock.to_dict()
+        data["embed_3d"] = bool(self.embed_3d)
         try:
             from pygame._sdl2.video import Window
 
@@ -808,6 +818,9 @@ class TrainMonitor:
         apply_theme(name)
         self._bg = None
         self._win_bg = None
+        self._card_cache = {}
+        self._journal_cache = None
+        self._brain_panel_cache = None
         self._save_ui()
 
     def _reset_layout(self) -> None:
@@ -841,6 +854,28 @@ class TrainMonitor:
             self._orbit = Orbit()
             self._orbit.auto = False
         return self._orbit
+
+    def stop_embed(self) -> None:
+        session = getattr(self, "_embed", None)
+        self._embed = None
+        if session is not None:
+            session.stop()
+
+    def _ensure_embed(self):
+        if not self.use_embed_process or not self.embed_3d:
+            self.stop_embed()
+            return None
+        if self._embed is not None and self._embed.dead:
+            return self._embed
+        if self._embed is None:
+            from .embed_brain import EmbedSession
+
+            self._embed = EmbedSession()
+        try:
+            self._embed.start()
+        except Exception:
+            self._embed.dead = True
+        return self._embed
 
     def _display_packet(self, view=None) -> dict:
         if isinstance(self.brain_packet, dict):
@@ -1075,8 +1110,18 @@ class TrainMonitor:
             leaf = find_leaf(self.dock, action[1])
             if leaf is not None:
                 leaf.visible = not leaf.visible
+                if action[1] == "brain3d" and not leaf.visible:
+                    self.stop_embed()
                 self._apply_layout(self.screen.get_height() if self.screen is not None else WIN_H)
                 self._save_ui()
+        elif kind == "embed":
+            self.embed_3d = not bool(self.embed_3d)
+            if not self.embed_3d:
+                self.stop_embed()
+            _BRAIN_CACHE.clear()
+            _cached_brain_surface.last = None
+            self._brain_panel_cache = None
+            self._save_ui()
         elif kind == "reset":
             self._reset_layout()
         elif kind == "theme":
@@ -1157,6 +1202,8 @@ class TrainMonitor:
             leaf = find_leaf(self.dock, arg)
             if leaf is not None:
                 leaf.visible = False
+                if arg == "brain3d":
+                    self.stop_embed()
                 self._apply_layout(self.screen.get_height() if self.screen is not None else WIN_H)
                 self._save_ui()
             return
@@ -1411,7 +1458,7 @@ class TrainMonitor:
         if self.menu_open:
             self._draw_menu(screen)
         self._present()
-        self.clock.tick(30)
+        self.clock.tick(20 if self.use_embed_process else 30)
 
     def _draw_menu_bar(self, screen, view: MonitorView) -> None:
         import pygame
@@ -1435,6 +1482,10 @@ class TrainMonitor:
         for name in BLOCKS:
             rect = self._dock_blocks.get(name) if hasattr(self, "_dock_blocks") else None
             leaf = self._leaf(name)
+            if name == "brain3d" and self.use_embed_process:
+                shown = leaf is not None and leaf.visible and not leaf.collapsed and rect is not None
+                if not shown:
+                    self.stop_embed()
             if rect is None or leaf is None or not leaf.visible:
                 continue
             box = pygame.Rect(*rect)
@@ -1502,6 +1553,7 @@ class TrainMonitor:
         import pygame
 
         rows = [(("toggle", name), BLOCK_TITLES[name], "check", name) for name in BLOCKS]
+        rows.append((("embed",), "Встроенный 3D", "embed", None))
         rows.append((("reset",), "Сброс раскладки", "button", None))
         rows.append((("theme", "light"), "Светлая тема", "radio", "light"))
         rows.append((("theme", "dark"), "Тёмная тема", "radio", "dark"))
@@ -1521,6 +1573,8 @@ class TrainMonitor:
                 mark = "✓" if leaf is not None and leaf.visible else ""
             elif kind == "radio":
                 mark = "✓" if theme_name() == arg else ""
+            elif kind == "embed":
+                mark = "✓" if self.embed_3d else ""
             else:
                 mark = ""
             box = pygame.Rect(row.x + 6, row.centery - 7, 14, 14)
@@ -1585,18 +1639,61 @@ class TrainMonitor:
                 VALUE,
             )
 
+    def _brain_sig(self, view: MonitorView, content) -> tuple:
+        return (
+            int(content.w),
+            int(content.h),
+            theme_name(),
+            round(float(getattr(view, "likeness", 0.0) or 0.0), 3),
+            round(float(getattr(view, "drift", 0.0) or 0.0), 3),
+            int(float(getattr(view, "t", 0.0) or 0.0)),
+            bool(getattr(view, "recognized", False)),
+            str(getattr(view, "teacher_flash_l", "") or ""),
+            str(getattr(view, "teacher_flash_r", "") or ""),
+            bool(self.flash_open),
+            str(getattr(view, "learner", "") or ""),
+            str(getattr(view, "mode_label", "") or ""),
+            str(getattr(view, "teacher_counts", "") or ""),
+            str(getattr(view, "teacher_skips", "") or ""),
+        )
+
+    def _brain_panel_fresh(self, view: MonitorView, content) -> bool:
+        import time
+
+        cached = self._brain_panel_cache
+        if not cached:
+            return False
+        size, sig, when, snap = cached
+        if snap is None or size != (int(content.w), int(content.h)):
+            return False
+        if sig == self._brain_sig(view, content):
+            return True
+        return time.monotonic() - when < 0.2
+
     def _draw_brain_block(self, screen, view: MonitorView, content) -> None:
+        import time
+
         import pygame
 
         body = pygame.Rect(content.x, content.y, content.w, content.h)
         log_source = self.journal_rect
         self.log_rows = max(5, (log_source.h - 34) // 16) if log_source is not None else 5
+        if self.use_embed_process and self._brain_panel_fresh(view, content):
+            screen.blit(self._brain_panel_cache[3], content.topleft)
+            return
         previous = screen.get_clip()
         screen.set_clip(body)
         try:
             self._draw_brain_body(screen, view, body)
         finally:
             screen.set_clip(previous)
+        if self.use_embed_process and screen.get_rect().contains(content):
+            self._brain_panel_cache = (
+                (int(content.w), int(content.h)),
+                self._brain_sig(view, content),
+                time.monotonic(),
+                screen.subsurface(content).copy(),
+            )
 
     def _draw_brain_body(self, screen, view: MonitorView, body) -> None:
         import pygame
@@ -1628,13 +1725,21 @@ class TrainMonitor:
         if view.learner == "mb" and self.flash_open:
             log_n = max(3, (journal.h - 34) // 16)
         self.log_rows = int(log_n)
+        lines = tuple(view.log_lines[-log_n:])
+        key = (int(content.w), int(content.h), lines, theme_name())
+        cached = self._journal_cache
+        if cached is not None and cached[0] == key:
+            screen.blit(cached[1], content.topleft)
+            return
         y = content.y + 2
         width_chars = max(24, content.w // 8)
-        for line in view.log_lines[-log_n:]:
+        for line in lines:
             if y + 16 > content.bottom:
                 break
             screen.blit(self.font_sm.render(line[:width_chars], True, LABEL), (content.x + 4, y))
             y += 16
+        if screen.get_rect().contains(content):
+            self._journal_cache = (key, screen.subsurface(content).copy())
 
     def _draw_controls_block(self, screen, view: MonitorView) -> None:
         self._mode_buttons(screen, view)
@@ -1649,8 +1754,41 @@ class TrainMonitor:
             label_color=ESTOP,
         )
 
+    def _brain3d_note(self, screen, content, text: str) -> None:
+        import pygame
+
+        pygame.draw.rect(screen, (14, 15, 18), content)
+        label = self.font_sm.render(text, True, (196, 198, 204))
+        screen.blit(label, (content.centerx - label.get_width() // 2, content.centery - label.get_height() // 2))
+
     def _draw_brain3d_block(self, screen, content) -> None:
         if content.w <= 0 or content.h <= 0:
+            return
+        if self.use_embed_process:
+            if not self.embed_3d:
+                self.stop_embed()
+                self._brain3d_note(screen, content, "встроенный 3D выключен")
+                return
+            session = self._ensure_embed()
+            if session is None or session.dead:
+                self._brain3d_note(screen, content, "3D остановлен")
+                return
+            orbit = self._ensure_orbit()
+            orbit.auto = False
+            session.submit(
+                orbit.yaw,
+                orbit.pitch,
+                orbit.dist,
+                orbit.pan_x,
+                orbit.pan_y,
+                self.brain_frames,
+                self._display_packet(),
+            )
+            surface = session.frame_for(content.w, content.h)
+            if surface is None:
+                self._brain3d_note(screen, content, "3D…")
+                return
+            screen.blit(surface, content.topleft)
             return
         orbit = self._ensure_orbit()
         orbit.auto = False
@@ -1765,19 +1903,25 @@ class TrainMonitor:
         if rect.w < 2 or rect.h < 2:
             return
         radius = min(int(radius), rect.w // 2, rect.h // 2)
-        shadow = pygame.Surface((rect.w + 28, rect.h + 32), pygame.SRCALPHA)
-        for spread, alpha in ((12, 16), (7, 24), (3, 32)):
-            pygame.draw.rect(
-                shadow,
-                (140, 120, 100, alpha),
-                (14 - spread, 16 - spread, rect.w + spread * 2, rect.h + spread * 2),
-                border_radius=radius + 4,
-            )
-        screen.blit(shadow, (rect.x - 14, rect.y - 10))
-        face = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
-        pygame.draw.rect(face, (*CARD, CARD_ALPHA), face.get_rect(), border_radius=radius)
-        pygame.draw.rect(face, (*LINE, 255), face.get_rect(), width=1, border_radius=radius)
-        screen.blit(face, rect.topleft)
+        key = (int(rect.w), int(rect.h), int(radius), theme_name())
+        sprite = self._card_cache.get(key)
+        if sprite is None:
+            sprite = pygame.Surface((rect.w + 28, rect.h + 32), pygame.SRCALPHA)
+            for spread, alpha in ((12, 16), (7, 24), (3, 32)):
+                pygame.draw.rect(
+                    sprite,
+                    (140, 120, 100, alpha),
+                    (14 - spread, 16 - spread, rect.w + spread * 2, rect.h + spread * 2),
+                    border_radius=radius + 4,
+                )
+            face = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+            pygame.draw.rect(face, (*CARD, CARD_ALPHA), face.get_rect(), border_radius=radius)
+            pygame.draw.rect(face, (*LINE, 255), face.get_rect(), width=1, border_radius=radius)
+            sprite.blit(face, (14, 10))
+            if len(self._card_cache) > 64:
+                self._card_cache.clear()
+            self._card_cache[key] = sprite
+        screen.blit(sprite, (rect.x - 14, rect.y - 10))
 
     def _inset(self, screen, rect, radius: int = 12) -> None:
         """White nested card. No shadow, so it stays flat inside an outer card."""

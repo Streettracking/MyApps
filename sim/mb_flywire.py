@@ -452,9 +452,10 @@ class _GLRenderer:
         self._read_hold = data
         if not gl_read_length_ok(len(data), w, h):
             raise RuntimeError("чтение GL %s байт, ждали %s" % (len(data), int(w) * int(h) * 3))
-        image = np.frombuffer(self._read_hold, dtype=np.uint8).reshape(int(h), int(w), 3)
-        copied = np.flipud(image).copy()
-        return copied
+        # Own the bytes before reshape. The GL buffer can be freed on the next draw.
+        owned = np.array(np.frombuffer(self._read_hold, dtype=np.uint8), copy=True)
+        image = owned.reshape(int(h), int(w), 3)
+        return np.ascontiguousarray(np.flipud(image))
 
     def _sort_mesh(self, scene: FlyScene, yaw, pitch, dist, pan_x, pan_y) -> None:
         """Far triangles first. Zoom does not change the order, so the IBO stays."""
@@ -679,7 +680,7 @@ def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool
     surface.blit(caption, (x1 - caption.get_width() // 2, y1 - caption.get_height() - 4))
 
 
-def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None) -> bool:
+def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None, software_only: bool = False) -> bool:
     global _LAST_PAINT
     if not _gl_caller_ok():
         _LAST_PAINT = "skip"
@@ -689,7 +690,7 @@ def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, au
         _LAST_PAINT = "none"
         return False
     w, h = surface.get_size()
-    renderer = _gl_renderer(scene)
+    renderer = None if software_only else _gl_renderer(scene)
     if renderer is not None:
         try:
             image = renderer.draw(scene, packet, w, h, yaw, pitch, dist, pan_x, pan_y, frames)

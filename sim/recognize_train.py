@@ -373,7 +373,13 @@ class RecognizeTrainSim:
     def view(self, focused: bool, udp_status: str, last_command: str, keys_hint: str):
         from .train_monitor import MonitorView
 
-        cam, lid = sim_previews(self.learner, self.world, self.lidar_bank.display)
+        now_t = float(self.world.t)
+        held = getattr(self, "_preview_hold", None)
+        if held is not None and now_t - held[0] < 0.25:
+            cam, lid = held[1], held[2]
+        else:
+            cam, lid = sim_previews(self.learner, self.world, self.lidar_bank.display)
+            self._preview_hold = (now_t, cam, lid)
         if self.mb is not None:
             caption = "сырой выход: подход − избегание" if self.dan == "teacher" else "сырой выход: минус новизна"
             mode = f"сим · {self.pilot.label()}"
@@ -672,12 +678,38 @@ def _phase_name(phase: str, steer: str = "bilateral", search_sign: float = 1.0) 
     return phase_label(phase, steer, search_sign)
 
 
+def _gui_stress(mon, session) -> None:
+    """Resize, splitter and zoom. Only when GUI_STRESS=1, never a hotkey."""
+    import os
+
+    if os.environ.get("GUI_STRESS") != "1":
+        return
+    t = float(session.world.t)
+    last = float(getattr(session, "_stress_t", -10.0))
+    if t - last < 2.0:
+        return
+    session._stress_t = t
+    session._stress_n = int(getattr(session, "_stress_n", 0)) + 1
+    sizes = ((1280, 760), (1600, 900), (1100, 680), (1440, 860), (900, 700))
+    w, h = sizes[session._stress_n % len(sizes)]
+    mon._on_resize(w, h)
+    mon._ensure_orbit().zoom(2 if session._stress_n % 2 else -3)
+    dock = mon.dock
+    if hasattr(dock, "ratio"):
+        dock.ratio = 0.72 if session._stress_n % 2 else 0.84
+        dock.locked = True
+    mon._apply_layout(h)
+
+
 def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: Path | None = None) -> dict:
     from .frame_record import FrameRecorder, OperatorMarks
     from .train_monitor import TrainMonitor
+    from .ui_settings import begin_gui_session, end_gui_session
     from .yolo_teacher import TeacherRuntime
 
+    begin_gui_session()
     mon = TrainMonitor("Go2 recognition trainer — sim", fullscreen=bool(getattr(session, "start_fullscreen", False)))
+    mon.use_embed_process = True
     if session.learner_kind == "mb":
         session.teacher = TeacherRuntime(
             getattr(session, "teacher_url", "http://127.0.0.1:8091"),
@@ -694,6 +726,8 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
     finally:
         from .mb_view3d import close_brain
 
+        end_gui_session()
+        mon.stop_embed()
         close_brain(session)
         teacher = getattr(session, "teacher", None)
         if teacher is not None:
@@ -800,6 +834,7 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         from .mb_view3d import drive_brain
 
         drive_brain(session, inp, float(session.world.t), mon)
+        _gui_stress(mon, session)
         mon.draw(view)
         if inp.screenshot:
             dest = ROOT / "logs" / "monitor_shot.png"
