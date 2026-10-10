@@ -435,5 +435,63 @@ class BrainTests(unittest.TestCase):
         self.assertTrue(text.endswith("5473") or "--port 5473" in text or "--port" in text)
 
 
+def _channel(value: float) -> float:
+    c = value / 255.0
+    if c <= 0.04045:
+        return c / 12.92
+    return ((c + 0.055) / 1.055) ** 2.4
+
+
+def _contrast(fg, bg) -> float:
+    def lum(rgb):
+        return 0.2126 * _channel(rgb[0]) + 0.7152 * _channel(rgb[1]) + 0.0722 * _channel(rgb[2])
+
+    light, dark = lum(fg), lum(bg)
+    if dark > light:
+        light, dark = dark, light
+    return (light + 0.05) / (dark + 0.05)
+
+
+class TrainerInkTests(unittest.TestCase):
+    def test_text_is_near_black_on_the_light_cards(self):
+        import pygame
+
+        from sim.learn_flash import _LABEL, _VALUE
+        from sim.train_monitor import CARD, INK_DIM, LABEL, VALUE, MonitorView, TrainMonitor
+
+        self.assertEqual(LABEL, (0x22, 0x22, 0x22))
+        self.assertEqual(VALUE, (0x11, 0x11, 0x11))
+        self.assertLessEqual(max(INK_DIM), 0x44)
+        self.assertEqual(_LABEL, LABEL)
+        self.assertEqual(_VALUE, VALUE)
+        self.assertGreater(_contrast(LABEL, CARD), 7.0)
+        self.assertGreater(_contrast(VALUE, CARD), 7.0)
+        self.assertGreater(_contrast(INK_DIM, CARD), 4.5)
+        pygame.init()
+        try:
+            mon = TrainMonitor("ink")
+            view = MonitorView(
+                learner="mb",
+                log_lines=["учитель: PAM Л — собака в поле"],
+                keys_hint="A авто  B звук  J мозг  Y учитель",
+                learning_on=True,
+                focused=True,
+                udp_status="симулятор",
+                last_command="StopMove",
+            )
+            mon.draw(view)
+            image = pygame.surfarray.array3d(mon.screen)
+            footer = int(mon.layout["footer_y"])
+            hint = image[:, footer + 36: footer + 58]
+            ink = (hint.max(axis=2) <= 40) & (hint.min(axis=2) >= 8)
+            self.assertGreater(int(ink.sum()), 40)
+            button = mon.auto_rect
+            patch = image[button.x + 28: button.right - 6, button.y + 6: button.bottom - 6]
+            letters = (patch.max(axis=2) <= 40) & (patch.min(axis=2) >= 8)
+            self.assertGreater(int(letters.sum()), 20)
+        finally:
+            pygame.quit()
+
+
 if __name__ == "__main__":
     unittest.main()
