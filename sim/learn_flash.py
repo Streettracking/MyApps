@@ -223,15 +223,26 @@ def record_teacher_step(brain: MushroomBodyRuntime, fwd: MBForward, kind: str, t
 def _footer_pair(screen, font, rect, left: LearnFlash | None, right: LearnFlash | None) -> None:
     y = rect.bottom - 56
 
-    from .tabnum import blit_cells, format_flash_pair
+    from .tabnum import format_flash_pair, paint_mixed
 
-    def bits(name: str, flash: LearnFlash | None) -> str:
+    def row(name: str, flash: LearnFlash | None, y_row: int) -> None:
         if flash is None:
-            return format_flash_pair(name, None, None, None, None)
-        return format_flash_pair(name, flash.n_syn, flash.sum_abs, flash.before, flash.after)
+            paint_mixed(
+                screen, rect.x + 10, y_row,
+                format_flash_pair(name, None, None, None, None),
+                "[4] [42]",
+                font, _VALUE, _LABEL,
+            )
+            return
+        paint_mixed(
+            screen, rect.x + 10, y_row,
+            format_flash_pair(name, flash.n_syn, flash.sum_abs, flash.before, flash.after),
+            "[4] синапсов {7}  Σ|Δw| {7}  {7}→{7}",
+            font, _VALUE, _LABEL,
+        )
 
-    blit_cells(screen, bits("MB_L", left), rect.x + 10, y, _VALUE)
-    blit_cells(screen, bits("MB_R", right), rect.x + 10, y + 18, _VALUE)
+    row("MB_L", left, y)
+    row("MB_R", right, y + 18)
     screen.blit(
         font.render("один DAN на обе половины. Зелёный — к подходу, красный — к избеганию.", True, _LABEL),
         (rect.x + 10, y + 34),
@@ -413,14 +424,18 @@ def _legend(screen, font, legend, layout: MbLayout, flash: LearnFlash | None) ->
         color = _GREEN if toward else _RED
         from .tabnum import blit_cells, format_flash_row
 
-        blit_cells(screen, format_flash_row(d, layout.mbon_label[post]), legend.x, y, color)
+        from .tabnum import paint_mixed
+
+        paint_mixed(screen, legend.x, y, format_flash_row(d, layout.mbon_label[post]), "{7}  [18]", font, color, color)
         y += 16
         shown += 1
     extra = len(rows) - shown
     if extra > 0 and y <= legend.bottom - 16:
         from .tabnum import blit_cells, signed
 
-        blit_cells(screen, "ещё %s" % signed(extra, 4), legend.x, y, _LABEL)
+        from .tabnum import paint_mixed
+
+        paint_mixed(screen, legend.x, y, "ещё %s" % signed(extra, 4), "ещё {4}", font, _LABEL, _LABEL)
 
 
 def _footer(screen, font, rect, layout: MbLayout, flash: LearnFlash | None) -> None:
@@ -430,21 +445,27 @@ def _footer(screen, font, rect, layout: MbLayout, flash: LearnFlash | None) -> N
         screen.blit(font.render("зелёный — к подходу, красный — к избеганию, толщина = |Δw|", True, _LABEL), (rect.x + 10, y + 18))
         screen.blit(font.render("id и типы FlyWire. KC по долям γ, αβ, α′β′: xyz в файле нет.", True, _LABEL), (rect.x + 10, y + 36))
         return
-    from .tabnum import blit_cells, format_flash_out, format_flash_syn
+    from .tabnum import format_flash_out, format_flash_syn, paint_mixed
 
-    blit_cells(
+    paint_mixed(
         screen,
-        format_flash_syn(flash.n_syn, flash.sum_abs, len(flash.kc_on)),
         rect.x + 10,
         y,
+        format_flash_syn(flash.n_syn, flash.sum_abs, len(flash.kc_on)),
+        "синапсов {7}  Σ|Δw| {7}  KC активны {7}",
+        font,
         _VALUE,
+        _LABEL,
     )
-    blit_cells(
+    paint_mixed(
         screen,
-        format_flash_out(flash.before, flash.after),
         rect.x + 10,
         y + 18,
+        format_flash_out(flash.before, flash.after),
+        "выход MBON {7} → {7}  сдвиг {7}",
+        font,
         _VALUE,
+        _LABEL,
     )
     if flash.strong_pre >= 0:
         root = int(layout.kc_root[flash.strong_pre])
@@ -452,9 +473,12 @@ def _footer(screen, font, rect, layout: MbLayout, flash: LearnFlash | None) -> N
         from .tabnum import phrase, signed
 
         strong = "сильнейший KC %s → %s" % (signed(root), phrase(mbon, 16))
+        paint_mixed(screen, rect.x + 10, y + 36, strong, "сильнейший KC {7} → [16]", font, _VALUE, _LABEL)
     else:
-        strong = "синапс не сдвинулся: KC молчали или вес упёрся в ноль"
-    blit_cells(screen, strong, rect.x + 10, y + 36, _VALUE)
+        screen.blit(
+            font.render("синапс не сдвинулся: KC молчали или вес упёрся в ноль", True, _VALUE),
+            (rect.x + 10, y + 36),
+        )
     screen.blit(
         font.render("зелёный — к подходу, красный — к избеганию. Яркая ~1.5 с.", True, _LABEL),
         (rect.x + 10, y + 54),

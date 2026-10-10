@@ -126,6 +126,139 @@ def blit_cells(screen, text: str, x: int, y: int, color, size: int = 14, rows=No
     return origin + cell * len(text)
 
 
+# Gap between a label and the next slot. Slot x never follows a glyph's advance
+# of a number: a number always occupies width × the width of "0".
+SLOT_GAP = 8
+EYES_STATUS = ("ОБА ВИДЯТ → ИДУ", "ОДИН ГЛАЗ → ДОВОРОТ", "НЕТ → ПОИСК")
+FLY_STATUS = ("билатерально", "секторы")
+SOUND_STATUS = ("звук выкл", "звук вкл", "звук недоступен")
+RAW_STATUS = (
+    "сырой выход: подход − избегание",
+    "сырой выход: подход - избегание",
+    "сырой выход: минус новизна",
+    "сырой выход с борта",
+)
+SKIP_STATUS = ("", "лимит", "бокс в поле", "нет ответа YOLO", "—")
+
+
+def _status_field(ui_font, text: str, samples) -> int:
+    widths = [int(ui_font.size(sample)[0]) for sample in samples]
+    if text:
+        widths.append(int(ui_font.size(text)[0]))
+    return max(widths) if widths else 0
+
+
+def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=None, anchors=None) -> int:
+    """Draw a readout as separate slots. Each slot's x is fixed for fixed slot text.
+
+    ``("ui", text)`` is a label in the interface font. Its width is the width of
+    that exact string, so it stays put.
+    ``("num", text)`` is a monospace field. ``text`` is already right-aligned
+    by ``signed``; the slot is ``len(text)`` cells wide no matter which digits
+    are in it.
+    ``("mono", text)`` is the same cell grid for a fixed-width token that is
+    not a bare number (a duration, a gate).
+    ``("status", text, samples)`` is left-aligned in a field sized by ``samples``,
+    so a shorter phrase does not pull the next slot left.
+    """
+    import pygame
+
+    cell = cell_px(14)
+    cursor = int(x)
+    yy = int(y)
+    for slot in slots:
+        kind = slot[0]
+        if anchors is not None:
+            anchors.append((kind, cursor, yy))
+        if kind == "ui":
+            glyph = ui_font.render(slot[1], True, label_color)
+            screen.blit(glyph, (cursor, yy))
+            cursor += int(glyph.get_width()) + SLOT_GAP
+            continue
+        if kind in ("num", "mono"):
+            text = slot[1]
+            blit_cells(screen, text, cursor, yy, value_color, size=14, rows=rows)
+            cursor += cell * max(len(text), 1) + SLOT_GAP
+            continue
+        if kind == "status":
+            text = slot[1]
+            samples = slot[2] if len(slot) > 2 else ()
+            field = _status_field(ui_font, "", samples)
+            if field <= 0:
+                field = _status_field(ui_font, text, ())
+            glyph = ui_font.render(text, True, value_color)
+            clip = pygame.Surface((max(field, 1), max(glyph.get_height(), 1)), pygame.SRCALPHA)
+            clip.blit(glyph, (0, 0))
+            screen.blit(clip, (cursor, yy))
+            cursor += field + SLOT_GAP
+            continue
+        raise ValueError(kind)
+    return cursor
+
+
+def _pieces(line: str, pattern: str):
+    """Split ``line`` by ``pattern``. ``{N}`` and ``[N]`` consume N characters."""
+    i = 0
+    j = 0
+    while j < len(pattern):
+        if pattern[j] in "{[":
+            close = "}" if pattern[j] == "{" else "]"
+            end = pattern.index(close, j)
+            n = int(pattern[j + 1 : end])
+            kind = "num" if pattern[j] == "{" else "text"
+            yield kind, line[i : i + n]
+            i += n
+            j = end + 1
+            continue
+        k = j
+        while k < len(pattern) and pattern[k] not in "{[":
+            k += 1
+        literal = pattern[j:k]
+        if line[i : i + len(literal)] != literal:
+            raise ValueError(line)
+        i += len(literal)
+        j = k
+        text = literal.strip()
+        if text:
+            yield "ui", text
+    if i != len(line):
+        raise ValueError(line)
+
+
+def paint_mixed(
+    screen,
+    x,
+    y,
+    line: str,
+    pattern: str,
+    ui_font,
+    value_color,
+    label_color,
+    rows=None,
+    anchors=None,
+    status_samples=None,
+) -> int:
+    """Paint one formatted readout. A mismatch falls back to a single mono run."""
+    try:
+        pieces = list(_pieces(line, pattern))
+    except (ValueError, IndexError):
+        if anchors is not None:
+            anchors.append(("fallback", int(x), int(y)))
+        return blit_cells(screen, line, x, y, value_color, size=14, rows=rows)
+    slots = []
+    last = len(pieces) - 1
+    for index, (kind, text) in enumerate(pieces):
+        if kind == "ui":
+            slots.append(("ui", text))
+        elif kind == "num":
+            slots.append(("num", text))
+        elif status_samples is not None and index == last:
+            slots.append(("status", text.rstrip(), status_samples))
+        else:
+            slots.append(("mono", text))
+    return paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=rows, anchors=anchors)
+
+
 def format_eyes_line(r_l, r_r, text: str) -> str:
     return "R_L %s  R_R %s  %s" % (signed(r_l), signed(r_r), phrase(text, EYES_W))
 

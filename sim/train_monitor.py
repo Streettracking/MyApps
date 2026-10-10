@@ -13,7 +13,12 @@ import numpy as np
 
 from .hemifield import DEFAULT_OVERLAP
 from .tabnum import (
+    EYES_STATUS,
+    FLY_STATUS,
     MODE_W,
+    RAW_STATUS,
+    SKIP_STATUS,
+    SOUND_STATUS,
     format_box_tag,
     format_command,
     format_drift,
@@ -32,6 +37,7 @@ from .tabnum import (
     format_record,
     format_session_counts,
     format_span,
+    paint_mixed,
     skips_are_quiet,
 )
 
@@ -381,6 +387,7 @@ class TrainMonitor:
         self.font_ind = _ui_font(18)
         self._bg = None
         self._fixed_rows: list = []
+        self._anchors: list = []
         self.clock = pygame.time.Clock()
         self._apply_layout()
         self.show_stand = False
@@ -551,6 +558,7 @@ class TrainMonitor:
         screen = self.screen
         self._fill_bg(screen)
         self._fixed_rows = []
+        self._anchors = []
         sm = self.font_sm
         screen.blit(self.font.render(view.title, True, LABEL), (16, 14))
         self._link_lamp(screen, view)
@@ -577,10 +585,25 @@ class TrainMonitor:
             screen.blit(sm.render(view.lidar_warning[:42], True, PEACH), (note_x, note_y))
             note_y += 18
         if view.fly_line:
-            self._cells(screen, view.fly_line, note_x, note_y, VALUE)
+            self._mixed(
+                screen,
+                view.fly_line,
+                note_x,
+                note_y,
+                "муха L {7}  R {7}  Δ {7}  z {7}  [14]",
+                VALUE,
+                status_samples=FLY_STATUS,
+            )
             note_y += 20
         if view.range_line:
-            self._cells(screen, view.range_line, note_x, note_y, VALUE)
+            self._mixed(
+                screen,
+                view.range_line,
+                note_x,
+                note_y,
+                "дальн {7} м  вперёд {7} м  сектор {4}→{4}  {12}",
+                VALUE,
+            )
 
         panel = self.panel_rect
         journal_h = 108 if panel.h > 420 else 76
@@ -643,6 +666,21 @@ class TrainMonitor:
         from .tabnum import blit_cells
 
         return blit_cells(screen, text, x, y, color, size=size, rows=self._fixed_rows)
+
+    def _mixed(self, screen, line: str, x: int, y: int, pattern: str, value_color, label_color=None, status_samples=None) -> int:
+        return paint_mixed(
+            screen,
+            x,
+            y,
+            line,
+            pattern,
+            self.font_sm,
+            value_color,
+            LABEL if label_color is None else label_color,
+            rows=self._fixed_rows,
+            anchors=self._anchors,
+            status_samples=status_samples,
+        )
 
     def _sound_label(self) -> str:
         if self.beep_on and self.audio_ok is False:
@@ -818,7 +856,15 @@ class TrainMonitor:
             rect = pygame.Rect(min(x0, x1), min(y0, y1), max(1, abs(x1 - x0)), max(1, abs(y1 - y0)))
             pygame.draw.rect(screen, color, rect, 1)
             zone = getattr(box, "zone", "") or ""
-            self._cells(screen, format_box_tag(zone, float(box.conf)), rect.x + 2, max(inner.y, rect.y - 16), color)
+            self._mixed(
+                screen,
+                format_box_tag(zone, float(box.conf)),
+                rect.x + 2,
+                max(inner.y, rect.y - 16),
+                "[3] {6}",
+                color,
+                label_color=color,
+            )
 
     def _stand_buttons(self, screen) -> None:
         import pygame
@@ -836,7 +882,14 @@ class TrainMonitor:
             text = format_record(view.record_saved, view.record_bytes, view.record_idle)
             lamp = PEACH
             self._button(screen, self.record_rect, "", lamp, hot)
-            self._cells(screen, text, self.record_rect.x + 32, self.record_rect.centery - 8, VALUE)
+            self._mixed(
+                screen,
+                text,
+                self.record_rect.x + 32,
+                self.record_rect.centery - 8,
+                "ЗАПИСЬ {5} {10} U",
+                VALUE,
+            )
         else:
             self._button(screen, self.record_rect, "ЗАПИСЬ КАДРОВ  U", LAMP_OFF, hot)
 
@@ -899,7 +952,24 @@ class TrainMonitor:
             caption = view.lidar_mode or "лидар копится"
             lamp = LAMP_OFF
         self._button(screen, self.lidar_fresh_rect, "", lamp, hot)
-        self._cells(screen, "%s  V" % caption, self.lidar_fresh_rect.x + 32, self.lidar_fresh_rect.centery - 8, VALUE)
+        from .tabnum import SLOT_GAP, cell_px
+
+        cap_x = self.lidar_fresh_rect.x + 32
+        cap_y = self.lidar_fresh_rect.centery - 8
+        if view.lidar_fresh_on:
+            self._mixed(screen, caption, cap_x, cap_y, "свежий лидар {5} с", VALUE)
+        else:
+            screen.blit(self.font_sm.render(caption.strip(), True, VALUE), (cap_x, cap_y))
+        v_x = (
+            cap_x
+            + self.font_sm.size("свежий лидар")[0]
+            + SLOT_GAP
+            + 5 * cell_px(14)
+            + SLOT_GAP
+            + self.font_sm.size("с")[0]
+            + SLOT_GAP
+        )
+        screen.blit(self.font_sm.render("V", True, VALUE), (v_x, cap_y))
 
     def _draw_marks(self, screen, inner, marks) -> None:
         import pygame
@@ -929,9 +999,19 @@ class TrainMonitor:
                 pygame.draw.circle(overlay, (141, 181, 150, alpha), tip, 6)
                 pygame.draw.circle(overlay, (196, 220, 198, alpha), tip, 6, 1)
             drawn.append((tip, alpha, mark))
+        from .tabnum import cell_px, load_font, signed as _signed
+
+        num_font = load_font(14)
+        cell = cell_px(14)
         for i, (tip, _alpha, mark) in enumerate(drawn):
-            tag = self.font_sm.render(f"{mark.percent:.0f}%", True, PEACH)
-            overlay.blit(tag, (tip[0] + 12, tip[1] - 18 + i * 16))
+            text = _signed(round(float(mark.percent)), 4)
+            ox = tip[0] + 12
+            oy = tip[1] - 18 + i * 16
+            for n, ch in enumerate(text):
+                if ch == " ":
+                    continue
+                overlay.blit(num_font.render(ch, True, PEACH), (ox + n * cell, oy))
+            overlay.blit(self.font_sm.render("%", True, PEACH), (ox + 4 * cell, oy))
         screen.blit(overlay, inner.topleft)
 
     def _eye_lamp_color(self, recognized: bool, ready: bool, percent: float, flash: str) -> tuple:
@@ -1002,7 +1082,15 @@ class TrainMonitor:
         )
         screen.blit(self.font_sm.render("Л", True, PEACH), (rx + 62, y + 2))
         if view.eyes_line:
-            self._cells(screen, view.eyes_line, rx + 88, y, VALUE)
+            self._mixed(
+                screen,
+                view.eyes_line,
+                rx + 88,
+                y,
+                "R_L {7}  R_R {7}  [22]",
+                VALUE,
+                status_samples=EYES_STATUS,
+            )
         if view.recog_line:
             screen.blit(self.font_sm.render(view.recog_line, True, INK_DIM), (rx + 88, y + 22))
         word = view.pilot_mode or "РУЧНОЕ"
@@ -1045,7 +1133,15 @@ class TrainMonitor:
         sm = self.font_sm
         rx, col_w = panel.x, panel.w
         y = self._eyes_banner(screen, view, rx, col_w, panel.y)
-        self._cells(screen, format_raw(view.likeness, view.readout_caption), rx, y, INK_DIM)
+        self._mixed(
+            screen,
+            format_raw(view.likeness, view.readout_caption),
+            rx,
+            y,
+            "сырой MBON {7}  [36]",
+            VALUE,
+            status_samples=RAW_STATUS,
+        )
         y += 20
         self._progress_box(screen, view, pygame.Rect(rx, y, col_w, 88))
         y += 96
@@ -1075,20 +1171,63 @@ class TrainMonitor:
             sm,
             "",
         )
-        self._cells(screen, format_drift(view.drift), rx + 8, y + 4, INK_DIM)
+        self._mixed(screen, format_drift(view.drift), rx + 8, y + 4, "дрейф KC→MBON  {7}", VALUE)
         y += 58
         self._dan_timeline(screen, view, pygame.Rect(rx, y, col_w, 72))
         y += 78
         self._kc_row(screen, view, rx, y, col_w)
         y += 84
         if view.teacher_counts:
-            self._cells(screen, view.teacher_counts, rx, y, INK_DIM)
+            self._mixed(
+                screen,
+                view.teacher_counts,
+                rx,
+                y,
+                "учитель: PAM_L {7}  PAM_R {7}  PPL1_L {7}  PPL1_R {7}",
+                VALUE,
+            )
             y += 20
         if view.teacher_skips:
             quiet = skips_are_quiet(view.teacher_skips)
-            self._cells(screen, view.teacher_skips, rx, y, INK_DIM if quiet else AMBER)
+            tone = LABEL if quiet else AMBER
+            self._mixed(
+                screen,
+                view.teacher_skips,
+                rx,
+                y,
+                "ложных узнаваний без наказания: {7}  [36]",
+                tone,
+                label_color=tone,
+                status_samples=SKIP_STATUS,
+            )
             y += 20
         return min(y + 4, panel.bottom - 96)
+
+    def _progress_line(self, screen, line: str, x: int, y: int) -> None:
+        if line.startswith("метки "):
+            screen.blit(self.font_sm.render(line, True, LABEL), (x, y))
+            return
+        if line.startswith("Всего"):
+            self._mixed(screen, line, x, y, "Всего за всё время: PAM {7} / PPL1 {7} (всего {7})", VALUE)
+            return
+        if line.startswith("За этот"):
+            self._mixed(
+                screen,
+                line,
+                x,
+                y,
+                "За этот запуск: PAM {7} / PPL1 {7}  {12}  [15]",
+                VALUE,
+                status_samples=SOUND_STATUS,
+            )
+            return
+        if "знакомство" in line:
+            self._mixed(screen, line, x, y, "[8]{12}  знакомство {7}", VALUE)
+            return
+        if line.startswith("D"):
+            self._mixed(screen, line, x, y, "D−N сессия {6} {4}% {5}  всего {6} {4}% {5}", VALUE)
+            return
+        self._cells(screen, line, x, y, VALUE)
 
     def _progress_box(self, screen, view: MonitorView, rect) -> None:
         import pygame
@@ -1110,9 +1249,9 @@ class TrainMonitor:
             view.total_labeled,
             bool(view.session_labeled or view.total_labeled),
         )
-        self._cells(screen, line1, rect.x + 12, rect.y + 26, VALUE)
-        self._cells(screen, line2, rect.x + 12, rect.y + 46, LABEL)
-        self._cells(screen, line3, rect.x + 12, rect.y + 66, LABEL)
+        self._progress_line(screen, line1, rect.x + 12, rect.y + 26)
+        self._progress_line(screen, line2, rect.x + 12, rect.y + 46)
+        self._progress_line(screen, line3, rect.x + 12, rect.y + 66)
 
     def _dan_timeline(self, screen, view: MonitorView, rect) -> None:
         import pygame
@@ -1155,7 +1294,7 @@ class TrainMonitor:
         import pygame
 
         sm = self.font_sm
-        self._cells(screen, format_kc(view.kc_on, view.kc_n), x, y, INK_DIM)
+        self._mixed(screen, format_kc(view.kc_on, view.kc_n), x, y, "активность KC  {7} из {7}", VALUE)
         bins = view.kc_bins
         if bins is None or len(bins) == 0:
             bins = np.zeros(48)
@@ -1184,7 +1323,14 @@ class TrainMonitor:
 
         self._cells(screen, signed(view.likeness, 7, 2), rx, y, INK, size=26)
         screen.blit(sm.render("похожесть    слой сравнения, не KC→MBON", True, INK_DIM), (rx + cell_px(26) * 8, y + 8))
-        self._cells(screen, format_hebb_proto(view.learned_match, view.n_self, view.n_other), rx, y + 36, INK_DIM)
+        self._mixed(
+            screen,
+            format_hebb_proto(view.learned_match, view.n_self, view.n_other),
+            rx,
+            y + 36,
+            "к прототипу {7}  свой {7}  прочее {7}",
+            VALUE,
+        )
         screen.blit(sm.render(view.operator_label[:86], True, INK_DIM), (rx, y + 52))
         plot_w = (col_w - 8) // 2
         _plot(screen, pygame.Rect(rx, y + 76, plot_w, 120), view.peer_curve, 0.0, 1.0, GREEN, sm, "собака в кадре")
@@ -1204,7 +1350,7 @@ class TrainMonitor:
         _bars(screen, sm, (rx + half + 12, y + 292), view.proto_other, half, "прототип прочего", INK_DIM)
         purity = view.metric_curve[-1].get("purity") if view.metric_curve else None
         if purity is not None:
-            self._cells(screen, format_purity(float(purity)), rx, y + 400, INK_DIM)
+            self._mixed(screen, format_purity(float(purity)), rx, y + 400, "чистота {4} / {2}", VALUE)
         return min(y + 430, panel.bottom - 96)
 
     def _frame(self, screen, rect, image, title, error: str):
@@ -1271,7 +1417,7 @@ class TrainMonitor:
         px = inner.right - pad_w - 6
         py = inner.bottom - pad_h - 6
         screen.blit(pad, (px, py))
-        self._cells(screen, pct, px + 5, py + 2, VALUE)
+        self._mixed(screen, pct, px + 5, py + 2, "перекрытие {4}%", VALUE)
 
     def _zone_tag(self, screen, x_lo: int, x_hi: int, inner, name: str) -> None:
         import pygame
@@ -1325,7 +1471,7 @@ class TrainMonitor:
         x = rect.x + 6
         y = rect.y + 6
         screen.blit(pad, (x, y))
-        self._cells(screen, text, x + 5, y + 2, VALUE)
+        self._mixed(screen, text, x + 5, y + 2, "[3] {7}", VALUE)
 
 
 def _wrap(text: str, width: int) -> list[str]:
