@@ -38,18 +38,27 @@ from .tabnum import (
 WIN_W = 1920
 WIN_H = 1080
 
-# Austere chrome. Colour is reserved for a state: green, red, amber.
-BG = (34, 34, 36)
-PANEL = (42, 42, 44)
-INK = (236, 236, 236)
-INK_DIM = (168, 168, 170)
-LINE = (96, 96, 100)
-BTN = (48, 48, 50)
-BTN_EDGE = (132, 132, 136)
-GREEN = (64, 184, 96)
-RED = (204, 62, 56)
-AMBER = (214, 168, 64)
-LAMP_OFF = (86, 86, 90)
+# Light warm chrome. Peach is the only accent. Green and red stay semantic.
+BG_TOP = (236, 234, 230)  # #ECEAE6
+BG_BOT = (244, 242, 239)  # #F4F2EF
+CARD = (247, 246, 244)  # #F7F6F4
+CARD_ALPHA = 217  # ~0.85
+LINE = (226, 224, 220)  # #E2E0DC
+LABEL = (107, 107, 107)  # #6B6B6B
+VALUE = (63, 63, 63)  # #3F3F3F
+INK = VALUE
+INK_DIM = LABEL
+PEACH = (201, 120, 91)  # #C9785B
+PEACH_SOFT = (227, 164, 135)  # #E3A487
+GREEN = (141, 181, 150)  # #8DB596 узнаю / PAM
+RED = (217, 136, 128)  # #D98880 PPL1
+ESTOP = (184, 40, 36)
+AMBER = PEACH
+RING = (176, 174, 170)
+LAMP_OFF = ("off",)
+PANEL = CARD
+BTN = CARD
+BTN_EDGE = LINE
 
 
 @dataclass
@@ -274,6 +283,28 @@ def eye_tone(ready: bool, recognized: bool, percent: float) -> str:
     return "grey"
 
 
+def _ui_font(size: int):
+    """Light grotesque: Segoe UI Light on Windows, otherwise Inter or DejaVu Sans."""
+    import os
+
+    import pygame
+
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    for path in (
+        os.path.join(windir, "Fonts", "segoeuil.ttf"),
+        os.path.join(windir, "Fonts", "segoeuisl.ttf"),
+        "/usr/share/fonts/truetype/macos/Inter-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ):
+        if os.path.isfile(path):
+            return pygame.font.Font(path, int(size))
+    return pygame.font.SysFont("dejavusans", int(size))
+
+
+def _mix(a, b, t: float):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
 def _surf_from_rgb(rgb: np.ndarray):
     import pygame
 
@@ -284,8 +315,8 @@ def _surf_from_rgb(rgb: np.ndarray):
 def _plot(screen, rect, series, y0, y1, color, font, label):
     import pygame
 
-    pygame.draw.rect(screen, PANEL, rect)
-    pygame.draw.rect(screen, LINE, rect, 1)
+    pygame.draw.rect(screen, (255, 255, 255), rect, border_radius=12)
+    pygame.draw.rect(screen, LINE, rect, 1, border_radius=12)
     if y1 <= y0:
         y1 = y0 + 1.0
     pts = []
@@ -302,14 +333,14 @@ def _plot(screen, rect, series, y0, y1, color, font, label):
         pygame.draw.lines(screen, color, False, pts, 2)
     elif pts:
         pygame.draw.circle(screen, color, pts[0], 3)
-    screen.blit(font.render(label, True, color), (rect.x + 8, rect.y + 4))
+    screen.blit(font.render(label, True, PEACH), (rect.x + 10, rect.y + 6))
 
 
 def _bars(screen, font, origin, values, width, title, color):
     import pygame
 
     x, y = origin
-    screen.blit(font.render(title, True, (200, 204, 214)), (x, y))
+    screen.blit(font.render(title, True, PEACH), (x, y))
     y += 18
     labels = ("body", "floor", "ratio", "mot", "near", "wide", "close")
     if values is None:
@@ -325,10 +356,10 @@ def _bars(screen, font, origin, values, width, title, color):
     for i, value in enumerate(vals[:n]):
         h = int(58 * max(float(value) / vmax, 0.0))
         rx = x + i * (cell + gap)
-        pygame.draw.rect(screen, (32, 34, 42), pygame.Rect(rx, y, cell, 58))
-        pygame.draw.rect(screen, color, pygame.Rect(rx, base - h, cell, max(h, 1)))
+        pygame.draw.rect(screen, (236, 234, 230), pygame.Rect(rx, y, cell, 58), border_radius=3)
+        pygame.draw.rect(screen, color, pygame.Rect(rx, base - h, cell, max(h, 1)), border_radius=3)
         lab = labels[i] if i < len(labels) else str(i)
-        screen.blit(font.render(lab, True, (140, 144, 156)), (rx, base + 2))
+        screen.blit(font.render(lab, True, LABEL), (rx, base + 2))
     return base + 18
 
 
@@ -344,10 +375,11 @@ class TrainMonitor:
         self.fullscreen = bool(fullscreen)
         self.screen = None
         self._open_display()
-        self.font = pygame.font.SysFont("dejavusans", 16)
-        self.font_sm = pygame.font.SysFont("dejavusans", 15)
-        self.font_big = pygame.font.SysFont("dejavusans", 28)
-        self.font_ind = pygame.font.SysFont("dejavusans", 22)
+        self.font = _ui_font(15)
+        self.font_sm = _ui_font(14)
+        self.font_big = _ui_font(26)
+        self.font_ind = _ui_font(18)
+        self._bg = None
         self._fixed_rows: list = []
         self.clock = pygame.time.Clock()
         self._apply_layout()
@@ -517,10 +549,10 @@ class TrainMonitor:
         import pygame
 
         screen = self.screen
-        screen.fill(BG)
+        self._fill_bg(screen)
         self._fixed_rows = []
         sm = self.font_sm
-        screen.blit(self.font.render(view.title, True, INK), (16, 12))
+        screen.blit(self.font.render(view.title, True, LABEL), (16, 14))
         self._link_lamp(screen, view)
         self._teacher_button(screen, view)
         self._record_button(screen, view)
@@ -542,41 +574,45 @@ class TrainMonitor:
         note_x = self.lidar_fresh_rect.x
         note_y = (self.recovery_rect.bottom + 8) if view.onboard else (self.lidar_fresh_rect.bottom + 10)
         if view.lidar_warning:
-            screen.blit(sm.render(view.lidar_warning[:42], True, AMBER), (note_x, note_y))
+            screen.blit(sm.render(view.lidar_warning[:42], True, PEACH), (note_x, note_y))
             note_y += 18
         if view.fly_line:
-            self._cells(screen, view.fly_line, note_x, note_y, INK_DIM)
+            self._cells(screen, view.fly_line, note_x, note_y, VALUE)
             note_y += 20
         if view.range_line:
-            self._cells(screen, view.range_line, note_x, note_y, INK_DIM)
+            self._cells(screen, view.range_line, note_x, note_y, VALUE)
 
         panel = self.panel_rect
+        journal_h = 108 if panel.h > 420 else 76
+        body = pygame.Rect(panel.x, panel.y, panel.w, max(140, panel.h - journal_h - 12))
+        journal = pygame.Rect(panel.x, body.bottom + 12, panel.w, max(48, panel.bottom - (body.bottom + 12)))
+        self._card(screen, body)
+        self._card(screen, journal)
         log_n = 5
         if view.learner == "mb" and self.flash_open:
-            self._draw_mb_head(screen, view, panel.x)
+            self._draw_mb_head(screen, view, body.x + 8)
             from .learn_flash import draw_learn_panel
 
             draw_learn_panel(
                 screen,
                 self.font,
                 sm,
-                pygame.Rect(panel.x, panel.y + 72, panel.w, max(120, panel.h - 160)),
+                pygame.Rect(body.x + 8, body.y + 78, body.w - 16, max(80, body.h - 96)),
                 view.mb_layout,
                 view.learn_flash,
                 view.t,
                 view.learn_flash_r,
             )
-            log_y = panel.bottom - 78
             log_n = 3
         elif view.learner == "mb":
-            log_y = self._draw_mb(screen, view, panel)
+            self._draw_mb(screen, view, pygame.Rect(body.x + 12, body.y + 12, body.w - 24, body.h - 20))
         else:
-            log_y = self._draw_hebb(screen, view, panel)
-        screen.blit(sm.render("журнал", True, INK_DIM), (panel.x, log_y))
-        y = log_y + 18
-        width_chars = max(24, panel.w // 8)
+            self._draw_hebb(screen, view, pygame.Rect(body.x + 12, body.y + 12, body.w - 24, body.h - 20))
+        screen.blit(sm.render("журнал", True, PEACH), (journal.x + 16, journal.y + 10))
+        y = journal.y + 30
+        width_chars = max(24, journal.w // 8)
         for line in view.log_lines[-log_n:]:
-            screen.blit(sm.render(line[:width_chars], True, INK_DIM), (panel.x, y))
+            screen.blit(sm.render(line[:width_chars], True, LABEL), (journal.x + 16, y))
             y += 16
 
         self._mode_buttons(screen, view)
@@ -584,13 +620,13 @@ class TrainMonitor:
         if view.onboard:
             self._stand_buttons(screen)
         footer = int(self.layout["footer_y"])
-        pygame.draw.line(screen, LINE, (0, footer), (WIN_W, footer), 1)
+        pygame.draw.line(screen, LINE, (24, footer), (WIN_W - 24, footer), 1)
         focus = "окно в фокусе" if view.focused else "нажмите на окно — клавиши не читаются"
         from .tabnum import phrase as tab_phrase
 
-        self._cells(screen, tab_phrase(view.udp_status, 78) + "  " + tab_phrase(focus, 42), 16, footer + 6, INK_DIM)
-        self._cells(screen, format_command(view.last_command or "—"), 16, footer + 26, INK_DIM)
-        screen.blit(sm.render(view.keys_hint, True, INK_DIM), (16, footer + 40))
+        self._cells(screen, tab_phrase(view.udp_status, 78) + "  " + tab_phrase(focus, 42), 16, footer + 6, LABEL)
+        self._cells(screen, format_command(view.last_command or "—"), 16, footer + 26, VALUE)
+        screen.blit(sm.render(view.keys_hint, True, LABEL), (16, footer + 40))
 
         if view.learner == "mb":
             self._treat_button(screen, view, pygame.mouse.get_pos())
@@ -599,7 +635,7 @@ class TrainMonitor:
             self._prev_rec = view.recognized
         else:
             self._prev_rec = False
-        self._button(screen, self.estop_rect, "E-STOP", RED, self.estop_rect.collidepoint(pygame.mouse.get_pos()))
+        self._button(screen, self.estop_rect, "E-STOP", ESTOP, self.estop_rect.collidepoint(pygame.mouse.get_pos()), label_color=ESTOP)
         pygame.display.flip()
         self.clock.tick(30)
 
@@ -615,43 +651,103 @@ class TrainMonitor:
             return "звук вкл"
         return "звук выкл"
 
+    def _fill_bg(self, screen) -> None:
+        import pygame
+
+        size = screen.get_size()
+        if self._bg is None or self._bg.get_size() != size:
+            width, height = size
+            bg = pygame.Surface((width, height))
+            for row in range(height):
+                tone = _mix(BG_TOP, BG_BOT, row / max(height - 1, 1))
+                pygame.draw.line(bg, tone, (0, row), (width, row))
+            self._bg = bg
+        screen.blit(self._bg, (0, 0))
+
+    def _card(self, screen, rect, radius: int = 16) -> None:
+        import pygame
+
+        radius = min(int(radius), rect.w // 2, rect.h // 2)
+        shadow = pygame.Surface((rect.w + 28, rect.h + 32), pygame.SRCALPHA)
+        for spread, alpha in ((12, 16), (7, 24), (3, 32)):
+            pygame.draw.rect(
+                shadow,
+                (140, 120, 100, alpha),
+                (14 - spread, 16 - spread, rect.w + spread * 2, rect.h + spread * 2),
+                border_radius=radius + 4,
+            )
+        screen.blit(shadow, (rect.x - 14, rect.y - 10))
+        face = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        pygame.draw.rect(face, (*CARD, CARD_ALPHA), face.get_rect(), border_radius=radius)
+        pygame.draw.rect(face, (*LINE, 255), face.get_rect(), width=1, border_radius=radius)
+        screen.blit(face, rect.topleft)
+
+    def _inset(self, screen, rect, radius: int = 12) -> None:
+        """White nested card. No shadow, so it stays flat inside an outer card."""
+        import pygame
+
+        if rect.w < 2 or rect.h < 2:
+            return
+        radius = max(0, min(int(radius), rect.w // 2, rect.h // 2))
+        pygame.draw.rect(screen, (255, 255, 255), rect, border_radius=radius)
+        pygame.draw.rect(screen, LINE, rect, 1, border_radius=radius)
+
     def _lamp(self, screen, center, color, radius: int = 6) -> None:
         import pygame
 
         x, y = int(center[0]), int(center[1])
-        pygame.draw.circle(screen, (22, 22, 24), (x, y), radius + 2)
-        pygame.draw.circle(screen, color, (x, y), radius)
+        if color == LAMP_OFF or color is None:
+            pygame.draw.circle(screen, RING, (x, y), radius, 1)
+            return
+        if color == PEACH:
+            top, bottom = PEACH_SOFT, PEACH
+        elif color == GREEN:
+            top, bottom = (196, 220, 198), GREEN
+        elif color == RED:
+            top, bottom = (236, 196, 190), RED
+        elif color == ESTOP:
+            top, bottom = (214, 92, 84), ESTOP
+        else:
+            top, bottom = _mix((255, 255, 255), color, 0.35), color
+        diameter = radius * 2
+        disc = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+        for row in range(diameter):
+            pygame.draw.line(disc, (*_mix(top, bottom, row / max(diameter - 1, 1)), 255), (0, row), (diameter, row))
+        mask = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+        pygame.draw.circle(mask, (255, 255, 255, 255), (radius, radius), radius)
+        disc.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        screen.blit(disc, (x - radius, y - radius))
 
-    def _button(self, screen, rect, text: str, lamp, hot: bool) -> None:
+    def _button(self, screen, rect, text: str, lamp, hot: bool, label_color=None) -> None:
         import pygame
 
-        edge = INK if hot else BTN_EDGE
-        pygame.draw.rect(screen, BTN, rect, border_radius=4)
-        pygame.draw.rect(screen, edge, rect, 1, border_radius=4)
-        x = rect.x + 8
+        self._card(screen, rect, radius=min(16, rect.h // 2))
+        if hot:
+            pygame.draw.rect(screen, PEACH, rect, 1, border_radius=min(16, rect.h // 2))
+        x = rect.x + 12
         if lamp is not None:
-            self._lamp(screen, (rect.x + 16, rect.centery), lamp, 6)
-            x = rect.x + 28
-        label = self.font_sm.render(text, True, INK)
-        if label.get_width() > rect.w - (x - rect.x) - 8:
-            label = self.font_sm.render(text, True, INK)
+            self._lamp(screen, (rect.x + 18, rect.centery), lamp, 6)
+            x = rect.x + 32
+        if not text:
+            return
+        label = self.font_sm.render(text, True, label_color or VALUE)
         screen.blit(label, (x, rect.centery - label.get_height() // 2))
 
     def _link_color(self, view: MonitorView):
         text = view.udp_status or ""
         low = text.lower()
         if "нет связи" in text or "error" in low:
-            return AMBER
+            return RED
         if " ok" in low or low.endswith("ok"):
-            return GREEN
+            return PEACH
         if view.onboard:
-            return AMBER
+            return RED
         return LAMP_OFF
 
     def _link_lamp(self, screen, view: MonitorView) -> None:
         color = self._link_color(view)
         self._lamp(screen, (400, 22), color, 6)
-        screen.blit(self.font_sm.render("борт", True, INK), (414, 12))
+        screen.blit(self.font_sm.render("борт", True, PEACH), (414, 12))
 
     def _mode_buttons(self, screen, view: MonitorView) -> None:
         import pygame
@@ -664,21 +760,21 @@ class TrainMonitor:
             screen,
             self.learn_rect,
             "СТОП ОБУЧЕНИЯ P" if learn_on else "СТАРТ ОБУЧЕНИЯ P",
-            GREEN if learn_on else LAMP_OFF,
+            PEACH if learn_on else LAMP_OFF,
             self.learn_rect.collidepoint(mouse),
         )
         self._button(
             screen,
             self.auto_rect,
             "СТОП АВТО A" if auto_on else "СТАРТ АВТО A",
-            GREEN if auto_on else LAMP_OFF,
+            PEACH if auto_on else LAMP_OFF,
             self.auto_rect.collidepoint(mouse),
         )
         self._button(
             screen,
             self.take_rect,
             "ПЕРЕХВАТ M",
-            AMBER if grabbed else LAMP_OFF,
+            PEACH if grabbed else LAMP_OFF,
             self.take_rect.collidepoint(mouse),
         )
         if view.learner == "mb":
@@ -698,11 +794,11 @@ class TrainMonitor:
 
         state = view.yolo_state or "выкл (нет обучения)"
         if state == "учит":
-            lamp, label = GREEN, "учит  Y"
+            lamp, label = PEACH, "учит  Y"
         elif state == "смотрит":
-            lamp, label = AMBER, "смотрит  Y"
+            lamp, label = PEACH, "смотрит  Y"
         elif state == "учитель не запущен":
-            lamp, label = AMBER, "учитель не запущен"
+            lamp, label = PEACH, "учитель не запущен"
         else:
             lamp, label = LAMP_OFF, "выкл (нет обучения)"
         self._button(screen, self.teacher_rect, label, lamp, self.teacher_rect.collidepoint(pygame.mouse.get_pos()))
@@ -713,14 +809,14 @@ class TrainMonitor:
 
         if not boxes:
             return
-        color = AMBER
+        color = PEACH
         for box in boxes:
             x0 = inner.x + int(round(float(box.x0) * inner.w))
             x1 = inner.x + int(round(float(box.x1) * inner.w))
             y0 = inner.y + int(round(float(box.y0) * inner.h))
             y1 = inner.y + int(round(float(box.y1) * inner.h))
             rect = pygame.Rect(min(x0, x1), min(y0, y1), max(1, abs(x1 - x0)), max(1, abs(y1 - y0)))
-            pygame.draw.rect(screen, color, rect, 2)
+            pygame.draw.rect(screen, color, rect, 1)
             zone = getattr(box, "zone", "") or ""
             self._cells(screen, format_box_tag(zone, float(box.conf)), rect.x + 2, max(inner.y, rect.y - 16), color)
 
@@ -738,9 +834,9 @@ class TrainMonitor:
         hot = self.record_rect.collidepoint(pygame.mouse.get_pos())
         if view.record_on:
             text = format_record(view.record_saved, view.record_bytes, view.record_idle)
-            lamp = AMBER
+            lamp = PEACH
             self._button(screen, self.record_rect, "", lamp, hot)
-            self._cells(screen, text, self.record_rect.x + 28, self.record_rect.centery - 9, INK)
+            self._cells(screen, text, self.record_rect.x + 32, self.record_rect.centery - 8, VALUE)
         else:
             self._button(screen, self.record_rect, "ЗАПИСЬ КАДРОВ  U", LAMP_OFF, hot)
 
@@ -798,12 +894,12 @@ class TrainMonitor:
         hot = self.lidar_fresh_rect.collidepoint(pygame.mouse.get_pos())
         if view.lidar_fresh_on:
             caption = view.lidar_mode or "свежий лидар"
-            lamp = GREEN
+            lamp = PEACH
         else:
             caption = view.lidar_mode or "лидар копится"
-            lamp = AMBER
+            lamp = LAMP_OFF
         self._button(screen, self.lidar_fresh_rect, "", lamp, hot)
-        self._cells(screen, "%s  V" % caption, self.lidar_fresh_rect.x + 28, self.lidar_fresh_rect.centery - 9, INK)
+        self._cells(screen, "%s  V" % caption, self.lidar_fresh_rect.x + 32, self.lidar_fresh_rect.centery - 8, VALUE)
 
     def _draw_marks(self, screen, inner, marks) -> None:
         import pygame
@@ -826,15 +922,15 @@ class TrainMonitor:
             if mark.kind == "cone":
                 left = pt(mark.nx_l, mark.ny_l)
                 right = pt(mark.nx_r, mark.ny_r)
-                pygame.draw.polygon(overlay, (80, 210, 120, alpha // 3), (origin, left, right))
-                pygame.draw.line(overlay, (180, 255, 190, alpha), origin, tip, 2)
+                pygame.draw.polygon(overlay, (141, 181, 150, max(alpha // 3, 1)), (origin, left, right))
+                pygame.draw.line(overlay, (141, 181, 150, alpha), origin, tip, 1)
             else:
-                pygame.draw.line(overlay, (180, 255, 190, alpha), origin, tip, 2)
-                pygame.draw.circle(overlay, (70, 200, 110, alpha), tip, 7)
-                pygame.draw.circle(overlay, (230, 255, 230, alpha), tip, 7, 2)
+                pygame.draw.line(overlay, (141, 181, 150, alpha), origin, tip, 1)
+                pygame.draw.circle(overlay, (141, 181, 150, alpha), tip, 6)
+                pygame.draw.circle(overlay, (196, 220, 198, alpha), tip, 6, 1)
             drawn.append((tip, alpha, mark))
         for i, (tip, _alpha, mark) in enumerate(drawn):
-            tag = self.font_sm.render(f"{mark.percent:.0f}%", True, (230, 255, 220))
+            tag = self.font_sm.render(f"{mark.percent:.0f}%", True, PEACH)
             overlay.blit(tag, (tip[0] + 12, tip[1] - 18 + i * 16))
         screen.blit(overlay, inner.topleft)
 
@@ -846,7 +942,7 @@ class TrainMonitor:
         if recognized:
             return GREEN
         if ready and float(percent) > 0.0:
-            return AMBER
+            return PEACH
         return LAMP_OFF
 
     def _eye_plaques(self, screen, inner, view: MonitorView) -> None:
@@ -856,7 +952,7 @@ class TrainMonitor:
         height = 36
         mid = inner.x + inner.w // 2
         veil = pygame.Surface((inner.w, height), pygame.SRCALPHA)
-        veil.fill((28, 28, 30, 170))
+        veil.fill((*CARD, 210))
         screen.blit(veil, (inner.x, inner.y))
         self._eye_plaque(
             screen,
@@ -886,8 +982,8 @@ class TrainMonitor:
             screen,
             format_plaque(name, word),
             rect.x + 34,
-            rect.centery - 9,
-            INK,
+            rect.centery - 8,
+            VALUE,
         )
 
     def _eyes_banner(self, screen, view: MonitorView, rx: int, col_w: int, y: int) -> int:
@@ -897,27 +993,25 @@ class TrainMonitor:
             self._eye_lamp_color(view.eye_r_recognized, view.eye_r_ready, view.eye_r_confidence, view.teacher_flash_r),
             5,
         )
-        screen.blit(self.font_sm.render("П", True, INK), (rx + 20, y + 2))
+        screen.blit(self.font_sm.render("П", True, PEACH), (rx + 20, y + 2))
         self._lamp(
             screen,
             (rx + 52, y + 12),
             self._eye_lamp_color(view.eye_l_recognized, view.eye_l_ready, view.eye_l_confidence, view.teacher_flash_l),
             5,
         )
-        screen.blit(self.font_sm.render("Л", True, INK), (rx + 62, y + 2))
+        screen.blit(self.font_sm.render("Л", True, PEACH), (rx + 62, y + 2))
         if view.eyes_line:
-            self._cells(screen, view.eyes_line, rx + 88, y, INK)
+            self._cells(screen, view.eyes_line, rx + 88, y, VALUE)
         if view.recog_line:
             screen.blit(self.font_sm.render(view.recog_line, True, INK_DIM), (rx + 88, y + 22))
         word = view.pilot_mode or "РУЧНОЕ"
-        if word == "АВТОНОМИЯ":
-            tone = GREEN
-        elif "ПЕРЕХВАТ" in word:
-            tone = AMBER
+        if word == "АВТОНОМИЯ" or "ПЕРЕХВАТ" in word:
+            tone = PEACH
         elif word == "СТОП":
-            tone = RED
+            tone = ESTOP
         else:
-            tone = INK
+            tone = VALUE
         mode = format_pilot_mode(word)
         rest = format_pilot_rest(view.pilot_who, view.phase_ru, view.last_seen_side)
         self._cells(screen, mode, rx, y + 44, tone)
@@ -925,7 +1019,7 @@ class TrainMonitor:
 
         self._cells(screen, rest, rx + cell_px(14) * MODE_W, y + 44, INK_DIM)
         if view.pilot_hint:
-            screen.blit(self.font_sm.render(view.pilot_hint, True, AMBER), (rx, y + 68))
+            screen.blit(self.font_sm.render(view.pilot_hint, True, PEACH), (rx, y + 68))
             return y + 88
         return y + 70
 
@@ -999,9 +1093,8 @@ class TrainMonitor:
     def _progress_box(self, screen, view: MonitorView, rect) -> None:
         import pygame
 
-        pygame.draw.rect(screen, PANEL, rect)
-        pygame.draw.rect(screen, LINE, rect, 1)
-        screen.blit(self.font_sm.render("насколько обучен", True, INK_DIM), (rect.x + 8, rect.y + 4))
+        self._inset(screen, rect)
+        screen.blit(self.font_sm.render("насколько обучен", True, PEACH), (rect.x + 12, rect.y + 8))
         if view.dan_mode == "familiarity":
             line1 = format_familiar("сессия", view.session_time, view.session_novelty)
             line2 = format_familiar("всего", view.total_time, view.total_novelty)
@@ -1017,18 +1110,17 @@ class TrainMonitor:
             view.total_labeled,
             bool(view.session_labeled or view.total_labeled),
         )
-        self._cells(screen, line1, rect.x + 8, rect.y + 22, INK)
-        self._cells(screen, line2, rect.x + 8, rect.y + 42, INK_DIM)
-        self._cells(screen, line3, rect.x + 8, rect.y + 62, INK_DIM)
+        self._cells(screen, line1, rect.x + 12, rect.y + 26, VALUE)
+        self._cells(screen, line2, rect.x + 12, rect.y + 46, LABEL)
+        self._cells(screen, line3, rect.x + 12, rect.y + 66, LABEL)
 
     def _dan_timeline(self, screen, view: MonitorView, rect) -> None:
         import pygame
 
-        pygame.draw.rect(screen, PANEL, rect)
-        pygame.draw.rect(screen, LINE, rect, 1)
+        self._inset(screen, rect)
         sm = self.font_sm
         title = "шкала DAN    T = лакомство PAM    X = наказание PPL1"
-        screen.blit(sm.render(title, True, INK_DIM), (rect.x + 8, rect.y + 4))
+        screen.blit(sm.render(title, True, PEACH), (rect.x + 12, rect.y + 6))
         if view.t <= 30.0:
             t0 = 0.0
             t1 = max(view.t, 1.0)
@@ -1079,8 +1171,8 @@ class TrainMonitor:
         for i, value in enumerate(vals):
             h = int(54 * max(float(value) / vmax, 0.0))
             rx = x + i * (cell + gap)
-            pygame.draw.rect(screen, (28, 28, 30), pygame.Rect(rx, top, cell, 58))
-            pygame.draw.rect(screen, INK_DIM, pygame.Rect(rx, base - h, cell, max(h, 1)))
+            pygame.draw.rect(screen, BG_TOP, pygame.Rect(rx, top, max(1, cell), 58))
+            pygame.draw.rect(screen, PEACH, pygame.Rect(rx, base - h, max(1, cell), max(h, 1)))
 
     def _draw_hebb(self, screen, view: MonitorView, panel) -> int:
         import pygame
@@ -1118,13 +1210,12 @@ class TrainMonitor:
     def _frame(self, screen, rect, image, title, error: str):
         import pygame
 
-        pygame.draw.rect(screen, PANEL, rect)
-        pygame.draw.rect(screen, LINE, rect, 1)
-        screen.blit(self.font_sm.render(title, True, INK_DIM), (rect.x + 8, rect.y + 4))
+        self._card(screen, rect)
+        screen.blit(self.font_sm.render(title, True, PEACH), (rect.x + 16, rect.y + 12))
         inner = None
         if image is not None and getattr(image, "size", 0):
             surf = _surf_from_rgb(image)
-            avail = pygame.Rect(rect.x + 6, rect.y + 24, max(1, rect.w - 12), max(1, rect.h - 30))
+            avail = pygame.Rect(rect.x + 10, rect.y + 36, max(1, rect.w - 20), max(1, rect.h - 48))
             iw, ih = surf.get_size()
             scale = min(avail.w / float(max(iw, 1)), avail.h / float(max(ih, 1)))
             tw = max(1, int(round(iw * scale)))
@@ -1138,7 +1229,7 @@ class TrainMonitor:
             scaled = pygame.transform.smoothscale(surf, (inner.w, inner.h))
             screen.blit(scaled, inner.topleft)
         if error:
-            y = rect.y + 28
+            y = rect.y + 40
             for chunk in _wrap(error, 64):
                 screen.blit(self.font_sm.render(chunk, True, RED), (rect.x + 10, y))
                 y += 16
@@ -1148,7 +1239,7 @@ class TrainMonitor:
         """Binocular zone and one «УЗНАЮ» per eye. The camera array is not written.
 
         Image left is the robot's right eye (П). Image right is the left eye (Л).
-        The shared band is cyan, with a boundary on each side.
+        The shared band has a thin peach boundary on each side.
         """
         import pygame
 
@@ -1158,11 +1249,11 @@ class TrainMonitor:
         x0 = inner.x + int(round(lo * inner.w))
         x1 = inner.x + int(round(hi * inner.w))
         if x1 > x0 + 1:
-            pygame.draw.line(screen, INK, (x0, inner.y + 1), (x0, inner.bottom - 1), 1)
-            pygame.draw.line(screen, INK, (x1, inner.y + 1), (x1, inner.bottom - 1), 1)
+            pygame.draw.line(screen, PEACH, (x0, inner.y + 1), (x0, inner.bottom - 1), 1)
+            pygame.draw.line(screen, PEACH, (x1, inner.y + 1), (x1, inner.bottom - 1), 1)
         else:
             mid = inner.x + inner.w // 2
-            pygame.draw.line(screen, INK, (mid, inner.y + 1), (mid, inner.bottom - 1), 1)
+            pygame.draw.line(screen, PEACH, (mid, inner.y + 1), (mid, inner.bottom - 1), 1)
             x0 = mid
             x1 = mid
         self._zone_tag(screen, inner.x, x0, inner, "П")
@@ -1176,20 +1267,20 @@ class TrainMonitor:
         pad_w = cell * len(pct) + 10
         pad_h = 22
         pad = pygame.Surface((pad_w, pad_h), pygame.SRCALPHA)
-        pad.fill((28, 28, 30, 180))
+        pad.fill((*CARD, 230))
         px = inner.right - pad_w - 6
         py = inner.bottom - pad_h - 6
         screen.blit(pad, (px, py))
-        self._cells(screen, pct, px + 5, py + 2, INK)
+        self._cells(screen, pct, px + 5, py + 2, VALUE)
 
     def _zone_tag(self, screen, x_lo: int, x_hi: int, inner, name: str) -> None:
         import pygame
 
         if x_hi - x_lo < 16:
             return
-        label = self.font_sm.render(name, True, INK)
+        label = self.font_sm.render(name, True, PEACH)
         pad = pygame.Surface((label.get_width() + 10, label.get_height() + 4), pygame.SRCALPHA)
-        pad.fill((10, 12, 16, 176))
+        pad.fill((*CARD, 220))
         x = x_lo + max(4, (x_hi - x_lo - pad.get_width()) // 2)
         y = inner.bottom - pad.get_height() - 28
         screen.blit(pad, (x, y))
@@ -1211,7 +1302,7 @@ class TrainMonitor:
             and view.hemi_l is not None
             and view.hemi_r is not None
         )
-        pygame.draw.line(screen, INK, (mid, inner.y + 1), (mid, inner.bottom - 1), 1)
+        pygame.draw.line(screen, PEACH, (mid, inner.y + 1), (mid, inner.bottom - 1), 1)
         self._half_tag(screen, right, "Л", view.hemi_l if show else None)
         self._half_tag(screen, left, "П", view.hemi_r if show else None)
 
@@ -1230,11 +1321,11 @@ class TrainMonitor:
         text = format_half(name, value)
         cell = cell_px(14)
         pad = pygame.Surface((cell * len(text) + 10, 22), pygame.SRCALPHA)
-        pad.fill((10, 12, 16, 176))
+        pad.fill((*CARD, 220))
         x = rect.x + 6
         y = rect.y + 6
         screen.blit(pad, (x, y))
-        self._cells(screen, text, x + 5, y + 2, INK)
+        self._cells(screen, text, x + 5, y + 2, VALUE)
 
 
 def _wrap(text: str, width: int) -> list[str]:

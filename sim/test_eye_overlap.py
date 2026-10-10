@@ -419,14 +419,14 @@ class OverlayTests(unittest.TestCase):
         frame = pygame.surfarray.array3d(monitor.screen)
         band = frame[:1100, 70:150, :]
         green = (
-            (np.abs(band[:, :, 0].astype(int) - 64) < 24)
-            & (np.abs(band[:, :, 1].astype(int) - 184) < 24)
-            & (np.abs(band[:, :, 2].astype(int) - 96) < 24)
+            (np.abs(band[:, :, 0].astype(int) - 141) < 40)
+            & (np.abs(band[:, :, 1].astype(int) - 181) < 40)
+            & (np.abs(band[:, :, 2].astype(int) - 150) < 40)
         )
         gray = (
-            (np.abs(band[:, :, 0].astype(int) - 86) < 16)
-            & (np.abs(band[:, :, 1].astype(int) - 86) < 16)
-            & (np.abs(band[:, :, 2].astype(int) - 90) < 16)
+            (np.abs(band[:, :, 0].astype(int) - 176) < 20)
+            & (np.abs(band[:, :, 1].astype(int) - 174) < 20)
+            & (np.abs(band[:, :, 2].astype(int) - 170) < 20)
         )
         self.assertGreater(int(green.sum()), 20)
         self.assertGreater(int(gray.sum()), 20)

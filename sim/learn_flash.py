@@ -17,6 +17,16 @@ from .mb_runtime import ACTIONS, MBForward, MushroomBodyRuntime
 FADE_S = 1.6
 _REST_ALPHA = 0.20
 
+# Same light chrome as the trainer. Semantic green and red stay pastel.
+_PAPER = (255, 255, 255)
+_LINE = (226, 224, 220)
+_LABEL = (107, 107, 107)
+_VALUE = (63, 63, 63)
+_PEACH = (201, 120, 91)
+_GREEN = (141, 181, 150)
+_RED = (217, 136, 128)
+_RING = (176, 174, 170)
+
 _LOBES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("γ", ("KCg-d", "KCg-s1", "KCg-s2", "KCg-s3", "KCg-m")),
     ("αβ", ("KCab-p", "KCab")),
@@ -220,10 +230,10 @@ def _footer_pair(screen, font, rect, left: LearnFlash | None, right: LearnFlash 
             return format_flash_pair(name, None, None, None, None)
         return format_flash_pair(name, flash.n_syn, flash.sum_abs, flash.before, flash.after)
 
-    blit_cells(screen, bits("MB_L", left), rect.x + 10, y, (220, 226, 216))
-    blit_cells(screen, bits("MB_R", right), rect.x + 10, y + 18, (220, 226, 216))
+    blit_cells(screen, bits("MB_L", left), rect.x + 10, y, _VALUE)
+    blit_cells(screen, bits("MB_R", right), rect.x + 10, y + 18, _VALUE)
     screen.blit(
-        font.render("один DAN на обе половины. Зелёный — к подходу, красный — к избеганию.", True, (150, 160, 156)),
+        font.render("один DAN на обе половины. Зелёный — к подходу, красный — к избеганию.", True, _LABEL),
         (rect.x + 10, y + 34),
     )
 
@@ -265,12 +275,13 @@ def draw_learn_panel(
     """
     import pygame
 
-    pygame.draw.rect(screen, (12, 16, 20), rect)
-    pygame.draw.rect(screen, (70, 110, 90), rect, 1)
+    radius = min(12, rect.w // 2, rect.h // 2)
+    pygame.draw.rect(screen, _PAPER, rect, border_radius=radius)
+    pygame.draw.rect(screen, _LINE, rect, 1, border_radius=radius)
     title = "вспышка обучения    две половины    G скрыть" if flash_r is not None else "вспышка обучения    G скрыть"
-    screen.blit(font_sm.render(title, True, (210, 230, 214)), (rect.x + 10, rect.y + 6))
+    screen.blit(font_sm.render(title, True, _PEACH), (rect.x + 12, rect.y + 8))
     if layout is None:
-        screen.blit(font_sm.render("схема появится вместе с мозгом", True, (180, 186, 198)), (rect.x + 10, rect.y + 36))
+        screen.blit(font_sm.render("схема появится вместе с мозгом", True, _LABEL), (rect.x + 12, rect.y + 36))
         return
 
     age = None if flash is None else float(now) - float(flash.t)
@@ -291,8 +302,8 @@ def draw_learn_panel(
     age_r = float(now) - float(flash_r.t)
     alpha_r = flash_alpha(age_r)
     _graph(screen, font_sm, bot, layout, flash_r, alpha_r)
-    screen.blit(font_sm.render("MB_L", True, (186, 214, 196)), (top.x + 6, top.bottom - 16))
-    screen.blit(font_sm.render("MB_R", True, (186, 214, 196)), (bot.x + 6, bot.bottom - 16))
+    screen.blit(font_sm.render("MB_L", True, _PEACH), (top.x + 6, top.bottom - 16))
+    screen.blit(font_sm.render("MB_R", True, _PEACH), (bot.x + 6, bot.bottom - 16))
     _footer_pair(screen, font_sm, rect, flash, flash_r)
 
 
@@ -303,32 +314,34 @@ def _lamps(screen, font, rect, layout: MbLayout, flash: LearnFlash | None, alpha
     pam_on = kind == "PAM"
     ppl_on = kind == "PPL1"
     y = rect.y + 30
-    _lamp(screen, font, rect.x + 18, y, "PAM", f"{layout.n_pam} клеток", (70, 210, 120), pam_on, alpha if pam_on else 0.0)
-    _lamp(screen, font, rect.x + 210, y, "PPL1", f"{layout.n_ppl1} клеток", (220, 84, 72), ppl_on, alpha if ppl_on else 0.0)
+    _lamp(screen, font, rect.x + 18, y, "PAM", f"{layout.n_pam} клеток", _GREEN, pam_on, alpha if pam_on else 0.0)
+    _lamp(screen, font, rect.x + 210, y, "PPL1", f"{layout.n_ppl1} клеток", _RED, ppl_on, alpha if ppl_on else 0.0)
     hint = "учитель ещё не нажимал T или X" if flash is None else f"учитель включил {kind}"
-    screen.blit(font.render(hint, True, (168, 186, 176)), (rect.x + 400, rect.y + 32))
+    screen.blit(font.render(hint, True, _LABEL), (rect.x + 400, rect.y + 32))
 
 
 def _lamp(screen, font, x, y, name, count, color, on: bool, alpha: float) -> None:
     import pygame
 
     radius = 11 if on and alpha > 0.55 else 8
-    glow = tuple(int(c * (0.35 + 0.65 * alpha)) for c in color) if on else (48, 54, 60)
-    pygame.draw.circle(screen, glow, (x + 8, y + 8), radius)
     if on:
-        pygame.draw.circle(screen, (240, 250, 240), (x + 8, y + 8), radius, 1)
-    screen.blit(font.render(name, True, color if on else (140, 146, 154)), (x + 24, y - 2))
-    screen.blit(font.render(count, True, (130, 140, 136)), (x + 24, y + 14))
+        pygame.draw.circle(screen, color, (x + 8, y + 8), radius)
+    else:
+        pygame.draw.circle(screen, _RING, (x + 8, y + 8), radius, 1)
+    screen.blit(font.render(name, True, color if on else _LABEL), (x + 24, y - 2))
+    screen.blit(font.render(count, True, _LABEL), (x + 24, y + 14))
 
 
 def _graph(screen, font, graph, layout: MbLayout, flash: LearnFlash | None, alpha: float) -> None:
     import pygame
 
-    pygame.draw.rect(screen, (16, 20, 26), graph)
+    radius = min(10, graph.w // 2, graph.h // 2)
+    pygame.draw.rect(screen, _PAPER, graph, border_radius=radius)
+    pygame.draw.rect(screen, _LINE, graph, 1, border_radius=radius)
     for name, cx in zip(layout.lobe_name, layout.lobe_x):
         px = graph.x + int(cx * graph.w)
-        screen.blit(font.render(name, True, (150, 164, 176)), (px - 10, graph.y + 2))
-    screen.blit(font.render("MBON", True, (150, 164, 176)), (graph.right - 52, graph.y + 2))
+        screen.blit(font.render(name, True, _PEACH), (px - 10, graph.y + 2))
+    screen.blit(font.render("MBON", True, _PEACH), (graph.right - 52, graph.y + 2))
     if flash is None or flash.n_syn == 0 and len(flash.kc_on) == 0:
         return
 
@@ -349,7 +362,7 @@ def _graph(screen, font, graph, layout: MbLayout, flash: LearnFlash | None, alph
             hi = 1.0
         changed_kc = set(int(i) for i in flash.pre)
         for pre, post, dw, toward in zip(flash.pre, flash.post, flash.dw, flash.toward):
-            color = (64, 196, 112, ink) if bool(toward) else (210, 72, 64, ink)
+            color = (*_GREEN, ink) if bool(toward) else (*_RED, ink)
             width = 1 + int(2.0 * (abs(float(dw)) / hi))
             a = pt(float(layout.kc_x[int(pre)]), float(layout.kc_y[int(pre)]))
             b = pt(float(layout.mbon_x[int(post)]), float(layout.mbon_y[int(post)]))
@@ -359,9 +372,9 @@ def _graph(screen, font, graph, layout: MbLayout, flash: LearnFlash | None, alph
         i = int(i)
         p = pt(float(layout.kc_x[i]), float(layout.kc_y[i]))
         if i in changed_kc:
-            pygame.draw.circle(overlay, (236, 244, 220, dot_a), (p[0] - graph.x, p[1] - graph.y), 3)
+            pygame.draw.circle(overlay, (*_GREEN, dot_a), (p[0] - graph.x, p[1] - graph.y), 3)
         else:
-            pygame.draw.circle(overlay, (120, 140, 150, max(40, dot_a // 2)), (p[0] - graph.x, p[1] - graph.y), 2)
+            pygame.draw.circle(overlay, (176, 174, 170, max(40, dot_a // 2)), (p[0] - graph.x, p[1] - graph.y), 2)
     if flash.n_syn:
         delta = flash.mbon_after - flash.mbon_before
         for post in np.unique(flash.post):
@@ -369,7 +382,7 @@ def _graph(screen, font, graph, layout: MbLayout, flash: LearnFlash | None, alph
             p = pt(float(layout.mbon_x[post]), float(layout.mbon_y[post]))
             d = float(delta[post])
             toward = (bool(layout.mbon_approach[post]) and d >= 0) or (not bool(layout.mbon_approach[post]) and d < 0)
-            color = (90, 210, 120, 230) if toward else (220, 90, 80, 230)
+            color = (*_GREEN, 230) if toward else (*_RED, 230)
             pygame.draw.circle(overlay, color, (p[0] - graph.x, p[1] - graph.y), 5)
     screen.blit(overlay, graph.topleft)
 
@@ -377,11 +390,11 @@ def _graph(screen, font, graph, layout: MbLayout, flash: LearnFlash | None, alph
 def _legend(screen, font, legend, layout: MbLayout, flash: LearnFlash | None) -> None:
     import pygame
 
-    screen.blit(font.render("MBON Δ   верх подход", True, (186, 196, 188)), (legend.x, legend.y))
-    screen.blit(font.render("низ — избегание", True, (160, 150, 146)), (legend.x, legend.y + 16))
+    screen.blit(font.render("MBON Δ   верх подход", True, _GREEN), (legend.x, legend.y))
+    screen.blit(font.render("низ — избегание", True, _RED), (legend.x, legend.y + 16))
     if flash is None or flash.n_syn == 0:
-        screen.blit(font.render("нет изменённых", True, (140, 148, 156)), (legend.x, legend.y + 36))
-        screen.blit(font.render("синапсов", True, (140, 148, 156)), (legend.x, legend.y + 52))
+        screen.blit(font.render("нет изменённых", True, _LABEL), (legend.x, legend.y + 36))
+        screen.blit(font.render("синапсов", True, _LABEL), (legend.x, legend.y + 52))
         return
     delta = flash.mbon_after - flash.mbon_before
     posts = np.unique(flash.post)
@@ -397,7 +410,7 @@ def _legend(screen, font, legend, layout: MbLayout, flash: LearnFlash | None) ->
         if abs(d) < 0.05:
             continue
         toward = (bool(layout.mbon_approach[post]) and d > 0) or (not bool(layout.mbon_approach[post]) and d < 0)
-        color = (120, 210, 140) if toward else (220, 110, 100)
+        color = _GREEN if toward else _RED
         from .tabnum import blit_cells, format_flash_row
 
         blit_cells(screen, format_flash_row(d, layout.mbon_label[post]), legend.x, y, color)
@@ -407,15 +420,15 @@ def _legend(screen, font, legend, layout: MbLayout, flash: LearnFlash | None) ->
     if extra > 0 and y <= legend.bottom - 16:
         from .tabnum import blit_cells, signed
 
-        blit_cells(screen, "ещё %s" % signed(extra, 4), legend.x, y, (140, 148, 156))
+        blit_cells(screen, "ещё %s" % signed(extra, 4), legend.x, y, _LABEL)
 
 
 def _footer(screen, font, rect, layout: MbLayout, flash: LearnFlash | None) -> None:
     y = rect.bottom - 78
     if flash is None:
-        screen.blit(font.render("T — PAM,  X — PPL1. Линии только у синапсов, чей вес изменился.", True, (176, 186, 180)), (rect.x + 10, y))
-        screen.blit(font.render("зелёный — к подходу, красный — к избеганию, толщина = |Δw|", True, (150, 160, 156)), (rect.x + 10, y + 18))
-        screen.blit(font.render("id и типы FlyWire. KC по долям γ, αβ, α′β′: xyz в файле нет.", True, (130, 142, 138)), (rect.x + 10, y + 36))
+        screen.blit(font.render("T — PAM,  X — PPL1. Линии только у синапсов, чей вес изменился.", True, _LABEL), (rect.x + 10, y))
+        screen.blit(font.render("зелёный — к подходу, красный — к избеганию, толщина = |Δw|", True, _LABEL), (rect.x + 10, y + 18))
+        screen.blit(font.render("id и типы FlyWire. KC по долям γ, αβ, α′β′: xyz в файле нет.", True, _LABEL), (rect.x + 10, y + 36))
         return
     from .tabnum import blit_cells, format_flash_out, format_flash_syn
 
@@ -424,14 +437,14 @@ def _footer(screen, font, rect, layout: MbLayout, flash: LearnFlash | None) -> N
         format_flash_syn(flash.n_syn, flash.sum_abs, len(flash.kc_on)),
         rect.x + 10,
         y,
-        (220, 226, 216),
+        _VALUE,
     )
     blit_cells(
         screen,
         format_flash_out(flash.before, flash.after),
         rect.x + 10,
         y + 18,
-        (220, 226, 216),
+        _VALUE,
     )
     if flash.strong_pre >= 0:
         root = int(layout.kc_root[flash.strong_pre])
@@ -441,9 +454,9 @@ def _footer(screen, font, rect, layout: MbLayout, flash: LearnFlash | None) -> N
         strong = "сильнейший KC %s → %s" % (signed(root), phrase(mbon, 16))
     else:
         strong = "синапс не сдвинулся: KC молчали или вес упёрся в ноль"
-    blit_cells(screen, strong, rect.x + 10, y + 36, (176, 196, 186))
+    blit_cells(screen, strong, rect.x + 10, y + 36, _VALUE)
     screen.blit(
-        font.render("зелёный — к подходу, красный — к избеганию. Яркая ~1.5 с.", True, (140, 156, 148)),
+        font.render("зелёный — к подходу, красный — к избеганию. Яркая ~1.5 с.", True, _LABEL),
         (rect.x + 10, y + 54),
     )
 

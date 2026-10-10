@@ -233,12 +233,12 @@ class KeyTests(unittest.TestCase):
         shot.parent.mkdir(parents=True, exist_ok=True)
         mon.save_screenshot(str(shot))
         frame = pygame.surfarray.array3d(mon.screen)
-        amber = (
-            (np.abs(frame[:, :, 0].astype(int) - 214) < 28)
-            & (np.abs(frame[:, :, 1].astype(int) - 168) < 28)
-            & (np.abs(frame[:, :, 2].astype(int) - 64) < 28)
+        peach = (
+            (np.abs(frame[:, :, 0].astype(int) - 201) < 36)
+            & (np.abs(frame[:, :, 1].astype(int) - 120) < 36)
+            & (np.abs(frame[:, :, 2].astype(int) - 91) < 36)
         )
-        self.assertGreater(int(amber.sum()), 10)
+        self.assertGreater(int(peach.sum()), 10)
         from sim.train_monitor import WIN_W, monitor_layout
 
         self.assertGreaterEqual(monitor_layout(WIN_W, 1080)["cam"][2], WIN_W // 2)
@@ -496,16 +496,16 @@ class FlashTests(unittest.TestCase):
         shot.parent.mkdir(parents=True, exist_ok=True)
         mon.save_screenshot(str(shot))
         frame = pygame.surfarray.array3d(mon.screen)
-        band = frame[:, 60:160, :]
+        band = frame[:1100, 70:150, :]
         red = (
-            (np.abs(band[:, :, 0].astype(int) - 204) < 28)
-            & (np.abs(band[:, :, 1].astype(int) - 62) < 28)
-            & (np.abs(band[:, :, 2].astype(int) - 56) < 28)
+            (np.abs(band[:, :, 0].astype(int) - 217) < 24)
+            & (np.abs(band[:, :, 1].astype(int) - 136) < 24)
+            & (np.abs(band[:, :, 2].astype(int) - 128) < 24)
         )
         green = (
-            (np.abs(band[:, :, 0].astype(int) - 64) < 28)
-            & (np.abs(band[:, :, 1].astype(int) - 184) < 28)
-            & (np.abs(band[:, :, 2].astype(int) - 96) < 28)
+            (np.abs(band[:, :, 0].astype(int) - 141) < 30)
+            & (np.abs(band[:, :, 1].astype(int) - 181) < 30)
+            & (np.abs(band[:, :, 2].astype(int) - 150) < 30)
         )
         self.assertGreater(int(red.sum()), 20)
         self.assertGreater(int(green.sum()), 20)

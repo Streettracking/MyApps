@@ -61,11 +61,12 @@ def skips_are_quiet(line: str) -> bool:
 def mono_path() -> str | None:
     windir = os.environ.get("WINDIR", r"C:\Windows")
     candidates = (
+        os.path.join(windir, "Fonts", "consola.ttf"),
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Light.ttf",
         "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
         "/usr/share/fonts/truetype/cascadia-code/CascadiaMono.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        os.path.join(windir, "Fonts", "consola.ttf"),
         os.path.join(windir, "Fonts", "cour.ttf"),
     )
     for path in candidates:
