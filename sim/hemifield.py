@@ -24,7 +24,7 @@ from .raw_sense import N_AZ, N_RAW, OFF_BODY, OFF_CLOSE, OFF_FLOOR, OFF_LIDAR, O
 _LEFT = (4, 5, 6, 7)
 _RIGHT_SRC = (3, 2, 1, 0)
 # Default shared fraction of the field. 0 is the hard midline above.
-DEFAULT_OVERLAP = 0.20
+DEFAULT_OVERLAP = 0.40
 
 YAW_K = 1.0
 YAW_EPS = 1e-3
@@ -53,7 +53,7 @@ def overlap_bands(overlap: float) -> tuple[float, float]:
     """Image fractions of the shared zone. Image left is the robot's right eye.
 
     Returns ``(lo, hi)``. ``[0, lo)`` is П only, ``[lo, hi)`` is Л+П, ``[hi, 1]`` is Л.
-    ``overlap`` 0.2 is ``(0.4, 0.6)``. Zero overlap is the midline, ``(0.5, 0.5)``.
+    ``overlap`` 0.4 is ``(0.3, 0.7)``. Zero overlap is the midline, ``(0.5, 0.5)``.
     """
     half = 0.5 * clamp_overlap(overlap)
     return 0.5 - half, 0.5 + half
@@ -170,17 +170,11 @@ def bilateral_yaw(r_l: float, r_r: float) -> float:
 
 
 def format_fly_line(r_l, r_r, diff, z, steer: str) -> str:
-    """One monitor line: the two readouts, their difference, and the fly's yaw."""
+    """One monitor line: the two readouts, their difference, and the fly's yaw.
 
-    def num(value) -> str:
-        if value is None:
-            return "—"
-        return "%+.0f" % float(value)
-
-    def yaw(value) -> str:
-        if value is None:
-            return "—"
-        return "%+.2f" % float(value)
+    Every number is a fixed-width signed field, so the labels stay put.
+    """
+    from .tabnum import format_fly_line as _line
 
     name = "билатерально" if steer == "bilateral" else "секторы"
-    return "муха L %s   R %s   Δ %s   z %s   %s" % (num(r_l), num(r_r), num(diff), yaw(z), name)
+    return _line(r_l, r_r, diff, z, name)

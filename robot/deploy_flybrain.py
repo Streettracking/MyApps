@@ -23,8 +23,11 @@ pid to ``flybrain.pid``. Stop kills that pid and any leftover
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
+
+_SAFE_ARG = re.compile(r"^[A-Za-z0-9_./:+-]+$")
 
 HOST = os.environ.get("GO2_HOST", "192.168.35.213")
 USER = os.environ.get("GO2_SSH_USER", "root")
@@ -172,7 +175,20 @@ def _upload(sftp, state_path: str = "") -> None:
         sftp.put(str(plain), REMOTE + "/state/mb_train_state.npz")
 
 
-def _start_cmd(root: str = REMOTE) -> str:
+def _remote_args(extra) -> str:
+    """Shell-safe tokens appended to ``python3 main.py``. Rejects anything else."""
+    parts = []
+    for token in extra or ():
+        text = str(token)
+        if not text or _SAFE_ARG.match(text) is None:
+            raise SystemExit("unsafe argument for main.py: %s" % text)
+        parts.append(text)
+    if not parts:
+        return ""
+    return " " + " ".join(parts)
+
+
+def _start_cmd(root: str = REMOTE, extra=None) -> str:
     """Detach python. ``main.py`` writes the pid; ``$!`` is not the shell.
 
     ``setsid`` puts python in its own session. ``< /dev/null`` and the
@@ -186,11 +202,11 @@ def _start_cmd(root: str = REMOTE) -> str:
         + "cd %s || exit 1; "
         "export PYTHONPATH=%s:/unitree/module/pet_go:/root/go2_flask_api; "
         "if _fly_alive; then echo already; exit 0; fi; "
-        "nohup setsid python3 %s >> %s 2>&1 < /dev/null & "
+        "nohup setsid python3 %s%s >> %s 2>&1 < /dev/null & "
         "disown || true; "
         "echo started; "
         "exit 0'"
-    ) % (root, root, main, log)
+    ) % (root, root, main, _remote_args(extra), log)
 
 
 def _stop_cmd(root: str = REMOTE) -> str:
@@ -269,8 +285,23 @@ def main(argv=None) -> int:
         action="store_true",
         help="Delete the dog's mb_train_state.npz. Without this, start keeps it.",
     )
-    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    parser.add_argument(
+        "--overlap",
+        type=float,
+        default=None,
+        help="Forward --overlap VALUE to main.py (0..0.5). Other unknown flags are forwarded on start too.",
+    )
+    args, unknown = parser.parse_known_args(list(sys.argv[1:] if argv is None else argv))
+    extra = []
+    if args.overlap is not None:
+        if args.overlap < 0.0 or args.overlap > 0.5:
+            print("overlap must be between 0 and 0.5", file=sys.stderr)
+            return 2
+        extra.extend(["--overlap", "%g" % args.overlap])
+    extra.extend(unknown)
     action = args.action
+    if action == "start":
+        _remote_args(extra)
     state_path = args.state
     if state_path and not Path(state_path).is_file():
         print("No state file at %s" % state_path, file=sys.stderr)
@@ -302,7 +333,7 @@ def main(argv=None) -> int:
             else:
                 print("keep state: /root/flybrain/state/mb_train_state.npz")
             print(_run(client, "rm -f /root/flybrain/artifacts/connectome_mb_v1.npz"))
-            print(_run(client, _start_cmd(), timeout=8.0))
+            print(_run(client, _start_cmd(extra=extra), timeout=8.0))
         elif action == "stop":
             print(_run(client, _stop_cmd()))
         print(_run(client, _status_cmd()))

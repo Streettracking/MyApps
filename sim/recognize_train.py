@@ -18,7 +18,7 @@ import numpy as np
 
 from .frame_sense import sim_previews
 from .hemifield import DEFAULT_OVERLAP, format_fly_line
-from .pilot import phase_label
+from .pilot import format_eyes_line, phase_label
 from .lidar_fresh import DEFAULT_LIDAR_REFRESH, SimLidarBank, mismatch_warning
 from .map_marks import MarkLayer
 from .pilot import (
@@ -31,7 +31,7 @@ from .pilot import (
     scrub_range,
 )
 from .mb_train import MbTrainer, default_npz
-from .raw_sense import N_AZ, OFF_LIDAR, render_view
+from .raw_sense import N_AZ, OFF_LIDAR, add_recog_camera_only_arg, recog_label, render_view
 from .recognize import ConspecificRecognizer
 from .world import AgentState, ArenaConfig, ArenaWorld, default_agents
 
@@ -60,6 +60,7 @@ class RecognizeTrainSim:
         return_auto_s: float = 0.0,
         steer: str = "bilateral",
         overlap: float = DEFAULT_OVERLAP,
+        camera_only: bool = True,
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -104,6 +105,7 @@ class RecognizeTrainSim:
         self.pilot = Pilot(return_auto_s)
         self.pilot.set_steer(steer if steer in ("bilateral", "sectors") else "bilateral")
         self.overlap = float(overlap)
+        self.camera_only = bool(camera_only)
         self.teach_pulse = TeachRepeater()
         self.aim_sector: int | None = None
         self.aim_dist: float | None = None
@@ -114,8 +116,16 @@ class RecognizeTrainSim:
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
         if learner == "mb":
-            self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan, overlap=overlap)
+            self.mb = MbTrainer(
+                npz or default_npz(),
+                seed=seed,
+                eta=eta,
+                dan=dan,
+                overlap=overlap,
+                camera_only=self.camera_only,
+            )
             self._log("грибовидное тело  учитель — клавиша T  учатся только KC→MBON")
+            self._log(recog_label(self.camera_only))
             self._log(self._lidar_intro())
         else:
             self.recognizer = ConspecificRecognizer()
@@ -363,7 +373,13 @@ class RecognizeTrainSim:
     def view(self, focused: bool, udp_status: str, last_command: str, keys_hint: str):
         from .train_monitor import MonitorView
 
-        cam, lid = sim_previews(self.learner, self.world, self.lidar_bank.display)
+        now_t = float(self.world.t)
+        held = getattr(self, "_preview_hold", None)
+        if held is not None and now_t - held[0] < 0.25:
+            cam, lid = held[1], held[2]
+        else:
+            cam, lid = sim_previews(self.learner, self.world, self.lidar_bank.display)
+            self._preview_hold = (now_t, cam, lid)
         if self.mb is not None:
             caption = "сырой выход: подход − избегание" if self.dan == "teacher" else "сырой выход: минус новизна"
             mode = f"сим · {self.pilot.label()}"
@@ -454,7 +470,18 @@ class RecognizeTrainSim:
                 eye_r_confidence=float(conf_r.percent),
                 eye_l_ready=bool(conf_l.ready),
                 eye_r_ready=bool(conf_r.ready),
-                phase_ru=phase_label(self.pilot.phase, self.pilot.steer),
+                phase_ru=phase_label(self.pilot.phase, self.pilot.steer, self.pilot.search_sign),
+                recog_line=recog_label(self.camera_only),
+                eyes_line=format_eyes_line(
+                    self.pilot.track.r_l,
+                    self.pilot.track.r_r,
+                    bool(conf_l.ready and conf_l.recognized),
+                    bool(conf_r.ready and conf_r.recognized),
+                ),
+                last_seen_side=str(self.pilot.last_seen_side or ""),
+                yolo_state=str(getattr(self, "yolo_state", "") or ""),
+                teacher_counts=str(getattr(self, "teacher_counts", "") or ""),
+                teacher_boxes=list(getattr(self, "teacher_boxes", ()) or ()),
             )
         assert self.recognizer is not None
         return MonitorView(
@@ -486,9 +513,9 @@ class RecognizeTrainSim:
         )
 
     def _lidar_caption(self) -> str:
-        if self.lidar_fresh_on:
-            return f"свежий лидар {self.lidar_interval:.1f} с"
-        return "лидар копится"
+        from .tabnum import format_lidar_caption
+
+        return format_lidar_caption(self.lidar_fresh_on, self.lidar_interval)
 
     def _scaled(self, rows: list[tuple[float, float]]) -> list[tuple[float, float]]:
         """Map MBON scores into 0..1 for the shared plot, using this run's own range."""
@@ -551,7 +578,7 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "T/X учить  A авто  M перехват  Y руль  U запись  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
+SIM_KEYS = "T/X учить  A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  U запись  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
 HEBB_KEYS = "стрелки ход   U запись   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
 
 
@@ -638,36 +665,92 @@ def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, floa
     elif not cmd.hint:
         session._hint_logged = ""
     if session.pilot.autonomy:
-        return cmd.x, cmd.z, True, _phase_name(cmd.phase, session.pilot.steer)
+        return cmd.x, cmd.z, True, _phase_name(cmd.phase, session.pilot.steer, session.pilot.search_sign)
     if abs(inp.steer_x) + abs(inp.steer_z) > 0 and inp.focused:
-        return cmd.x, cmd.z, True, _phase_name(cmd.phase, session.pilot.steer)
+        return cmd.x, cmd.z, True, _phase_name(cmd.phase, session.pilot.steer, session.pilot.search_sign)
     if session.pilot.took_over or session.pilot.mode == "estop":
         return 0.0, 0.0, True, "стоп"
     sx, sz = session.scripted_steer()
     return sx, sz, False, "сценарий"
 
 
-def _phase_name(phase: str, steer: str = "bilateral") -> str:
-    return phase_label(phase, steer)
+def _phase_name(phase: str, steer: str = "bilateral", search_sign: float = 1.0) -> str:
+    return phase_label(phase, steer, search_sign)
+
+
+def _gui_stress(mon, session) -> None:
+    """Resize the dock and open the separate 3D window once. Only when GUI_STRESS=1."""
+    import os
+
+    if os.environ.get("GUI_STRESS") != "1":
+        return
+    t = float(session.world.t)
+    last = float(getattr(session, "_stress_t", -10.0))
+    if t - last < 2.0:
+        return
+    session._stress_t = t
+    session._stress_n = int(getattr(session, "_stress_n", 0)) + 1
+    sizes = ((1280, 760), (1600, 900), (1100, 680), (1440, 860), (900, 700))
+    w, h = sizes[session._stress_n % len(sizes)]
+    mon._on_resize(w, h)
+    dock = mon.dock
+    if hasattr(dock, "ratio"):
+        dock.ratio = 0.72 if session._stress_n % 2 else 0.84
+        dock.locked = True
+    mon._apply_layout(h)
+    if getattr(session, "learner_kind", "") != "mb" or getattr(session, "_stress_brain", False):
+        return
+    from .mb_view3d import BrainView
+
+    link = getattr(session, "_brain_view", None)
+    if not isinstance(link, BrainView):
+        link = BrainView()
+        session._brain_view = link
+    if not link.alive:
+        link.spawn()
+    session._stress_brain = True
+    if link.proc is not None:
+        session._stress_brain_pid = int(link.proc.pid)
 
 
 def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: Path | None = None) -> dict:
     from .frame_record import FrameRecorder, OperatorMarks
     from .train_monitor import TrainMonitor
+    from .yolo_teacher import TeacherRuntime
 
-    mon = TrainMonitor("Go2 recognition trainer — sim")
+    mon = TrainMonitor("Go2 recognition trainer — sim", fullscreen=bool(getattr(session, "start_fullscreen", False)))
+    if session.learner_kind == "mb":
+        session.teacher = TeacherRuntime(
+            getattr(session, "teacher_url", "http://127.0.0.1:8091"),
+            conf=float(getattr(session, "teacher_conf", 0.5)),
+            rate=float(getattr(session, "teacher_rate", 2.0)),
+        )
+    else:
+        session.teacher = None
     shot = Path(screenshot_path) if screenshot_path else None
     rec = FrameRecorder(ROOT / "logs" / "yolo_frames", fps=float(getattr(session, "rec_fps", 2.0)))
     marks = OperatorMarks()
     try:
         return _run_gui(session, mon, shot, seconds, rec, marks)
     finally:
+        from .mb_view3d import close_brain
+
+        flush = getattr(mon, "flush_settings", None)
+        if flush is not None:
+            flush()
+        close_brain(session)
+        teacher = getattr(session, "teacher", None)
+        if teacher is not None:
+            teacher.close()
         rec.close()
 
 
 def _run_gui(session, mon, shot, seconds, rec, marks):
-    from .frame_record import note_operator, weak_label_now
+    from .frame_record import encode_camera_jpeg, note_operator, weak_label_now
+    from .recognize_train_live import _drive_teacher, _learning_now
 
+    teacher_state = {"frame": None, "log": "", "log_t": -10.0}
+    sim_frame = 0
     while True:
         inp = mon.pump()
         if inp.quit:
@@ -684,6 +767,14 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
             session._log("метка N — только для панели, в обучение не входит")
         if inp.beep_toggle:
             session._log("звук включён" if mon.beep_on else "звук выключен")
+        if inp.fullscreen_toggle:
+            session._log("полный экран" if mon.fullscreen else "окно")
+        if inp.teacher_toggle and getattr(session, "teacher", None) is not None:
+            session._log(session.teacher.toggle_teacher())
+        if inp.boxes_toggle and getattr(session, "teacher", None) is not None:
+            hidden = session.teacher.toggle_boxes(_learning_now(session))
+            if hidden:
+                session._log(hidden)
         note_operator(marks, float(session.world.t), inp)
         _apply_pilot_keys(session, inp, float(session.world.t))
         if inp.reset:
@@ -720,12 +811,28 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         elif teach and not session.learn:
             teach = None
         session.step(steer_x, steer_z, teach=teach, rate=rate)
+        sim_frame += 1
         view = session.view(
             focused=inp.focused,
             udp_status="симулятор. В автономии ведёт мозг, иначе стрелки или сценарий.",
             last_command=command_name,
             keys_hint=SIM_KEYS if session.learner_kind == "mb" else HEBB_KEYS,
         )
+        jpeg = b""
+        teacher = getattr(session, "teacher", None)
+        if teacher is not None and teacher.wants_frame(bool(session.learn)) and view.camera is not None:
+            try:
+                jpeg = encode_camera_jpeg(view.camera)
+            except Exception:
+                jpeg = b""
+        _drive_teacher(session, jpeg or None, sim_frame, teacher_state, bool(teach), None)
+        view.teacher_boxes = list(getattr(session, "teacher_boxes", ()) or ())
+        view.yolo_state = str(getattr(session, "yolo_state", "") or "")
+        view.teacher_counts = str(getattr(session, "teacher_counts", "") or "")
+        view.teacher_skips = str(getattr(session, "teacher_skips", "") or "")
+        view.teacher_flash_l = str(getattr(session, "teacher_flash_l_show", "") or "")
+        view.teacher_flash_r = str(getattr(session, "teacher_flash_r_show", "") or "")
+        view.last_seen_side = str(session.pilot.last_seen_side or "")
         rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
         labelled = weak_label_now(marks, float(session.world.t)) is not None
         view.record_on = rec_on
@@ -734,6 +841,10 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         view.record_idle = rec_on and not labelled
         if rec_on and labelled and view.camera is not None and rec.due():
             _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z)
+        from .mb_view3d import drive_brain
+
+        drive_brain(session, inp, float(session.world.t), mon)
+        _gui_stress(mon, session)
         mon.draw(view)
         if inp.screenshot:
             dest = ROOT / "logs" / "monitor_shot.png"
@@ -1162,9 +1273,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--return-auto", type=float, default=0.0, help="Idle seconds after takeover before autonomy returns. 0 stays manual.")
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral", help="bilateral: yaw from R_L - R_R. sectors: the smoothed camera sector.")
     p.add_argument("--overlap", type=float, default=DEFAULT_OVERLAP, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
+    add_recog_camera_only_arg(p)
     p.add_argument("--seek", action="store_true", help="Headless teacher then autonomy. Prints find/stop counts.")
     p.add_argument("--compare-steer", action="store_true", help="Train once, then seek with sectors and with bilateral.")
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera frames per second written while recording.")
+    p.add_argument("--fullscreen", action="store_true", help="Open the trainer fullscreen. F11 toggles it.")
+    p.add_argument("--teacher-url", default="http://127.0.0.1:8091")
+    p.add_argument("--teacher-conf", type=float, default=0.5)
+    p.add_argument("--teacher-rate", type=float, default=2.0)
     args = p.parse_args(argv)
     if args.rec_fps <= 0:
         print("--rec-fps must be positive", file=sys.stderr)
@@ -1194,8 +1310,13 @@ def main(argv: list[str] | None = None) -> int:
         return_auto_s=args.return_auto,
         steer=args.steer,
         overlap=args.overlap,
+        camera_only=bool(args.recog_camera_only),
     )
     session.rec_fps = float(args.rec_fps)
+    session.start_fullscreen = bool(args.fullscreen)
+    session.teacher_url = str(args.teacher_url)
+    session.teacher_conf = float(args.teacher_conf)
+    session.teacher_rate = float(args.teacher_rate)
     if args.load or Path(args.state).is_file():
         try_load(session)
     if args.headless:

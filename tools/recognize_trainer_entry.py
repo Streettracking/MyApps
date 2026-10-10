@@ -20,6 +20,8 @@ from pathlib import Path
 import sim.frame_record  # noqa: F401
 import sim.frame_sense  # noqa: F401
 import sim.hemifield  # noqa: F401
+from sim.raw_sense import add_recog_camera_only_arg
+import sim.yolo_teacher  # noqa: F401
 import sim.learn_flash  # noqa: F401
 import sim.npz_compat  # noqa: F401
 import sim.onboard_link  # noqa: F401
@@ -34,11 +36,21 @@ import sim.raw_sense  # noqa: F401
 import sim.recognize  # noqa: F401
 import sim.recognize_train as recognize_train
 import sim.recognize_train_live as recognize_train_live
+import sim.mb_view3d  # noqa: F401
 import sim.train_monitor  # noqa: F401
 import sim.world  # noqa: F401
 
 
 def main(argv: list[str] | None = None) -> int:
+    import multiprocessing
+
+    multiprocessing.freeze_support()
+    from sim.ui_settings import install_crash_log
+
+    install_crash_log()
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--mb-view3d" in args:
+        return sim.mb_view3d.main(args)
     # Audio is left on the system driver so the optional beep can play.
     # A missing device is reported when B is pressed; the window still opens.
     p = argparse.ArgumentParser(description="Go2 conspecific recognition trainer")
@@ -71,8 +83,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--onboard-port", type=int, default=8090)
     p.add_argument("--return-auto", type=float, default=0.0)
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
-    p.add_argument("--overlap", type=float, default=0.2, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
+    p.add_argument("--overlap", type=float, default=sim.hemifield.DEFAULT_OVERLAP, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
+    add_recog_camera_only_arg(p)
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max frames per second while «ЗАПИСЬ КАДРОВ» is on.")
+    p.add_argument("--fullscreen", action="store_true", help="Open fullscreen. F11 toggles it.")
+    p.add_argument("--teacher-url", default="http://127.0.0.1:8091")
+    p.add_argument("--teacher-conf", type=float, default=0.5)
+    p.add_argument("--teacher-rate", type=float, default=2.0)
     args = p.parse_args(argv)
     if args.rec_fps <= 0:
         print("--rec-fps must be positive", file=sys.stderr)
@@ -115,6 +132,10 @@ def main(argv: list[str] | None = None) -> int:
         forwarded.extend(["--steer", args.steer])
         forwarded.extend(["--overlap", str(args.overlap)])
         forwarded.extend(["--rec-fps", str(args.rec_fps)])
+        if args.fullscreen:
+            forwarded.append("--fullscreen")
+        forwarded.append("--recog-camera-only" if args.recog_camera_only else "--no-recog-camera-only")
+        forwarded.extend(["--teacher-url", args.teacher_url, "--teacher-conf", str(args.teacher_conf), "--teacher-rate", str(args.teacher_rate)])
         return recognize_train.main(forwarded)
     forwarded = [
         "--robot-ip",
@@ -151,10 +172,17 @@ def main(argv: list[str] | None = None) -> int:
     forwarded.extend(["--steer", args.steer])
     forwarded.extend(["--overlap", str(args.overlap)])
     forwarded.extend(["--rec-fps", str(args.rec_fps)])
+    if args.fullscreen:
+        forwarded.append("--fullscreen")
+    forwarded.append("--recog-camera-only" if args.recog_camera_only else "--no-recog-camera-only")
+    forwarded.extend(["--teacher-url", args.teacher_url, "--teacher-conf", str(args.teacher_conf), "--teacher-rate", str(args.teacher_rate)])
     if args.onboard:
         forwarded.extend(["--onboard", args.onboard, "--onboard-port", str(args.onboard_port)])
     return recognize_train_live.main(forwarded)
 
 
 if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     sys.exit(main())

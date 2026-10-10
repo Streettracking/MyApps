@@ -27,25 +27,69 @@ PREVIEW_LIDAR = (240, 240)
 
 
 def decode_image_bytes(data: bytes) -> np.ndarray:
-    """Decode JPEG or PNG bytes to HxWx3 uint8 RGB. Raises ValueError on failure."""
+    """Decode JPEG or PNG bytes to HxWx3 uint8 RGB. Raises ValueError on failure.
+
+    OpenCV or PIL stay off SDL. The pygame fallback runs only on the main
+    thread and never calls ``display.set_mode`` (that would replace the
+    trainer window, or create one from a worker).
+    """
+    soft = _decode_without_sdl(data)
+    if soft is not None:
+        return soft
+    return _decode_with_pygame(data)
+
+
+def _decode_without_sdl(data: bytes):
+    """RGB array from a library that is not pygame. None when none is installed."""
+    if not data:
+        raise ValueError("empty image")
+    try:
+        import cv2
+    except Exception:
+        cv2 = None
+    if cv2 is not None:
+        buf = np.frombuffer(data, dtype=np.uint8)
+        bgr = cv2.imdecode(np.array(buf, copy=True), cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise ValueError("could not decode image (%d bytes)" % len(data))
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        return np.array(rgb, dtype=np.uint8, copy=True)
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    import io
+
+    image = Image.open(io.BytesIO(data)).convert("RGB")
+    return np.array(image, dtype=np.uint8, copy=True)
+
+
+def _decode_with_pygame(data: bytes) -> np.ndarray:
     import io
 
     import pygame
 
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
+    if not data:
+        raise ValueError("empty image")
     if not pygame.get_init():
         pygame.init()
     try:
         surf = pygame.image.load(io.BytesIO(data))
     except pygame.error as exc:
-        raise ValueError(f"could not decode image ({len(data)} bytes): {exc}") from exc
+        raise ValueError("could not decode image (%d bytes): %s" % (len(data), exc)) from exc
     try:
         raw = pygame.image.tobytes(surf, "RGB")
     except pygame.error:
-        if pygame.display.get_surface() is None:
-            pygame.display.set_mode((1, 1))
-        raw = pygame.image.tobytes(surf.convert(24), "RGB")
+        converted = pygame.Surface(surf.get_size(), depth=24)
+        converted.blit(surf, (0, 0))
+        raw = pygame.image.tobytes(converted, "RGB")
+        surf = converted
     w, h = surf.get_size()
-    return np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3).copy()
+    owned = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3).copy()
+    return owned
 
 
 def _sector_means(image: np.ndarray, y0: int, y1: int) -> np.ndarray:
