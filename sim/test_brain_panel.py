@@ -170,12 +170,7 @@ class BrainPanelTests(unittest.TestCase):
             pygame.quit()
 
     def test_zoom_stress_and_paint_throttle(self):
-        import time
-
-        import pygame
-
         from sim.mb_flywire import gl_frame_size_ok, gl_read_length_ok, gl_sort_due, stress_zoom
-        from sim.train_monitor import _cached_brain_surface
 
         due, key = gl_sort_due(None, None, 0.2, 0.1, 10.0)
         self.assertTrue(due)
@@ -204,20 +199,6 @@ class BrainPanelTests(unittest.TestCase):
         else:
             self.assertEqual(stats["ibo_writes"], 0)
             self.assertGreater(stats["software"], 0)
-
-        pygame.init()
-        try:
-            _cached_brain_surface.last = None
-            first = _cached_brain_surface((80, 60), 0.2, 0.1, 4.0, 0.0, 0.0, False, {"rec_l": False, "rec_r": False})
-            second = _cached_brain_surface((80, 60), 0.2, 0.1, 11.5, 0.0, 0.0, False, {"rec_l": False, "rec_r": False})
-            self.assertIs(first, second)
-            third = _cached_brain_surface((120, 70), 0.2, 0.1, 11.5, 0.0, 0.0, False, {"rec_l": False, "rec_r": False})
-            self.assertIsNot(first, third)
-            _cached_brain_surface.last = ((120, 70), time.monotonic(), third)
-            empty = _cached_brain_surface((0, 40), 0.2, 0.1, 4.0, 0.0, 0.0, False, {})
-            self.assertIs(empty, third)
-        finally:
-            pygame.quit()
 
     def test_crash_log_is_outside_the_bundle(self):
         import faulthandler

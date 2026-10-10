@@ -869,15 +869,12 @@ def run_live_gui(
     onboard: OnboardLink | None = None,
 ) -> None:
     from .train_monitor import MonitorView, TrainMonitor
-    from .ui_settings import begin_gui_session, end_gui_session
 
     from .frame_record import FrameRecorder, OperatorMarks, note_operator, weak_label_now
 
     from .yolo_teacher import TeacherRuntime
 
-    begin_gui_session()
     mon = TrainMonitor("Go2 recognition trainer", fullscreen=bool(getattr(session, "start_fullscreen", False)))
-    mon.use_embed_process = True
     if session.learner_kind == "mb":
         session.teacher = TeacherRuntime(
             getattr(session, "teacher_url", "http://127.0.0.1:8091"),
@@ -1047,8 +1044,6 @@ def run_live_gui(
     finally:
         from .mb_view3d import close_brain
 
-        end_gui_session()
-        mon.stop_embed()
         close_brain(session)
         teacher = getattr(session, "teacher", None)
         if teacher is not None:

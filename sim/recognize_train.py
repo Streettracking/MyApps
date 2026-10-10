@@ -679,7 +679,7 @@ def _phase_name(phase: str, steer: str = "bilateral", search_sign: float = 1.0) 
 
 
 def _gui_stress(mon, session) -> None:
-    """Resize, splitter and zoom. Only when GUI_STRESS=1, never a hotkey."""
+    """Resize the dock and open the separate 3D window once. Only when GUI_STRESS=1."""
     import os
 
     if os.environ.get("GUI_STRESS") != "1":
@@ -693,23 +693,32 @@ def _gui_stress(mon, session) -> None:
     sizes = ((1280, 760), (1600, 900), (1100, 680), (1440, 860), (900, 700))
     w, h = sizes[session._stress_n % len(sizes)]
     mon._on_resize(w, h)
-    mon._ensure_orbit().zoom(2 if session._stress_n % 2 else -3)
     dock = mon.dock
     if hasattr(dock, "ratio"):
         dock.ratio = 0.72 if session._stress_n % 2 else 0.84
         dock.locked = True
     mon._apply_layout(h)
+    if getattr(session, "learner_kind", "") != "mb" or getattr(session, "_stress_brain", False):
+        return
+    from .mb_view3d import BrainView
+
+    link = getattr(session, "_brain_view", None)
+    if not isinstance(link, BrainView):
+        link = BrainView()
+        session._brain_view = link
+    if not link.alive:
+        link.spawn()
+    session._stress_brain = True
+    if link.proc is not None:
+        session._stress_brain_pid = int(link.proc.pid)
 
 
 def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: Path | None = None) -> dict:
     from .frame_record import FrameRecorder, OperatorMarks
     from .train_monitor import TrainMonitor
-    from .ui_settings import begin_gui_session, end_gui_session
     from .yolo_teacher import TeacherRuntime
 
-    begin_gui_session()
     mon = TrainMonitor("Go2 recognition trainer — sim", fullscreen=bool(getattr(session, "start_fullscreen", False)))
-    mon.use_embed_process = True
     if session.learner_kind == "mb":
         session.teacher = TeacherRuntime(
             getattr(session, "teacher_url", "http://127.0.0.1:8091"),
@@ -726,8 +735,6 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
     finally:
         from .mb_view3d import close_brain
 
-        end_gui_session()
-        mon.stop_embed()
         close_brain(session)
         teacher = getattr(session, "teacher", None)
         if teacher is not None:

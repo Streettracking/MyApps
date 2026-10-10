@@ -10,17 +10,15 @@ from __future__ import annotations
 HEADER = 26
 SPLIT = 6
 CONTROLS_H = 74
-BRAIN3D_H = 280
 MIN_BLOCK = 48
 
-BLOCKS = ("camera", "lidar", "brain", "journal", "controls", "brain3d")
+BLOCKS = ("camera", "lidar", "brain", "journal", "controls")
 BLOCK_TITLES = {
     "camera": "камера",
     "lidar": "лидар",
     "brain": "панель мозга",
     "journal": "журнал",
     "controls": "кнопки",
-    "brain3d": "мозг 3D",
 }
 
 
@@ -62,36 +60,47 @@ def default_tree() -> Split:
             "h",
             0.62,
             Split("v", 0.72, Leaf("camera"), Leaf("lidar")),
-            Split(
-                "v",
-                0.52,
-                Leaf("brain"),
-                Split("v", 0.55, Leaf("journal"), Leaf("brain3d")),
-            ),
+            Split("v", 0.52, Leaf("brain"), Leaf("journal")),
         ),
         Leaf("controls"),
     )
 
 
 def tree_from_dict(data) -> Split:
+    """Load a saved dock. An unknown leaf, including an old ``brain3d``, is dropped.
+
+    A split with one remaining child collapses, so the sibling takes that space.
+    Anything that no longer names each block exactly once falls back to the default.
+    """
     if not isinstance(data, dict):
         return default_tree()
 
     def parse(node):
         if not isinstance(node, dict):
             return None
-        if node.get("t") == "leaf" and node.get("id") in BLOCKS:
-            return Leaf(node["id"], bool(node.get("collapsed")), bool(node.get("visible", True)))
+        if node.get("t") == "leaf":
+            name = node.get("id")
+            if name not in BLOCKS:
+                return None
+            return Leaf(name, bool(node.get("collapsed")), bool(node.get("visible", True)))
         if node.get("t") == "split":
             a = parse(node.get("a"))
             b = parse(node.get("b"))
-            if a is None or b is None:
+            if a is None and b is None:
                 return None
-            return Split(node.get("o") or "v", float(node.get("r") or 0.5), a, b, bool(node.get("locked")))
+            if a is None:
+                return b
+            if b is None:
+                return a
+            try:
+                ratio = float(node.get("r") or 0.5)
+            except (TypeError, ValueError):
+                ratio = 0.5
+            return Split(node.get("o") or "v", ratio, a, b, bool(node.get("locked")))
         return None
 
     parsed = parse(data)
-    names = [leaf.block for leaf in _leaves(parsed)] if isinstance(parsed, Split) else []
+    names = [leaf.block for leaf in _leaves(parsed)] if parsed is not None else []
     if not isinstance(parsed, Split) or set(names) != set(BLOCKS) or len(names) != len(BLOCKS):
         return default_tree()
     return parsed
@@ -131,8 +140,6 @@ def _preferred_height(node, width: int, height: int) -> int | None:
             return min(height, HEADER + max(80, int(round(width * 9 / 16))))
         if node.block == "controls":
             return min(height, CONTROLS_H)
-        if node.block == "brain3d":
-            return min(height, BRAIN3D_H)
         return None
     if node.orient == "h":
         return None

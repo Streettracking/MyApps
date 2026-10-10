@@ -1,4 +1,4 @@
-"""Dock, theme, View menu, and the embedded 3D block.
+"""Dock, theme, and the View menu. The 3D brain is not a dock block.
 
 Run: SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3 -m unittest sim.test_dock_ui
 """
@@ -96,15 +96,17 @@ class TrainerDockTests(unittest.TestCase):
         except OSError:
             pass
 
-    def test_menu_theme_collapse_and_embedded_brain(self):
+    def test_menu_theme_collapse(self):
         import pygame
         import numpy as np
 
-        from sim.dock_layout import find_leaf, swap_blocks
+        from sim.dock_layout import BLOCKS, BLOCK_TITLES, find_leaf, swap_blocks
         from sim.train_monitor import SCROLL_BAR, MonitorView, TrainMonitor
         from sim.ui_theme import theme_name
 
         self.assertEqual(SCROLL_BAR, 8)
+        self.assertNotIn("brain3d", BLOCKS)
+        self.assertNotIn("мозг 3D", BLOCK_TITLES.values())
         pygame.init()
         try:
             mon = TrainMonitor("dock")
@@ -119,16 +121,15 @@ class TrainerDockTests(unittest.TestCase):
                 keys_hint="A авто  J мозг",
                 eye_l_recognized=True,
             )
-            yaw = mon._ensure_orbit().yaw
+            self.assertIsNone(find_leaf(mon.dock, "brain3d"))
+            self.assertIsNotNone(find_leaf(mon.dock, "journal"))
             mon.draw(view)
-            self.assertAlmostEqual(mon._ensure_orbit().yaw, yaw, places=5)
-            self.assertFalse(mon._ensure_orbit().auto)
-            brain = mon._content_of("brain3d")
-            self.assertIsNotNone(brain)
-            frame = pygame.surfarray.array3d(mon.screen)
-            patch = frame[brain.x: brain.right, brain.y: brain.bottom]
-            lit = int((patch.max(axis=2) > 20).sum())
-            self.assertGreater(lit, 80)
+            self.assertIsNone(mon._content_of("brain3d"))
+            self.assertIsNotNone(mon._content_of("journal"))
+            self.assertGreater(mon.journal_rect.h, 80)
+            out = __import__("pathlib").Path("/opt/cursor/artifacts")
+            out.mkdir(parents=True, exist_ok=True)
+            pygame.image.save(mon.present_into((1920, 1080)), str(out / "trainer_dock_journal.png"))
 
             find_leaf(mon.dock, "journal").collapsed = True
             mon._apply_layout(mon.screen.get_height())
@@ -137,6 +138,13 @@ class TrainerDockTests(unittest.TestCase):
             self.assertLess(mon.journal_rect.h, 40)
             self.assertTrue(mon.menu_open)
             self.assertGreater(len(mon._menu_hits), 6)
+            labels = []
+            for _rect, action in mon._menu_hits:
+                self.assertNotEqual(action, ("embed",))
+                if action[0] == "toggle":
+                    labels.append(action[1])
+            self.assertNotIn("brain3d", labels)
+            self.assertIn("journal", labels)
             light = pygame.surfarray.array3d(mon.present_into((1920, 1080)))
             out = __import__("pathlib").Path("/opt/cursor/artifacts")
             out.mkdir(parents=True, exist_ok=True)
@@ -151,7 +159,7 @@ class TrainerDockTests(unittest.TestCase):
             from sim.train_monitor import window_from_logical
 
             wx, wy = window_from_logical(toggle, 1920, 1080)
-            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(wx, wy), button=1))
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(wx), int(wy)), button=1))
             mon.menu_open = True
             mon.draw(view)
             clicked = mon.pump()

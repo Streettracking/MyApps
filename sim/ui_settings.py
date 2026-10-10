@@ -13,6 +13,7 @@ from pathlib import Path
 
 FILE_NAME = "window.json"
 CRASH_NAME = "crash.log"
+BRAIN_WINDOW_NAME = "brain_window.json"
 APP_DIR = "recognize_trainer"
 
 
@@ -72,8 +73,6 @@ def default_settings() -> dict:
         "w": None,
         "h": None,
         "layout": None,
-        "embed_3d": True,
-        "unclean_exit": False,
     }
 
 
@@ -92,24 +91,37 @@ def load_settings() -> dict:
     return data
 
 
-def begin_gui_session() -> None:
-    """Arm the crash latch. A previous native exit leaves embedded 3D off."""
-    if not persist_enabled():
-        return
-    data = load_settings()
-    if data.get("unclean_exit"):
-        data["embed_3d"] = False
-    data["unclean_exit"] = True
-    save_settings(data)
+def brain_window_path() -> Path:
+    """Size and position of the separate 3D window, beside window.json."""
+    return settings_path().with_name(BRAIN_WINDOW_NAME)
 
 
-def end_gui_session() -> None:
-    """Clear the latch. A native crash skips this, so the next start stays dark."""
+def load_brain_window() -> dict:
+    data = {"x": None, "y": None, "w": None, "h": None}
+    if not persist_enabled():
+        return data
+    try:
+        raw = json.loads(brain_window_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return data
+    if not isinstance(raw, dict):
+        return data
+    for key in data:
+        if key in raw:
+            data[key] = raw[key]
+    return data
+
+
+def save_brain_window(geom: dict) -> None:
     if not persist_enabled():
         return
-    data = load_settings()
-    data["unclean_exit"] = False
-    save_settings(data)
+    path = brain_window_path()
+    payload = {"x": geom.get("x"), "y": geom.get("y"), "w": geom.get("w"), "h": geom.get("h")}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        return
 
 
 def save_settings(data: dict) -> None:

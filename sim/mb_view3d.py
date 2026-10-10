@@ -1165,12 +1165,56 @@ def _recv_latest(sock) -> dict | None:
     return latest
 
 
+def _saved_viewer_size() -> tuple:
+    """Restore the 3D window. Default 960×700, never below 320×240."""
+    import os
+
+    from .ui_settings import load_brain_window
+
+    geom = load_brain_window()
+    try:
+        width = max(320, int(geom.get("w") or 960))
+    except (TypeError, ValueError):
+        width = 960
+    try:
+        height = max(240, int(geom.get("h") or 700))
+    except (TypeError, ValueError):
+        height = 700
+    x, y = geom.get("x"), geom.get("y")
+    if x is not None and y is not None:
+        try:
+            os.environ["SDL_VIDEO_WINDOW_POS"] = "%d,%d" % (int(x), int(y))
+        except (TypeError, ValueError):
+            pass
+    return width, height
+
+
+def _remember_viewer(window) -> None:
+    from .ui_settings import save_brain_window
+
+    box = {"x": None, "y": None, "w": max(320, int(window.get_width())), "h": max(240, int(window.get_height()))}
+    try:
+        from pygame._sdl2.video import Window
+
+        win = Window.from_display_module()
+        pos = win.position
+        size = win.size
+        box["x"], box["y"] = int(pos[0]), int(pos[1])
+        box["w"], box["h"] = max(320, int(size[0])), max(240, int(size[1]))
+    except Exception:
+        pass
+    save_brain_window(box)
+
+
 def run_viewer(port: int = VIEW_PORT) -> int:
+    import os
+
     import pygame
 
     pygame.init()
     pygame.display.set_caption("Грибовидное тело")
-    window = pygame.display.set_mode((960, 700), pygame.RESIZABLE)
+    width, height = _saved_viewer_size()
+    window = pygame.display.set_mode((width, height), pygame.RESIZABLE)
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 22)
     window.fill(_BG_EDGE)
@@ -1185,6 +1229,10 @@ def run_viewer(port: int = VIEW_PORT) -> int:
         sock.bind((HOST, int(port)))
     except OSError as exc:
         print("окно мозга: порт %s занят (%s)" % (port, exc), file=sys.stderr)
+        try:
+            sock.close()
+        except OSError:
+            pass
         return 1
     sock.setblocking(False)
     packet = {"r_l": 0.0, "r_r": 0.0, "kc_l": [], "kc_r": [], "flash_l": "", "flash_r": "", "rec_l": False, "rec_r": False, "edges": []}
@@ -1194,44 +1242,73 @@ def run_viewer(port: int = VIEW_PORT) -> int:
         orbit.dist = float(scene.fit_dist)
     frames = [False]
     drag = None
+    shot = os.environ.get("MB_VIEW_SHOT") or ""
+    shot_done = False
     pygame.key.set_repeat(180, 40)
-    while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return 0
-            if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_j):
-                return 0
-            if event.type == pygame.KEYDOWN:
-                _keys(orbit, event, frames)
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 2, 3):
-                shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
-                drag = ("pan" if event.button != 1 or shifted else "orbit", event.pos)
-                orbit.idle = 0.0
-            elif event.type == pygame.MOUSEBUTTONUP and event.button in (1, 2, 3):
-                drag = None
-            elif event.type == pygame.MOUSEMOTION and drag is not None:
-                dx = event.pos[0] - drag[1][0]
-                dy = event.pos[1] - drag[1][1]
-                shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
-                mode = "pan" if drag[0] == "pan" or shifted or event.buttons[1] or event.buttons[2] else "orbit"
-                drag = (mode, event.pos)
-                if mode == "pan":
-                    orbit.pan_pixels(dx, dy)
-                elif event.buttons[0]:
-                    orbit.drag(dx, dy)
-            elif event.type == pygame.MOUSEWHEEL:
-                orbit.zoom(event.y)
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (4, 5):
-                orbit.zoom(1 if event.button == 4 else -1)
-            elif event.type == pygame.VIDEORESIZE:
-                window = pygame.display.set_mode((max(320, event.w), max(240, event.h)), pygame.RESIZABLE)
-        fresh = _recv_latest(sock)
-        if fresh is not None:
-            packet = fresh
-        dt = clock.tick(30) / 1000.0
-        orbit.tick(dt, drag is not None)
-        paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y, frames=frames[0], fast=True)
-        pygame.display.flip()
+    running = True
+    try:
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                    break
+                if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_j):
+                    running = False
+                    break
+                if event.type == pygame.KEYDOWN:
+                    _keys(orbit, event, frames)
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 2, 3):
+                    shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                    drag = ("pan" if event.button != 1 or shifted else "orbit", event.pos)
+                    orbit.idle = 0.0
+                elif event.type == pygame.MOUSEBUTTONUP and event.button in (1, 2, 3):
+                    drag = None
+                elif event.type == pygame.MOUSEMOTION and drag is not None:
+                    dx = event.pos[0] - drag[1][0]
+                    dy = event.pos[1] - drag[1][1]
+                    shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                    mode = "pan" if drag[0] == "pan" or shifted or event.buttons[1] or event.buttons[2] else "orbit"
+                    drag = (mode, event.pos)
+                    if mode == "pan":
+                        orbit.pan_pixels(dx, dy)
+                    elif event.buttons[0]:
+                        orbit.drag(dx, dy)
+                elif event.type == pygame.MOUSEWHEEL:
+                    orbit.zoom(event.y)
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (4, 5):
+                    orbit.zoom(1 if event.button == 4 else -1)
+                elif event.type == pygame.VIDEORESIZE:
+                    window = pygame.display.set_mode((max(320, event.w), max(240, event.h)), pygame.RESIZABLE)
+                    _remember_viewer(window)
+                elif event.type == getattr(pygame, "WINDOWMOVED", -11):
+                    _remember_viewer(window)
+            if not running:
+                break
+            fresh = _recv_latest(sock)
+            if fresh is not None:
+                packet = fresh
+            dt = clock.tick(30) / 1000.0
+            orbit.tick(dt, drag is not None)
+            paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y, frames=frames[0], fast=True)
+            pygame.display.flip()
+            if shot and not shot_done:
+                try:
+                    dest = Path(shot)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    pygame.image.save(window, str(dest))
+                except OSError:
+                    pass
+                shot_done = True
+    finally:
+        try:
+            _remember_viewer(window)
+        except Exception:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+    return 0
 
 
 def _keys(orbit: Orbit, event, frames=None) -> None:
