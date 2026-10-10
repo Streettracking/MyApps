@@ -426,11 +426,24 @@ class BrainLoop:
                 "hint": self.pilot.hint,
                 "kc_on": int(self.mb.last_kc_on),
                 "kc_n": int(self.mb.brain.n_kc),
+                "kc_l": _compact_kc(None if self.mb.last_fwd is None else self.mb.last_fwd.kc),
+                "kc_r": _compact_kc(None if self.mb.last_fwd_r is None else self.mb.last_fwd_r.kc),
                 "drift": float(self.mb.last_drift),
                 "flash": flash,
                 "flash_r": flash_payload(self.mb.flash_r),
                 "log": list(self.log),
             }
+
+
+def _compact_kc(vec, cap: int = 400) -> list:
+    """Local KC indices for the laptop 3D view. Old clients ignore the key."""
+    if vec is None:
+        return []
+    idx = np.flatnonzero(np.asarray(vec) > 0)
+    if idx.size > int(cap):
+        step = int(np.ceil(idx.size / float(cap)))
+        idx = idx[::step][: int(cap)]
+    return [int(i) for i in idx]
 
 
 def make_brain(

@@ -45,7 +45,7 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "A авто  M перехват  K руль  Y учитель  H рамки  F11 экран  "
+    "A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  "
     "U запись  стрелки после M  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
 )
 
@@ -1027,6 +1027,9 @@ def run_live_gui(
             view.record_idle = rec_on and not labelled
             if rec_on and labelled and camera is not None and camera_jpeg and rec.due():
                 _offer_live_frame(session, rec, marks, camera, camera_jpeg, onboard)
+            from .mb_view3d import drive_brain
+
+            drive_brain(session, inp, session.now(), mon)
             mon.draw(view)
             if inp.screenshot:
                 dest = ROOT / "logs" / "monitor_shot.png"
@@ -1036,6 +1039,9 @@ def run_live_gui(
             if seconds > 0 and session.now() >= seconds:
                 break
     finally:
+        from .mb_view3d import close_brain
+
+        close_brain(session)
         teacher = getattr(session, "teacher", None)
         if teacher is not None:
             teacher.close()

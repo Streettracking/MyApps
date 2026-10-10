@@ -167,6 +167,12 @@ class ChannelTests(unittest.TestCase):
         self.assertIn("last_seen_side", payload)
         self.assertIn("teacher_pam_l", payload)
         self.assertIn("phase_ru", payload)
+        self.assertIsInstance(payload["kc_l"], list)
+        self.assertIsInstance(payload["kc_r"], list)
+        self.assertLessEqual(len(payload["kc_l"]), 400)
+        self.assertLessEqual(len(payload["kc_r"]), 400)
+        self.assertTrue(all(isinstance(i, int) for i in payload["kc_l"]))
+        self.assertTrue(all(isinstance(i, int) for i in payload["kc_r"]))
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "state.npz"
             loop.mb.save(path)
@@ -174,6 +180,8 @@ class ChannelTests(unittest.TestCase):
                 keys = set(saved.files)
         self.assertNotIn("teacher_pam_l", keys)
         self.assertNotIn("overlap", keys)
+        self.assertNotIn("kc_l", keys)
+        self.assertNotIn("kc_r", keys)
 
 
 class KeyTests(unittest.TestCase):

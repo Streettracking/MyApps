@@ -93,6 +93,7 @@ class MonitorInput:
     steer_toggle: bool = False
     teacher_toggle: bool = False
     boxes_toggle: bool = False
+    brain_toggle: bool = False
     fullscreen_toggle: bool = False
     record_toggle: bool = False
     takeover: bool = False
@@ -198,10 +199,11 @@ class MonitorView:
 
 
 def monitor_layout(w: int, h: int) -> dict:
-    """Rects for one logical frame. The camera slot is at least half the width.
+    """Rects for one logical 1920×1080 frame. The camera slot is at least half the width.
 
-    pygame.SCALED then fits this 16:9 frame onto a 1920×1080 screen or a
-    smaller window without rearranging the controls.
+    The OS window is a normal resizable frame. Each presented frame is this
+    canvas scaled into that window (the same idea as pygame.SCALED, without
+    the flag that drops the title bar).
     """
     m = 16
     header = 48
@@ -245,8 +247,10 @@ def monitor_layout(w: int, h: int) -> dict:
             cursor += rw + gap_b
         return out
 
-    header_x = w - 16 - 320 - 8 - 260
-    buttons = place([("teacher", 320), ("record", 260)], header_x, 8, 32, w - 16)
+    header_items = [("brain", 168), ("teacher", 280), ("record", 250)]
+    header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
+    header_x = w - 16 - header_total
+    buttons = place(header_items, header_x, 8, 32, w - 16)
     buttons.update(
         place(
             [
@@ -380,6 +384,10 @@ class TrainMonitor:
         pygame.display.set_caption(title)
         self.fullscreen = bool(fullscreen)
         self.screen = None
+        self.window = None
+        self._window_size = None
+        self._minimized = False
+        self.brain_open = False
         self._open_display()
         self.font = _ui_font(15)
         self.font_sm = _ui_font(14)
@@ -418,29 +426,125 @@ class TrainMonitor:
         self.steer_rect = self._rect("steer")
         self.record_rect = self._rect("record")
         self.teacher_rect = self._rect("teacher")
+        self.brain_rect = self._rect("brain")
         self.stand_up_rect = self._rect("stand_up")
         self.stand_down_rect = self._rect("stand_down")
         self.recovery_rect = self._rect("recovery")
 
-    def _open_display(self) -> None:
-        """Logical 1920×1080. SCALED fits that frame to the window or the screen."""
+    def _desktop(self):
         import pygame
 
-        flags = getattr(pygame, "SCALED", 0)
-        if self.fullscreen:
-            flags |= pygame.FULLSCREEN
-        else:
-            flags |= pygame.RESIZABLE
         try:
-            self.screen = pygame.display.set_mode((WIN_W, WIN_H), flags)
-        except pygame.error:
-            self.fullscreen = False
-            self.screen = pygame.display.set_mode((WIN_W, WIN_H))
+            sizes = pygame.display.get_desktop_sizes()
+        except Exception:
+            sizes = []
+        if sizes:
+            return int(sizes[0][0]), int(sizes[0][1])
+        info = pygame.display.Info()
+        w = int(getattr(info, "current_w", 0) or 0)
+        h = int(getattr(info, "current_h", 0) or 0)
+        if w < 320 or h < 240:
+            return WIN_W, WIN_H
+        return w, h
+
+    def _initial_window_size(self):
+        """About 80% of the desktop, inside the screen so the title bar fits."""
+        dw, dh = self._desktop()
+        ww = max(640, int(round(dw * 0.80)))
+        wh = max(480, int(round(dh * 0.80)))
+        ww = min(ww, max(320, dw - 16))
+        wh = min(wh, max(240, dh - 48))
+        return ww, wh
+
+    def _open_display(self) -> None:
+        """Bordered resizable window. Drawing stays on a 1920×1080 surface.
+
+        Fullscreen is only the FULLSCREEN flag (F11 or --fullscreen). The
+        logical canvas is scaled into the window each frame, which is the
+        SCALED behaviour without that flag: SCALED on Windows opens a
+        borderless frame that cannot be minimized.
+        """
+        import pygame
+
+        if self.fullscreen:
+            dw, dh = self._desktop()
+            try:
+                self.window = pygame.display.set_mode((dw, dh), pygame.FULLSCREEN)
+            except pygame.error:
+                self.fullscreen = False
+        if not self.fullscreen:
+            if self._window_size is None:
+                self._window_size = self._initial_window_size()
+            w, h = int(self._window_size[0]), int(self._window_size[1])
+            self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+            actual = self.window.get_size()
+            # The first set_mode after FULLSCREEN can keep the desktop size.
+            if actual != (w, h):
+                self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+                actual = self.window.get_size()
+            if actual == (w, h):
+                self._window_size = actual
+            elif actual[0] >= 64 and actual[1] >= 64 and self._window_size is None:
+                self._window_size = (int(actual[0]), int(actual[1]))
+        if self.screen is None or self.screen.get_size() != (WIN_W, WIN_H):
+            self.screen = pygame.Surface((WIN_W, WIN_H))
+        self._minimized = False
 
     def toggle_fullscreen(self) -> bool:
+        """F11. Leaving fullscreen restores the window size from before it."""
         self.fullscreen = not self.fullscreen
+        self._minimized = False
         self._open_display()
         return self.fullscreen
+
+    def _logical_pos(self, pos) -> tuple:
+        """Window pixels → the 1920×1080 canvas."""
+        win = self.window
+        if win is None:
+            return (int(pos[0]), int(pos[1]))
+        ww, wh = win.get_size()
+        if ww < 2 or wh < 2:
+            return (int(pos[0]), int(pos[1]))
+        x = int(round(float(pos[0]) * WIN_W / float(ww)))
+        y = int(round(float(pos[1]) * WIN_H / float(wh)))
+        return (max(0, min(WIN_W - 1, x)), max(0, min(WIN_H - 1, y)))
+
+    def _mouse(self) -> tuple:
+        import pygame
+
+        return self._logical_pos(pygame.mouse.get_pos())
+
+    def _on_resize(self, w: int, h: int) -> None:
+        import pygame
+
+        if w < 64 or h < 64:
+            self._minimized = True
+            return
+        self._minimized = False
+        if self.fullscreen:
+            return
+        if self.window is not None and self.window.get_size() == (w, h):
+            self._window_size = (w, h)
+            return
+        self._window_size = (w, h)
+        self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+
+    def _present(self) -> None:
+        """Scale the logical canvas into the OS window. A minimized window skips the blit."""
+        import pygame
+
+        if self._minimized or self.window is None:
+            return
+        ww, wh = self.window.get_size()
+        if ww < 64 or wh < 64:
+            self._minimized = True
+            return
+        if (ww, wh) == (WIN_W, WIN_H):
+            frame = self.screen
+        else:
+            frame = pygame.transform.smoothscale(self.screen, (ww, wh))
+        self.window.blit(frame, (0, 0))
+        pygame.display.flip()
 
     def pump(self) -> MonitorInput:
         import pygame
@@ -496,6 +600,8 @@ class TrainMonitor:
                     inp.teacher_toggle = True
                 elif event.key == pygame.K_h and not getattr(event, "repeat", False):
                     inp.boxes_toggle = True
+                elif event.key == pygame.K_j and not getattr(event, "repeat", False):
+                    inp.brain_toggle = True
                 elif event.key == pygame.K_F11 and not getattr(event, "repeat", False):
                     self.toggle_fullscreen()
                     inp.fullscreen_toggle = True
@@ -506,32 +612,45 @@ class TrainMonitor:
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
                     inp.stand_down = True
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if self.estop_rect.collidepoint(event.pos):
+                pos = self._logical_pos(event.pos)
+                if self.estop_rect.collidepoint(pos):
                     inp.estop = True
-                elif self.treat_rect.collidepoint(event.pos):
+                elif self.treat_rect.collidepoint(pos):
                     inp.treat = True
-                elif self.lidar_reset_rect.collidepoint(event.pos):
+                elif self.lidar_reset_rect.collidepoint(pos):
                     inp.lidar_reset = True
-                elif self.lidar_fresh_rect.collidepoint(event.pos):
+                elif self.lidar_fresh_rect.collidepoint(pos):
                     inp.lidar_toggle = True
-                elif self.learn_rect.collidepoint(event.pos):
+                elif self.learn_rect.collidepoint(pos):
                     inp.pause_learn = True
-                elif self.auto_rect.collidepoint(event.pos):
+                elif self.auto_rect.collidepoint(pos):
                     inp.autonomy_toggle = True
-                elif self.take_rect.collidepoint(event.pos):
+                elif self.take_rect.collidepoint(pos):
                     inp.takeover = True
-                elif self.steer_rect.collidepoint(event.pos):
+                elif self.steer_rect.collidepoint(pos):
                     inp.steer_toggle = True
-                elif self.record_rect.collidepoint(event.pos):
+                elif self.record_rect.collidepoint(pos):
                     inp.record_toggle = True
-                elif self.teacher_rect.collidepoint(event.pos):
+                elif self.teacher_rect.collidepoint(pos):
                     inp.teacher_toggle = True
-                elif self.show_stand and self.stand_up_rect.collidepoint(event.pos):
+                elif self.brain_rect.collidepoint(pos):
+                    inp.brain_toggle = True
+                elif self.show_stand and self.stand_up_rect.collidepoint(pos):
                     inp.stand_up = True
-                elif self.show_stand and self.stand_down_rect.collidepoint(event.pos):
+                elif self.show_stand and self.stand_down_rect.collidepoint(pos):
                     inp.stand_down = True
-                elif self.show_stand and self.recovery_rect.collidepoint(event.pos):
+                elif self.show_stand and self.recovery_rect.collidepoint(pos):
                     inp.recovery = True
+            elif event.type == pygame.VIDEORESIZE:
+                self._on_resize(int(event.w), int(event.h))
+            elif event.type == getattr(pygame, "WINDOWMINIMIZED", -1):
+                self._minimized = True
+            elif event.type in (
+                getattr(pygame, "WINDOWRESTORED", -2),
+                getattr(pygame, "WINDOWMAXIMIZED", -3),
+                getattr(pygame, "WINDOWSHOWN", -4),
+            ):
+                self._minimized = False
         inp.focused = bool(pygame.key.get_focused())
         if inp.focused:
             keys = pygame.key.get_pressed()
@@ -562,6 +681,7 @@ class TrainMonitor:
         sm = self.font_sm
         screen.blit(self.font.render(view.title, True, LABEL), (16, 14))
         self._link_lamp(screen, view)
+        self._brain_button(screen, view)
         self._teacher_button(screen, view)
         self._record_button(screen, view)
 
@@ -652,14 +772,14 @@ class TrainMonitor:
         screen.blit(sm.render(view.keys_hint, True, LABEL), (16, footer + 40))
 
         if view.learner == "mb":
-            self._treat_button(screen, view, pygame.mouse.get_pos())
+            self._treat_button(screen, view, self._mouse())
             if view.recognized and not self._prev_rec and self.beep_on:
                 self._play_beep()
             self._prev_rec = view.recognized
         else:
             self._prev_rec = False
-        self._button(screen, self.estop_rect, "E-STOP", ESTOP, self.estop_rect.collidepoint(pygame.mouse.get_pos()), label_color=ESTOP)
-        pygame.display.flip()
+        self._button(screen, self.estop_rect, "E-STOP", ESTOP, self.estop_rect.collidepoint(self._mouse()), label_color=ESTOP)
+        self._present()
         self.clock.tick(30)
 
     def _cells(self, screen, text: str, x: int, y: int, color, size: int = 14) -> int:
@@ -790,7 +910,7 @@ class TrainMonitor:
     def _mode_buttons(self, screen, view: MonitorView) -> None:
         import pygame
 
-        mouse = pygame.mouse.get_pos()
+        mouse = self._mouse()
         learn_on = bool(view.learning_on)
         auto_on = bool(view.autonomy_on)
         grabbed = "ПЕРЕХВАТ" in (view.pilot_mode or "")
@@ -825,6 +945,17 @@ class TrainMonitor:
                 self.steer_rect.collidepoint(mouse),
             )
 
+    def _brain_button(self, screen, view: MonitorView) -> None:
+        if view.learner != "mb":
+            return
+        self._button(
+            screen,
+            self.brain_rect,
+            "МОЗГ 3D  J",
+            PEACH if self.brain_open else LAMP_OFF,
+            self.brain_rect.collidepoint(self._mouse()),
+        )
+
     def _teacher_button(self, screen, view: MonitorView) -> None:
         if view.learner != "mb":
             return
@@ -839,7 +970,7 @@ class TrainMonitor:
             lamp, label = PEACH, "учитель не запущен"
         else:
             lamp, label = LAMP_OFF, "выкл (нет обучения)"
-        self._button(screen, self.teacher_rect, label, lamp, self.teacher_rect.collidepoint(pygame.mouse.get_pos()))
+        self._button(screen, self.teacher_rect, label, lamp, self.teacher_rect.collidepoint(self._mouse()))
 
     def _draw_det_boxes(self, screen, inner, boxes) -> None:
         """Screen-only YOLO frames. The camera array is not written."""
@@ -869,7 +1000,7 @@ class TrainMonitor:
     def _stand_buttons(self, screen) -> None:
         import pygame
 
-        mouse = pygame.mouse.get_pos()
+        mouse = self._mouse()
         self._button(screen, self.stand_up_rect, "ВСТАТЬ +", None, self.stand_up_rect.collidepoint(mouse))
         self._button(screen, self.stand_down_rect, "ЛЕЧЬ −", None, self.stand_down_rect.collidepoint(mouse))
         self._button(screen, self.recovery_rect, "ПОДЪЁМ", None, self.recovery_rect.collidepoint(mouse))
@@ -877,7 +1008,7 @@ class TrainMonitor:
     def _record_button(self, screen, view: MonitorView) -> None:
         import pygame
 
-        hot = self.record_rect.collidepoint(pygame.mouse.get_pos())
+        hot = self.record_rect.collidepoint(self._mouse())
         if view.record_on:
             text = format_record(view.record_saved, view.record_bytes, view.record_idle)
             lamp = PEACH
@@ -938,13 +1069,13 @@ class TrainMonitor:
     def _lidar_reset_button(self, screen) -> None:
         import pygame
 
-        hot = self.lidar_reset_rect.collidepoint(pygame.mouse.get_pos())
+        hot = self.lidar_reset_rect.collidepoint(self._mouse())
         self._button(screen, self.lidar_reset_rect, "СБРОС ЛИДАРА  C", None, hot)
 
     def _lidar_fresh_button(self, screen, view: MonitorView) -> None:
         import pygame
 
-        hot = self.lidar_fresh_rect.collidepoint(pygame.mouse.get_pos())
+        hot = self.lidar_fresh_rect.collidepoint(self._mouse())
         if view.lidar_fresh_on:
             caption = view.lidar_mode or "свежий лидар"
             lamp = PEACH

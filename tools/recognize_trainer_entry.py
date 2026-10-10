@@ -36,11 +36,15 @@ import sim.raw_sense  # noqa: F401
 import sim.recognize  # noqa: F401
 import sim.recognize_train as recognize_train
 import sim.recognize_train_live as recognize_train_live
+import sim.mb_view3d  # noqa: F401
 import sim.train_monitor  # noqa: F401
 import sim.world  # noqa: F401
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--mb-view3d" in args:
+        return sim.mb_view3d.main(args)
     # Audio is left on the system driver so the optional beep can play.
     # A missing device is reported when B is pressed; the window still opens.
     p = argparse.ArgumentParser(description="Go2 conspecific recognition trainer")

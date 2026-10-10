@@ -572,7 +572,7 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "T/X учить  A авто  M перехват  K руль  Y учитель  H рамки  F11 экран  U запись  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
+SIM_KEYS = "T/X учить  A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  U запись  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
 HEBB_KEYS = "стрелки ход   U запись   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
 
 
@@ -692,6 +692,9 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
     try:
         return _run_gui(session, mon, shot, seconds, rec, marks)
     finally:
+        from .mb_view3d import close_brain
+
+        close_brain(session)
         teacher = getattr(session, "teacher", None)
         if teacher is not None:
             teacher.close()
@@ -794,6 +797,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         view.record_idle = rec_on and not labelled
         if rec_on and labelled and view.camera is not None and rec.due():
             _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z)
+        from .mb_view3d import drive_brain
+
+        drive_brain(session, inp, float(session.world.t), mon)
         mon.draw(view)
         if inp.screenshot:
             dest = ROOT / "logs" / "monitor_shot.png"
