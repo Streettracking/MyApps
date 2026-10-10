@@ -1,13 +1,18 @@
 """Separate 3D window for the two mushroom bodies.
 
 ``connectome_mb_v1.npz`` has FlyWire root ids, types, and synapses, not soma
-or skeleton coordinates. Positions come from
-``artifacts/connectome_mb_v1_neurons.csv.gz`` (``soma_x/y/z``, else ``pos_*``).
-A neuron missing from that table is placed on a small schematic lobe so the
-cloud stays complete.
+or skeleton coordinates. Soma positions come from
+``artifacts/connectome_mb_v1_neurons.csv.gz``. The edge table has neuropil
+names (MB_CA, MB_PED, MB_VL, MB_ML) and counts, not synapse xyz.
 
-The trainer process only sends a UDP datagram to 127.0.0.1:5473. This module
-is the receiver and the window. B stays the beep; the window is J.
+Stored soma spans on one hemisphere are about 29 × 24 × 1.9 µm, so z is
+~15× flatter than x. FAFB sections are 40 nm against 4 nm in x/y, and there
+is no skeleton to recover the neuropil. Display scales z by 10, centers each
+hemisphere, and lays calyx, peduncle, and the α/β, α′/β′, γ lobes out from
+the cell type plus those neuropil counts. The trainer window stays light.
+
+The trainer only sends a UDP datagram to 127.0.0.1:5473. B stays the beep;
+this window is J. A toggles idle orbit inside this window.
 """
 
 from __future__ import annotations
@@ -33,14 +38,37 @@ EDGE_CAP = 80
 _GAMMA = ("KCg-d", "KCg-s1", "KCg-s2", "KCg-s3", "KCg-m")
 _AB = ("KCab-p", "KCab")
 
-_BG_TOP = (236, 234, 230)
-_BG_BOT = (244, 242, 239)
-_LABEL = (107, 107, 107)
-_VALUE = (63, 63, 63)
-_PEACH = (201, 120, 91)
-_GREEN = (141, 181, 150)
-_RED = (217, 136, 128)
-_KC = ((196, 176, 160), (168, 186, 176), (176, 180, 196))
+# Dark window only. The trainer keeps its light theme.
+_BG_EDGE = (14, 15, 18)  # #0E0F12
+_BG_CORE = (26, 28, 34)  # #1A1C22
+_INK = (196, 198, 204)
+_KC_IDLE = (148, 150, 156)
+_GLOW_L = (255, 186, 140)
+_GLOW_R = (150, 220, 170)
+_AMBER = (232, 176, 104)
+_PAM = (128, 206, 146)
+_PPL = (214, 112, 108)
+_WIRE = ((168, 148, 118), (142, 168, 186), (176, 156, 196))
+
+# FAFB voxels are 4×4×40 nm. Stored soma z is ~15× shorter than x.
+Z_ANISO = 10.0
+# Display units per micrometre. Lobes of ~50 µm stay inside the camera.
+_UM = 1.0 / 42.0
+# µm in the local frame: medial (toward the midline), dorsal, anterior.
+_ANCHOR = {
+    # Connected mushroom, µm: calyx behind the peduncle, then the lobes.
+    "ca": np.array([2.0, 9.0, 12.0], dtype=np.float64),
+    "ped": np.array([5.0, 4.0, 20.0], dtype=np.float64),
+    "a": np.array([3.0, 46.0, 26.0], dtype=np.float64),
+    "ap": np.array([8.0, 32.0, 32.0], dtype=np.float64),
+    "b": np.array([22.0, 6.0, 24.0], dtype=np.float64),
+    "bp": np.array([16.0, 14.0, 30.0], dtype=np.float64),
+    "g": np.array([18.0, -4.0, 16.0], dtype=np.float64),
+}
+# 3/4 from above and the side: calyx back, peduncle forward, vertical lobe up.
+YAW0 = 0.62
+PITCH0 = 0.48
+DIST0 = 3.05
 
 
 def artifact_dir() -> Path:
@@ -59,6 +87,10 @@ def connectome_npz() -> Path:
 
 def neurons_csv() -> Path:
     return artifact_dir() / "connectome_mb_v1_neurons.csv.gz"
+
+
+def edges_csv() -> Path:
+    return artifact_dir() / "connectome_mb_v1_edges.csv.gz"
 
 
 def compact_ids(vec, cap: int = KC_CAP) -> list:
@@ -83,18 +115,23 @@ def _lobe(name: str) -> int:
     return 2
 
 
-def _load_somas(path: Path) -> dict:
+def _load_somas(path: Path, root_ids: np.ndarray) -> np.ndarray:
+    """Soma xyz in nm, aligned to ``root_ids``. NaN where the table has no row."""
     import csv
     import gzip
 
-    out = {}
+    out = np.full((len(root_ids), 3), np.nan, dtype=np.float64)
     if not path.is_file():
         return out
+    wanted = {int(r): i for i, r in enumerate(root_ids)}
     with gzip.open(str(path), "rt", newline="") as handle:
         for row in csv.DictReader(handle):
             try:
                 root = int(row.get("root_id") or 0)
             except ValueError:
+                continue
+            index = wanted.get(root)
+            if index is None:
                 continue
             raw = []
             for a, b in (("soma_x", "pos_x"), ("soma_y", "pos_y"), ("soma_z", "pos_z")):
@@ -103,28 +140,105 @@ def _load_somas(path: Path) -> dict:
                     raw.append(float(text))
                 except ValueError:
                     raw.append(float("nan"))
-            if not all(np.isfinite(raw)):
-                continue
-            out[root] = (raw[0], raw[1], raw[2])
+            out[index] = raw
     return out
 
 
-def _schematic(i: int, left: bool, lobe: int) -> tuple:
-    x = -0.62 if left else 0.62
-    y = (0.05, 0.38, 0.22)[lobe]
-    ang = (i * 0.61803398875) % 1.0 * 6.28318530718
-    rad = 0.05 + (i % 17) * 0.01
-    return (
-        x + rad * np.cos(ang) * 0.45,
-        y + ((i % 23) - 11) * 0.01,
-        rad * np.sin(ang) * 0.45,
-    )
+def _compartment_weights(path: Path, root_ids: np.ndarray) -> np.ndarray:
+    """Synapse counts in MB_CA, MB_PED, MB_VL, MB_ML. No xyz in this file."""
+    import csv
+    import gzip
+
+    acc = np.zeros((len(root_ids), 4), dtype=np.float64)
+    if not path.is_file():
+        return acc
+    wanted = {int(r): i for i, r in enumerate(root_ids)}
+    slots = {"CA": 0, "PED": 1, "VL": 2, "ML": 3}
+    with gzip.open(str(path), "rt", newline="") as handle:
+        for row in csv.DictReader(handle):
+            name = row.get("neuropil") or ""
+            if not name.startswith("MB_"):
+                continue
+            parts = name.split("_")
+            slot = slots.get(parts[1] if len(parts) > 1 else "")
+            if slot is None:
+                continue
+            try:
+                weight = float(row.get("syn_count") or 0.0)
+            except ValueError:
+                continue
+            for col in ("pre_pt_root_id", "post_pt_root_id"):
+                try:
+                    index = wanted.get(int(row.get(col) or 0))
+                except ValueError:
+                    index = None
+                if index is not None:
+                    acc[index, slot] += weight
+    return acc
+
+
+def _type_anchor(lobe: int, index: int) -> np.ndarray:
+    if lobe == 0:
+        return _ANCHOR["g"]
+    if lobe == 1:
+        return _ANCHOR["a"] if (index % 2 == 0) else _ANCHOR["b"]
+    return _ANCHOR["ap"] if (index % 2 == 0) else _ANCHOR["bp"]
+
+
+def _neuropil_anchor(weights, lobe: int, index: int) -> np.ndarray:
+    ca, ped, vl, ml = (float(v) for v in weights)
+    total = ca + ped + vl + ml
+    if total < 1.0:
+        return _type_anchor(lobe, index)
+    vertical = _ANCHOR["a"] if lobe != 2 else _ANCHOR["ap"]
+    medial = _ANCHOR["g"] if lobe == 0 else (_ANCHOR["b"] if lobe == 1 else _ANCHOR["bp"])
+    acc = _ANCHOR["ca"] * ca + _ANCHOR["ped"] * ped + vertical * vl + medial * ml
+    return acc / total
+
+
+def _world(medial: float, dorsal: float, anterior: float, left: bool) -> tuple:
+    sign = 1.0 if left else -1.0
+    x = sign * (-0.64 + medial * _UM)
+    y = dorsal * _UM
+    z = anterior * _UM
+    return (x, y, z)
+
+
+class Orbit:
+    """Idle yaw. Mouse drag pauses it; A toggles it."""
+
+    def __init__(self):
+        self.yaw = YAW0
+        self.pitch = PITCH0
+        self.dist = DIST0
+        self.auto = True
+        self.idle = 1.0
+
+    def drag(self, dx: float, dy: float) -> None:
+        self.idle = 0.0
+        self.yaw += float(dx) * 0.008
+        self.pitch = max(-1.15, min(1.15, self.pitch + float(dy) * 0.008))
+
+    def zoom(self, steps: float) -> None:
+        self.dist = max(1.6, min(9.0, self.dist - float(steps) * 0.22))
+
+    def toggle(self) -> None:
+        self.auto = not self.auto
+        self.idle = 1.0 if self.auto else 0.0
+
+    def tick(self, dt: float, dragging: bool) -> None:
+        if dragging:
+            self.idle = 0.0
+            return
+        self.idle += float(dt)
+        if self.auto and self.idle > 0.45:
+            self.yaw += float(dt) * 0.16
 
 
 class BrainCloud:
-    """Unit-space points. Anatomical left is FlyWire ``side=left`` (Л)."""
+    """Display points. Anatomical left is FlyWire ``side=left`` (Л)."""
 
-    def __init__(self, npz_path: Path | None = None, csv_path: Path | None = None):
+    def __init__(self, npz_path: Path | None = None, csv_path: Path | None = None, edge_path: Path | None = None):
         z = open_npz(npz_path or connectome_npz())
         try:
             root_ids = z["root_ids"].astype(np.int64)
@@ -141,47 +255,115 @@ class BrainCloud:
             post = z["kc_mbon_post"].astype(np.int32)
         finally:
             z.close()
-        somas = _load_somas(csv_path or neurons_csv())
-        n = len(root_ids)
-        raw = np.full((n, 3), np.nan, dtype=np.float64)
-        for i, root in enumerate(root_ids):
-            xyz = somas.get(int(root))
-            if xyz is not None:
-                raw[i] = xyz
+        raw = _load_somas(csv_path or neurons_csv(), root_ids)
+        weights = _compartment_weights(edge_path or edges_csv(), root_ids)
         finite = np.isfinite(raw).all(axis=1)
         self.n_soma = int(finite.sum())
         self.n_schematic = int((~finite).sum())
-        if self.n_soma:
-            center = np.median(raw[finite], axis=0)
-            shifted = raw - center
-            dist = np.linalg.norm(shifted[finite], axis=1)
-            scale = float(np.percentile(dist, 95)) or 1.0
-            shifted /= scale
-        else:
-            shifted = raw
-        unit = np.zeros((n, 3), dtype=np.float32)
-        if self.n_soma:
-            unit[finite] = shifted[finite].astype(np.float32)
-        for i in range(n):
-            if finite[i]:
-                continue
-            left = str(sides[i]) == "left"
-            unit[i] = _schematic(i, left, _lobe(str(types[i])))
-        self.source = "flywire-soma" if self.n_schematic == 0 and self.n_soma else (
-            "schematic" if self.n_soma == 0 else "flywire-soma+schematic"
-        )
+        self.z_aniso = float(Z_ANISO)
+        self.used_neuropil = bool(weights.sum() > 0)
         left = np.array([str(s) == "left" for s in sides])
+        spans = []
+        medians = {}
+        kc_set = set(int(i) for i in kc_idx)
+        for flag in (True, False):
+            mask = left & finite if flag else (~left) & finite
+            if not np.any(mask):
+                medians[flag] = np.zeros(3)
+                continue
+            block = raw[mask]
+            medians[flag] = np.median(block, axis=0)
+            kc_rows = [i for i in np.flatnonzero(mask) if int(i) in kc_set]
+            if kc_rows:
+                spans.append(raw[np.asarray(kc_rows)].max(0) - raw[np.asarray(kc_rows)].min(0))
+        if spans:
+            span = np.max(np.vstack(spans), axis=0)
+        else:
+            span = np.zeros(3)
+        self.span_nm = (float(span[0]), float(span[1]), float(span[2]))
+        if self.n_schematic == 0 and self.n_soma and self.used_neuropil:
+            self.source = "flywire-soma+neuropil"
+        elif self.n_soma and self.n_schematic == 0:
+            self.source = "flywire-soma"
+        elif self.n_soma == 0:
+            self.source = "schematic"
+        else:
+            self.source = "flywire-soma+schematic"
 
-        def take(idx):
-            idx = np.asarray(idx, dtype=np.int32)
-            return unit[idx], left[idx].astype(np.uint8)
+        def place(global_i: int, lobe: int) -> tuple:
+            is_left = bool(left[global_i])
+            if not finite[global_i]:
+                ang = (global_i * 0.61803398875) % 1.0
+                anchor = _type_anchor(lobe, global_i)
+                medial = float(anchor[0]) + (ang - 0.5) * 6.0
+                dorsal = float(anchor[1]) + ((global_i % 11) - 5) * 0.8
+                anterior = float(anchor[2]) + ((global_i % 7) - 3) * 0.8
+                return _world(medial, dorsal, anterior, is_left)
+            delta = (raw[global_i] - medians[is_left]) / 1000.0
+            delta = delta * np.array([1.0, 1.0, Z_ANISO])
+            sign = 1.0 if is_left else -1.0
+            jitter = np.array([
+                delta[0] * sign * 1.4,
+                delta[2] * 2.2,
+                delta[1] * 1.4,
+            ])
+            # A cube clip projects as a square. Keep the residual inside a ball.
+            norm = float(np.linalg.norm(jitter))
+            if norm > 8.0:
+                jitter *= 8.0 / norm
+            typed = _type_anchor(lobe, global_i)
+            neuropil = _neuropil_anchor(weights[global_i], lobe, global_i)
+            # Type keeps the cell in its lobe. Neuropil only tugs it.
+            # A full neuropil blend sits between compartments and draws a trail.
+            if float(np.sum(weights[global_i])) >= 1.0:
+                mixed = 0.72 * typed + 0.28 * neuropil
+            else:
+                mixed = typed
+            local = mixed + jitter
+            return _world(float(local[0]), float(local[1]), float(local[2]), is_left)
 
-        self.kc_pos, kc_left = take(kc_idx)
-        self.kc_side = kc_left
-        self.kc_lobe = np.array([_lobe(str(types[int(g)])) for g in kc_idx], dtype=np.uint8)
-        self.mbon_pos, self.mbon_side = take(mbon_idx)
-        self.pam_pos, self.pam_side = take(app) if len(app) else (np.zeros((0, 3), np.float32), np.zeros(0, np.uint8))
-        self.ppl_pos, self.ppl_side = take(av) if len(av) else (np.zeros((0, 3), np.float32), np.zeros(0, np.uint8))
+        def calyx_of(global_i: int) -> tuple:
+            is_left = bool(left[global_i])
+            anchor = _ANCHOR["ca"]
+            if not finite[global_i]:
+                return _world(float(anchor[0]), float(anchor[1]), float(anchor[2]), is_left)
+            delta = (raw[global_i] - medians[is_left]) / 1000.0
+            delta = delta * np.array([1.0, 1.0, Z_ANISO])
+            sign = 1.0 if is_left else -1.0
+            jitter = np.array([delta[0] * sign * 0.35, delta[2] * 0.45, delta[1] * 0.35])
+            norm = float(np.linalg.norm(jitter))
+            if norm > 5.0:
+                jitter *= 5.0 / norm
+            return _world(
+                float(anchor[0] + jitter[0]),
+                float(anchor[1] + jitter[1]),
+                float(anchor[2] + jitter[2]),
+                is_left,
+            )
+
+        kc_lobe = np.array([_lobe(str(types[int(g)])) for g in kc_idx], dtype=np.uint8)
+        kc_pos = np.zeros((len(kc_idx), 3), dtype=np.float32)
+        calyx = np.zeros((len(kc_idx), 3), dtype=np.float32)
+        for i, g in enumerate(kc_idx):
+            kc_pos[i] = place(int(g), int(kc_lobe[i]))
+            calyx[i] = calyx_of(int(g))
+        self.kc_pos = kc_pos
+        self.calyx_pos = calyx
+        self.kc_side = left[kc_idx].astype(np.uint8)
+        self.kc_lobe = kc_lobe
+
+        def group(idx, lobe_name: str):
+            if len(idx) == 0:
+                return np.zeros((0, 3), np.float32), np.zeros(0, np.uint8)
+            lobe = {"g": 0, "a": 1, "p": 2}[lobe_name]
+            pos = np.zeros((len(idx), 3), dtype=np.float32)
+            for i, g in enumerate(idx):
+                pos[i] = place(int(g), lobe)
+            return pos, left[np.asarray(idx, dtype=np.int32)].astype(np.uint8)
+
+        self.mbon_pos, self.mbon_side = group(mbon_idx, "a")
+        self.pam_pos, self.pam_side = group(app, "g")
+        self.ppl_pos, self.ppl_side = group(av, "a")
         g2kc = {int(g): i for i, g in enumerate(kc_idx)}
         g2mbon = {int(g): i for i, g in enumerate(mbon_idx)}
         lp, lq = [], []
@@ -194,10 +376,46 @@ class BrainCloud:
             lq.append(b)
         self.edge_pre = np.asarray(lp, dtype=np.int32)
         self.edge_post = np.asarray(lq, dtype=np.int32)
+        self.hulls = _hulls(self)
 
     @property
     def n_kc(self) -> int:
         return int(len(self.kc_pos))
+
+
+def _wire_box(pts: np.ndarray):
+    if len(pts) < 12:
+        return []
+    center = np.median(pts, axis=0)
+    shifted = pts - center
+    cov = np.cov(shifted.T)
+    _vals, vecs = np.linalg.eigh(cov)
+    local = shifted @ vecs
+    lo = np.percentile(local, 10, axis=0)
+    hi = np.percentile(local, 90, axis=0)
+    corners = []
+    for bits in range(8):
+        coord = np.array([lo[k] if ((bits >> k) & 1) == 0 else hi[k] for k in range(3)])
+        corners.append(center + vecs @ coord)
+    segments = []
+    for i in range(8):
+        for bit in range(3):
+            j = i | (1 << bit)
+            if j != i and i < j:
+                segments.append((corners[i], corners[j]))
+    return segments
+
+
+def _hulls(cloud: "BrainCloud"):
+    out = []
+    for side in (1, 0):
+        mask = cloud.kc_side == side
+        calyx = cloud.calyx_pos[mask]
+        out.append((side, -1, _wire_box(calyx)))
+        for lobe in (0, 1, 2):
+            pts = cloud.kc_pos[mask & (cloud.kc_lobe == lobe)]
+            out.append((side, lobe, _wire_box(pts)))
+    return out
 
 
 def _gain(value: float) -> float:
@@ -207,10 +425,11 @@ def _gain(value: float) -> float:
 
 def _mix(a, b, t: float):
     t = max(0.0, min(1.0, float(t)))
-    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+    return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
 
 
 def _project(pos, yaw: float, pitch: float, dist: float, cx: float, cy: float, fov: float):
+    """Perspective. Smaller returned depth is closer to the camera."""
     if len(pos) == 0:
         empty = np.zeros(0, dtype=np.float64)
         return empty, empty, empty
@@ -222,9 +441,17 @@ def _project(pos, yaw: float, pitch: float, dist: float, cx: float, cy: float, f
     x1 = x * cyaw - z * syaw
     z1 = x * syaw + z * cyaw
     y2 = y * cp - z1 * sp
-    z2 = y * sp + z1 * cp + dist
-    scale = fov / np.maximum(z2, 0.15)
+    z2 = y * sp + z1 * cp + float(dist)
+    scale = float(fov) / np.maximum(z2, 0.25)
     return cx + x1 * scale, cy - y2 * scale, z2
+
+
+def _depth_t(z2: np.ndarray) -> np.ndarray:
+    if len(z2) == 0:
+        return z2
+    lo = float(np.percentile(z2, 6))
+    hi = float(np.percentile(z2, 94))
+    return np.clip((z2 - lo) / max(hi - lo, 1e-3), 0.0, 1.0)
 
 
 def _flags(n: int, ids) -> np.ndarray:
@@ -237,23 +464,105 @@ def _flags(n: int, ids) -> np.ndarray:
     return on
 
 
-def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float) -> None:
-    """Software projection. No OpenGL, so the same pygame build as the trainer is enough."""
+def _background(w: int, h: int):
+    import pygame
+
+    cache = getattr(_background, "_cache", None)
+    if cache is not None and cache.get_size() == (w, h):
+        return cache
+    xs = np.linspace(-1.0, 1.0, max(w, 1), dtype=np.float32)
+    ys = np.linspace(-1.0, 1.0, max(h, 1), dtype=np.float32)
+    radius = np.sqrt(xs[:, None] ** 2 + (ys[None, :] * 0.92) ** 2)
+    tone = np.clip(radius / 0.92, 0.0, 1.0) ** 1.35
+    edge = np.array(_BG_EDGE, dtype=np.float32)
+    core = np.array(_BG_CORE, dtype=np.float32)
+    img = core + (edge - core) * tone[..., None]
+    surf = pygame.surfarray.make_surface(img.astype(np.uint8))
+    _background._cache = surf
+    return surf
+
+
+def _sphere(color, diameter: int, alpha: int = 255):
+    import pygame
+
+    diameter = max(4, int(diameter))
+    key = (tuple(color), diameter, int(alpha))
+    cache = getattr(_sphere, "_cache", {})
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
+    radius = diameter / 2.0
+    yy, xx = np.ogrid[:diameter, :diameter]
+    x = (xx - radius + 0.5) / radius
+    y = (yy - radius + 0.5) / radius
+    rr = x * x + y * y
+    nz = np.sqrt(np.clip(1.0 - rr, 0.0, 1.0))
+    light = np.clip((-x) * 0.42 + (-y) * 0.62 + nz * 0.78, 0.0, 1.0)
+    body = 0.18 + 0.82 * light
+    spec = np.clip(light, 0.0, 1.0) ** 18
+    inside = rr <= 1.0
+    rgb = np.zeros((diameter, diameter, 3), dtype=np.float32)
+    for channel in range(3):
+        channel_px = np.clip(color[channel] * body + 255.0 * spec * 0.75, 0, 255)
+        rgb[:, :, channel] = np.where(inside, channel_px, 0.0)
+    surf = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+    view = pygame.surfarray.pixels3d(surf)
+    view[:] = np.transpose(rgb.astype(np.uint8), (1, 0, 2))
+    del view
+    mask = pygame.surfarray.pixels_alpha(surf)
+    mask[:] = np.where(rr.T <= 1.0, int(alpha), 0).astype(np.uint8)
+    del mask
+    cache[key] = surf
+    _sphere._cache = cache
+    return surf
+
+
+def _glow(color, diameter: int):
+    import pygame
+
+    diameter = max(6, int(diameter))
+    key = (tuple(color), diameter)
+    cache = getattr(_glow, "_cache", {})
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
+    radius = diameter / 2.0
+    yy, xx = np.ogrid[:diameter, :diameter]
+    x = (xx - radius + 0.5) / radius
+    y = (yy - radius + 0.5) / radius
+    rr = np.sqrt(x * x + y * y)
+    # BLEND_ADD ignores per-pixel alpha, so the falloff has to live in RGB.
+    fall = np.clip(1.0 - rr, 0.0, 1.0) ** 2.1
+    rgb = np.zeros((diameter, diameter, 3), dtype=np.float32)
+    for channel in range(3):
+        rgb[:, :, channel] = color[channel] * fall * 0.8
+    surf = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
+    view = pygame.surfarray.pixels3d(surf)
+    view[:] = np.transpose(rgb.astype(np.uint8), (1, 0, 2))
+    del view
+    mask = pygame.surfarray.pixels_alpha(surf)
+    mask[:] = (fall.T * 255).astype(np.uint8)
+    del mask
+    cache[key] = surf
+    _glow._cache = cache
+    return surf
+
+
+def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True) -> None:
+    """Perspective point cloud. Inactive cells stay dim; active KC add light."""
     import pygame
 
     w, h = surface.get_size()
-    bg = pygame.Surface((w, h))
-    for row in range(h):
-        tone = _mix(_BG_TOP, _BG_BOT, row / max(h - 1, 1))
-        pygame.draw.line(bg, tone, (0, row), (w, row))
-    surface.blit(bg, (0, 0))
+    surface.blit(_background(w, h), (0, 0))
     font = pygame.font.Font(None, 20)
-    small = pygame.font.Font(None, 17)
-    title = "грибовидное тело  ·  soma FlyWire" if cloud.source.startswith("flywire") else "грибовидное тело  ·  схема лобов"
-    surface.blit(font.render(title, True, _VALUE), (16, 12))
-    note = "Л/П — стороны FlyWire. Персиковый KC — левый глаз, зелёный — правый. MBON: R_L слева, R_R справа. Мышь — поворот, колесо — зум"
-    surface.blit(small.render(note, True, _LABEL), (16, 34))
-    cx, cy, fov = w * 0.5, h * 0.52, min(w, h) * 0.72
+    small = pygame.font.Font(None, 16)
+    title = "грибовидное тело"
+    surface.blit(font.render(title, True, _INK), (16, 12))
+    note = "Л/П полушария   серые KC   свечение — кадр   янтарь MBON   зелёный PAM   красный PPL1"
+    spin = "A вращение вкл" if auto else "A вращение выкл"
+    surface.blit(small.render(note, True, _INK), (16, 34))
+    surface.blit(small.render("чашечка, ножка, доли α/β α′/β′ γ   " + spin + "   мышь — обзор   колесо — зум", True, _INK), (16, 52))
+    cx, cy, fov = w * 0.50, h * 0.54, min(w, h) * 1.05
     kc_l = _flags(cloud.n_kc, packet.get("kc_l"))
     kc_r = _flags(cloud.n_kc, packet.get("kc_r"))
     r_l = float(packet.get("r_l") or 0.0)
@@ -261,55 +570,147 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     flash_l = str(packet.get("flash_l") or "")
     flash_r = str(packet.get("flash_r") or "")
     sx, sy, depth = _project(cloud.kc_pos, yaw, pitch, dist, cx, cy, fov)
-    order = np.argsort(depth)
+    fog = _depth_t(depth)
+    _draw_grid(surface, cloud, yaw, pitch, dist, cx, cy, fov)
+    _draw_hulls(surface, cloud, yaw, pitch, dist, cx, cy, fov)
+    idle = pygame.Surface((w, h), pygame.SRCALPHA)
+    glow = pygame.Surface((w, h), pygame.SRCALPHA)
+    order = np.argsort(-depth)
     for i in order:
-        if depth[i] <= 0.2:
+        if depth[i] <= 0.3:
             continue
         x, y = int(sx[i]), int(sy[i])
-        if x < -4 or y < -4 or x >= w + 4 or y >= h + 4:
+        if x < -8 or y < -8 or x >= w + 8 or y >= h + 8:
             continue
+        far = float(fog[i])
         left_on = bool(kc_l[i])
         right_on = bool(kc_r[i])
-        if left_on and right_on:
-            color, radius = _mix(_PEACH, _GREEN, 0.5), 3
-        elif left_on:
-            color, radius = _PEACH, 3
-        elif right_on:
-            color, radius = _GREEN, 3
-        else:
-            color, radius = _KC[int(cloud.kc_lobe[i])], 1
-        pygame.draw.circle(surface, color, (x, y), radius)
-
-    def group(pos, side, kind: str):
-        if len(pos) == 0:
-            return
-        px, py, dep = _project(pos, yaw, pitch, dist, cx, cy, fov)
-        for i in np.argsort(dep):
-            if dep[i] <= 0.2:
-                continue
-            x, y = int(px[i]), int(py[i])
-            anatomical_left = int(side[i]) == 1
-            readout = r_l if anatomical_left else r_r
-            flash = flash_l if anatomical_left else flash_r
-            if kind == "mbon":
-                base = _GREEN if readout >= 0 else _RED
-                color = _mix((186, 176, 170), base, _gain(readout))
-                radius = 3 + int(3 * _gain(readout))
-            elif kind == "pam":
-                hot = flash == "pam"
-                color = _GREEN if hot else (186, 204, 192)
-                radius = 5 if hot else 3
+        if left_on or right_on:
+            if left_on and right_on:
+                color = _mix(_GLOW_L, _GLOW_R, 0.5)
+            elif left_on:
+                color = _GLOW_L
             else:
-                hot = flash == "ppl1"
-                color = _RED if hot else (214, 186, 182)
-                radius = 5 if hot else 3
-            pygame.draw.circle(surface, color, (x, y), radius)
-
-    group(cloud.mbon_pos, cloud.mbon_side, "mbon")
-    group(cloud.pam_pos, cloud.pam_side, "pam")
-    group(cloud.ppl_pos, cloud.ppl_side, "ppl1")
+                color = _GLOW_R
+            color = _fog(color, far * 0.28)
+            radius = max(2, int(round((5.0 - 2.0 * far))))
+            pygame.draw.circle(glow, (*_fog(color, far * 0.2), 120), (x, y), radius + 2)
+            pygame.draw.circle(glow, (*color, 210), (x, y), radius)
+        else:
+            color = _fog(_KC_IDLE, far * 0.42)
+            alpha = int(118 - 70 * far)
+            radius = 3 if far < 0.55 else 2
+            pygame.draw.circle(idle, (*color, max(40, alpha)), (x, y), radius)
+    # Calyx is the posterior cup. Draw a thin sample so the wire box is not empty.
+    if len(cloud.calyx_pos):
+        csx, csy, cdep = _project(cloud.calyx_pos[::2], yaw, pitch, dist, cx, cy, fov)
+        for i in range(len(cdep)):
+            if cdep[i] <= 0.3:
+                continue
+            x, y = int(csx[i]), int(csy[i])
+            if x < -4 or y < -4 or x >= w + 4 or y >= h + 4:
+                continue
+            pygame.draw.circle(idle, (*_KC_IDLE, 70), (x, y), 2)
+    idle.set_alpha(210)
+    surface.blit(idle, (0, 0))
+    surface.blit(glow, (0, 0), special_flags=pygame.BLEND_ADD)
+    _draw_spheres(surface, cloud.mbon_pos, cloud.mbon_side, "mbon", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h)
+    _draw_spheres(surface, cloud.pam_pos, cloud.pam_side, "pam", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h)
+    _draw_spheres(surface, cloud.ppl_pos, cloud.ppl_side, "ppl1", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h)
     _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov)
-    _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov, font)
+    _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov)
+
+
+def _fog(color, t: float):
+    return _mix(color, _BG_EDGE, max(0.0, min(0.85, float(t))))
+
+
+def _draw_grid(surface, cloud, yaw, pitch, dist, cx, cy, fov) -> None:
+    import pygame
+
+    floor = float(np.percentile(cloud.kc_pos[:, 1], 4) - 0.18)
+    lines = []
+    for i in range(-3, 4):
+        x = i * 0.42
+        lines.append((np.array([[x, floor, -0.2], [x, floor, 1.7]]),))
+        z = -0.2 + i * 0.32
+        lines.append((np.array([[-1.5, floor, z], [1.5, floor, z]]),))
+    color = (58, 62, 70)
+    for (pts,) in lines:
+        px, py, dep = _project(pts, yaw, pitch, dist, cx, cy, fov)
+        if dep[0] <= 0.3 or dep[1] <= 0.3:
+            continue
+        pygame.draw.line(surface, color, (int(px[0]), int(py[0])), (int(px[1]), int(py[1])), 1)
+
+
+def _draw_hulls(surface, cloud, yaw, pitch, dist, cx, cy, fov) -> None:
+    import pygame
+
+    layer = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+    for _side, lobe, segments in cloud.hulls:
+        if lobe < 0:
+            color = (120, 124, 132, 50)
+        else:
+            rgb = _WIRE[int(lobe)]
+            color = (*rgb, 78)
+        for a, b in segments:
+            pair = np.vstack((a, b)).astype(np.float64)
+            px, py, dep = _project(pair, yaw, pitch, dist, cx, cy, fov)
+            if dep[0] <= 0.3 or dep[1] <= 0.3:
+                continue
+            pygame.draw.line(layer, color, (int(px[0]), int(py[0])), (int(px[1]), int(py[1])), 1)
+    surface.blit(layer, (0, 0))
+
+
+def _draw_spheres(surface, pos, side, kind, r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h) -> None:
+    if len(pos) == 0:
+        return
+    import pygame
+
+    px, py, dep = _project(pos, yaw, pitch, dist, cx, cy, fov)
+    fog = _depth_t(dep)
+    order = np.argsort(-dep)
+    halo_pts = {0: [], 1: []}
+    for i in order:
+        if dep[i] <= 0.3:
+            continue
+        x, y = int(px[i]), int(py[i])
+        if x < -20 or y < -20 or x >= w + 20 or y >= h + 20:
+            continue
+        far = float(fog[i])
+        anatomical_left = int(side[i]) == 1
+        readout = r_l if anatomical_left else r_r
+        flash = flash_l if anatomical_left else flash_r
+        if kind == "mbon":
+            color = _fog(_AMBER, far * 0.22)
+            hot = _gain(readout)
+            diameter = int(round(7 + 3 * hot - 2 * far))
+            alpha = int(210 + 30 * hot)
+        elif kind == "pam":
+            hot = flash == "pam"
+            color = _PAM if hot else _fog((78, 96, 84), far * 0.25)
+            diameter = 5 if hot else int(round(4 - far))
+            alpha = 170 if hot else 130
+            if hot:
+                halo_pts[1 if anatomical_left else 0].append((x, y))
+        else:
+            hot = flash == "ppl1"
+            color = _PPL if hot else _fog((96, 74, 74), far * 0.25)
+            diameter = 5 if hot else int(round(4 - far))
+            alpha = 170 if hot else 130
+            if hot:
+                halo_pts[1 if anatomical_left else 0].append((x, y))
+        diameter = max(4, diameter)
+        sprite = _sphere(color, diameter, min(255, alpha))
+        surface.blit(sprite, (x - diameter // 2, y - diameter // 2))
+    halo_color = _PAM if kind == "pam" else (_PPL if kind == "ppl1" else _AMBER)
+    for pts in halo_pts.values():
+        if len(pts) < 3:
+            continue
+        hx = int(sum(p[0] for p in pts) / len(pts))
+        hy = int(sum(p[1] for p in pts) / len(pts))
+        halo = _glow(halo_color, 78)
+        surface.blit(halo, (hx - halo.get_width() // 2, hy - halo.get_height() // 2), special_flags=pygame.BLEND_ADD)
 
 
 def _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov) -> None:
@@ -318,6 +719,7 @@ def _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov) -> None:
     edges = packet.get("edges") or []
     if not edges:
         return
+    layer = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
     for item in edges[:EDGE_CAP]:
         if not isinstance(item, (list, tuple)) or len(item) < 3:
             continue
@@ -326,35 +728,37 @@ def _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov) -> None:
             continue
         pair = np.vstack((cloud.kc_pos[pre], cloud.mbon_pos[post]))
         px, py, dep = _project(pair, yaw, pitch, dist, cx, cy, fov)
-        if dep[0] <= 0.2 or dep[1] <= 0.2:
+        if dep[0] <= 0.3 or dep[1] <= 0.3:
             continue
-        color = _GREEN if weight >= 0 else _RED
-        pygame.draw.line(surface, color, (int(px[0]), int(py[0])), (int(px[1]), int(py[1])), 1)
+        color = (*_AMBER, 90) if weight >= 0 else (*_PPL, 90)
+        pygame.draw.line(layer, color, (int(px[0]), int(py[0])), (int(px[1]), int(py[1])), 1)
+    surface.blit(layer, (0, 0))
 
 
-def _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov, font) -> None:
+def _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov) -> None:
     import pygame
 
+    font = pygame.font.Font(None, 36)
     for side, text in ((1, "Л"), (0, "П")):
         mask = cloud.kc_side == side
         if not np.any(mask):
             continue
-        mean = cloud.kc_pos[mask].mean(axis=0)
+        mean = cloud.kc_pos[mask].mean(axis=0).copy()
+        mean[0] += -0.26 if side == 1 else 0.26
+        mean[1] += 0.22
         px, py, dep = _project(mean.reshape(1, 3), yaw, pitch, dist, cx, cy, fov)
-        if dep[0] <= 0.2:
+        if dep[0] <= 0.3:
             continue
-        color = _PEACH if side == 1 else _GREEN
-        big = pygame.font.Font(None, 34)
-        label = big.render(text, True, color)
-        surface.blit(label, (int(px[0]) - label.get_width() // 2, int(py[0]) - 42))
+        label = font.render(text, True, _INK)
+        surface.blit(label, (int(px[0]) - label.get_width() // 2, int(py[0]) - label.get_height() // 2))
 
 
-def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = 0.55, pitch: float = 0.42, dist: float = 2.6):
+def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = YAW0, pitch: float = PITCH0, dist: float = DIST0, auto: bool = True):
     import pygame
 
     pygame.font.init()
     surface = pygame.Surface(size)
-    paint(surface, cloud, packet, yaw, pitch, dist)
+    paint(surface, cloud, packet, yaw, pitch, dist, auto=auto)
     return surface
 
 
@@ -594,8 +998,8 @@ def run_viewer(port: int = VIEW_PORT) -> int:
     window = pygame.display.set_mode((960, 700), pygame.RESIZABLE)
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 22)
-    window.fill(_BG_TOP)
-    window.blit(font.render("загрузка координат FlyWire…", True, _VALUE), (24, 24))
+    window.fill(_BG_EDGE)
+    window.blit(font.render("загрузка координат FlyWire…", True, _INK), (24, 24))
     pygame.display.flip()
     cloud = BrainCloud()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -606,7 +1010,7 @@ def run_viewer(port: int = VIEW_PORT) -> int:
         return 1
     sock.setblocking(False)
     packet = {"r_l": 0.0, "r_r": 0.0, "kc_l": [], "kc_r": [], "flash_l": "", "flash_r": "", "edges": []}
-    yaw, pitch, dist = 0.55, 0.42, 2.6
+    orbit = Orbit()
     drag = None
     while True:
         for event in pygame.event.get():
@@ -614,28 +1018,31 @@ def run_viewer(port: int = VIEW_PORT) -> int:
                 return 0
             if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_j):
                 return 0
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_a and not getattr(event, "repeat", False):
+                orbit.toggle()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 drag = event.pos
+                orbit.idle = 0.0
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 drag = None
             elif event.type == pygame.MOUSEMOTION and drag is not None and event.buttons[0]:
                 dx = event.pos[0] - drag[0]
                 dy = event.pos[1] - drag[1]
                 drag = event.pos
-                yaw += dx * 0.008
-                pitch = max(-1.2, min(1.2, pitch + dy * 0.008))
+                orbit.drag(dx, dy)
             elif event.type == pygame.MOUSEWHEEL:
-                dist = max(1.2, min(8.0, dist - event.y * 0.18))
+                orbit.zoom(event.y)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (4, 5):
-                dist = max(1.2, min(8.0, dist + (-0.18 if event.button == 4 else 0.18)))
+                orbit.zoom(1 if event.button == 4 else -1)
             elif event.type == pygame.VIDEORESIZE:
                 window = pygame.display.set_mode((max(320, event.w), max(240, event.h)), pygame.RESIZABLE)
         fresh = _recv_latest(sock)
         if fresh is not None:
             packet = fresh
-        paint(window, cloud, packet, yaw, pitch, dist)
+        dt = clock.tick(30) / 1000.0
+        orbit.tick(dt, drag is not None)
+        paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto)
         pygame.display.flip()
-        clock.tick(30)
 
 
 def main(argv: list | None = None) -> int:

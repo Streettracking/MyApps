@@ -134,31 +134,47 @@ class BrainTests(unittest.TestCase):
         before = (path.stat().st_mtime_ns, path.stat().st_size)
         cloud = BrainCloud()
         self.assertEqual((path.stat().st_mtime_ns, path.stat().st_size), before)
-        self.assertEqual(cloud.source, "flywire-soma")
+        self.assertTrue(str(cloud.source).startswith("flywire-soma"))
         self.assertEqual(cloud.n_schematic, 0)
         self.assertGreater(cloud.n_kc, 1000)
+        self.assertGreater(cloud.span_nm[0], cloud.span_nm[2] * 8)
+        self.assertEqual(cloud.z_aniso, 10.0)
         left = cloud.kc_pos[cloud.kc_side == 1]
         right = cloud.kc_pos[cloud.kc_side == 0]
         self.assertGreater(len(left), 100)
         self.assertGreater(len(right), 100)
         self.assertLess(float(left[:, 0].mean()), float(right[:, 0].mean()))
+        self.assertGreater(float(left[:, 1].std()), 0.15)
+        import time
+
         pygame.init()
+        started = time.perf_counter()
         frame = render_frame(cloud, demo_packet(cloud), size=(640, 480))
+        self.assertLess(time.perf_counter() - started, 2.5)
         image = pygame.surfarray.array3d(frame)
-        peach = (
-            (abs(image[:, :, 0].astype(int) - 201) < 8)
-            & (abs(image[:, :, 1].astype(int) - 120) < 8)
-            & (abs(image[:, :, 2].astype(int) - 91) < 8)
-        )
-        green = (
-            (abs(image[:, :, 0].astype(int) - 141) < 8)
-            & (abs(image[:, :, 1].astype(int) - 181) < 8)
-            & (abs(image[:, :, 2].astype(int) - 150) < 8)
-        )
-        self.assertGreater(int(peach.sum()), 10)
-        self.assertGreater(int(green.sum()), 10)
-        self.assertLess(int(peach.nonzero()[0].mean()), int(green.nonzero()[0].mean()))
+        corner = image[2, 2].astype(int)
+        self.assertLess(int(corner.mean()), 40)
+        center = image[image.shape[0] // 2, image.shape[1] // 2].astype(int)
+        self.assertGreater(int(center.mean()), int(corner.mean()))
+        warm = (image[:, :, 0] > 180) & (image[:, :, 0] > image[:, :, 1] + 15) & (image[:, :, 0] > image[:, :, 2])
+        green = (image[:, :, 1] > 150) & (image[:, :, 1] > image[:, :, 0] + 12)
+        self.assertGreater(int(warm.sum()), 8)
+        self.assertGreater(int(green.sum()), 8)
         pygame.quit()
+
+    def test_idle_orbit_stops_when_toggled_off(self):
+        from sim.mb_view3d import Orbit
+
+        orbit = Orbit()
+        start = orbit.yaw
+        orbit.tick(0.6, False)
+        self.assertGreater(orbit.yaw, start)
+        orbit.toggle()
+        held = orbit.yaw
+        orbit.tick(1.0, False)
+        self.assertEqual(orbit.yaw, held)
+        orbit.drag(10, 0)
+        self.assertGreater(orbit.yaw, held)
 
     def test_udp_packet_is_local_and_rate_limited(self):
         from sim.mb_view3d import HOST, VIEW_PORT, BrainView, compact_ids, packet_from_session
