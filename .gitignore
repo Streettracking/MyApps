@@ -1,3 +1,6 @@
+# Raw neuropil mesh. The 3D window uses artifacts/fly_brain_view.npz.
+artifacts/_flywire_neuropil.ply
+
 # Large local FlyWire downloads (not committed)
 data/flywire/raw/proofread_connections_783.feather
 data/flywire/raw/proofread_connections_783.feather.partial

@@ -215,6 +215,7 @@ class Orbit:
         self.yaw = YAW0
         self.pitch = PITCH0
         self.dist = DIST0
+        self.home_dist = DIST0
         self.pan_x = 0.0
         self.pan_y = 0.0
         self.auto = True
@@ -240,7 +241,7 @@ class Orbit:
         self.pan_y += float(up)
 
     def zoom(self, steps: float) -> None:
-        self.dist = max(1.6, min(9.0, self.dist - float(steps) * 0.22))
+        self.dist = max(1.6, min(12.0, self.dist - float(steps) * 0.22))
 
     def toggle(self) -> None:
         self.auto = not self.auto
@@ -249,7 +250,7 @@ class Orbit:
     def reset(self) -> None:
         self.yaw = YAW0
         self.pitch = PITCH0
-        self.dist = DIST0
+        self.dist = self.home_dist
         self.pan_x = 0.0
         self.pan_y = 0.0
         self.idle = 1.0
@@ -580,8 +581,12 @@ def _scale(color, k: float):
     return tuple(int(max(0, min(255, round(channel * k)))) for channel in color)
 
 
-def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False) -> None:
-    """Perspective point cloud. Inactive cells stay dim; active KC add light."""
+def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False) -> None:
+    """Perspective view. FlyWire shell when the cache exists, else the soma cloud."""
+    from .mb_flywire import paint_scene
+
+    if paint_scene(surface, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast):
+        return
     import pygame
 
     w, h = surface.get_size()
@@ -902,12 +907,17 @@ def _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x: floa
         surface.blit(label, (int(px[0]) - label.get_width() // 2, int(py[0]) - label.get_height() // 2))
 
 
-def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = YAW0, pitch: float = PITCH0, dist: float = DIST0, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False):
+def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = YAW0, pitch: float = PITCH0, dist: float | None = None, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False):
     import pygame
 
+    from .mb_flywire import load_scene
+
+    if dist is None:
+        scene = load_scene()
+        dist = float(scene.fit_dist) if scene is not None else DIST0
     pygame.font.init()
     surface = pygame.Surface(size)
-    paint(surface, cloud, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames)
+    paint(surface, cloud, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast)
     return surface
 
 
@@ -1173,6 +1183,9 @@ def run_viewer(port: int = VIEW_PORT) -> int:
     window.blit(font.render("загрузка координат FlyWire…", True, _INK), (24, 24))
     pygame.display.flip()
     cloud = BrainCloud()
+    from .mb_flywire import load_scene
+
+    scene = load_scene()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.bind((HOST, int(port)))
@@ -1182,6 +1195,9 @@ def run_viewer(port: int = VIEW_PORT) -> int:
     sock.setblocking(False)
     packet = {"r_l": 0.0, "r_r": 0.0, "kc_l": [], "kc_r": [], "flash_l": "", "flash_r": "", "rec_l": False, "rec_r": False, "edges": []}
     orbit = Orbit()
+    if scene is not None:
+        orbit.home_dist = float(scene.fit_dist)
+        orbit.dist = float(scene.fit_dist)
     frames = [False]
     drag = None
     pygame.key.set_repeat(180, 40)
@@ -1220,7 +1236,7 @@ def run_viewer(port: int = VIEW_PORT) -> int:
             packet = fresh
         dt = clock.tick(30) / 1000.0
         orbit.tick(dt, drag is not None)
-        paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y, frames=frames[0])
+        paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y, frames=frames[0], fast=True)
         pygame.display.flip()
 
 

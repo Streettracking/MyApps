@@ -154,13 +154,66 @@ class BrainTests(unittest.TestCase):
         image = pygame.surfarray.array3d(frame)
         corner = image[2, 2].astype(int)
         self.assertLess(int(corner.mean()), 40)
-        center = image[image.shape[0] // 2, image.shape[1] // 2].astype(int)
-        self.assertGreater(int(center.mean()), int(corner.mean()))
+        # The shell is hollow, so one centre pixel can be black. The middle of the frame is not.
+        x0, x1 = int(image.shape[0] * 0.30), int(image.shape[0] * 0.70)
+        y0, y1 = int(image.shape[1] * 0.30), int(image.shape[1] * 0.70)
+        core = image[x0:x1, y0:y1]
+        self.assertGreater(float(core.mean()), float(corner.mean()) + 2.0)
         warm = (image[:, :, 0] > 180) & (image[:, :, 0] > image[:, :, 1] + 15) & (image[:, :, 0] > image[:, :, 2])
         green = (image[:, :, 1] > 150) & (image[:, :, 1] > image[:, :, 0] + 12)
         self.assertGreater(int(warm.sum()), 8)
         self.assertGreater(int(green.sum()), 8)
         pygame.quit()
+
+    def test_flywire_shell_matches_the_plaques(self):
+        import pygame
+
+        from sim.mb_flywire import (
+            KIND_KC_AB,
+            KIND_KC_G,
+            KIND_MBON,
+            KIND_PAM,
+            KIND_PPL1,
+            forward_arrow,
+            load_scene,
+            lobe_anchors,
+        )
+        from sim.mb_view3d import BrainCloud, demo_packet, render_frame
+
+        scene = load_scene()
+        self.assertIsNotNone(scene)
+        self.assertGreater(scene.n_neurons, 1000)
+        self.assertGreater(len(scene.faces), 500)
+        self.assertGreater(len(scene.sk_edges), 1000)
+        left = scene.vertices[scene.optic == 1]
+        right = scene.vertices[scene.optic == 2]
+        self.assertGreater(len(left), 50)
+        self.assertGreater(len(right), 50)
+        self.assertLess(float(left[:, 0].mean()), 0.0)
+        self.assertGreater(float(right[:, 0].mean()), 0.0)
+        anchors = {item["side"]: item for item in lobe_anchors(scene)}
+        self.assertEqual(anchors[1]["label"], "глаз Л")
+        self.assertEqual(anchors[0]["label"], "глаз П")
+        self.assertLess(float(anchors[1]["pos"][0]), float(anchors[0]["pos"][0]))
+        start, tip = forward_arrow(scene)
+        self.assertGreater(float(tip[2]), float(start[2]))
+        kinds = set(int(k) for k in scene.neuron_kind.tolist())
+        self.assertTrue({KIND_KC_G, KIND_KC_AB, KIND_MBON, KIND_PAM, KIND_PPL1} <= kinds)
+        pygame.init()
+        try:
+            cloud = BrainCloud()
+            lit = render_frame(cloud, demo_packet(cloud), size=(480, 360))
+            dark = demo_packet(cloud)
+            dark["rec_l"] = False
+            dark["rec_r"] = False
+            dark["kc_l"] = []
+            dark["kc_r"] = []
+            dark["flash_l"] = ""
+            dark["flash_r"] = ""
+            dim = render_frame(cloud, dark, size=(480, 360))
+            self.assertNotEqual(int(pygame.surfarray.array3d(lit).sum()), int(pygame.surfarray.array3d(dim).sum()))
+        finally:
+            pygame.quit()
 
     def test_idle_orbit_stops_when_toggled_off(self):
         from sim.mb_view3d import Orbit
