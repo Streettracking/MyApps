@@ -538,7 +538,7 @@ def _draw_indexed(surface, sx, sy, dep, edges, indices, color, w, h, verts=None,
         pygame.draw.line(surface, rgb, (x0, y0), (x1, y1), 1)
 
 
-def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, auto: bool, frames: bool) -> None:
+def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool, frames: bool) -> None:
     import pygame
 
     from .mb_view3d import _project
@@ -552,9 +552,8 @@ def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, auto: bool,
     surface.blit(font.render("грибовидное тело", True, _INK), (16, 12))
     note = "оболочка FlyWire   скелеты KC γ / αβ / a'b'   MBON   PAM   PPL1"
     surface.blit(small.render(note, True, _INK), (16, 34))
-    spin = "A вращение вкл" if auto else "A вращение выкл"
-    surface.blit(small.render("глаз Л и глаз П — зрительные доли, светятся при узнавании   " + spin, True, _INK), (16, 52))
-    hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   A вращение   F каркас"
+    surface.blit(small.render("глаз Л и глаз П — зрительные доли, светятся при узнавании", True, _INK), (16, 52))
+    hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   F каркас"
     if frames:
         hint += " вкл"
     surface.blit(tiny.render(hint, True, _HINT), (12, h - 20))

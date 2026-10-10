@@ -12,7 +12,7 @@ hemisphere, and lays calyx, peduncle, and the α/β, α′/β′, γ lobes out f
 the cell type plus those neuropil counts. The trainer window stays light.
 
 The trainer only sends a UDP datagram to 127.0.0.1:5473. B stays the beep;
-this window is J. A toggles idle orbit inside this window.
+this window is J. The view does not spin on its own.
 """
 
 from __future__ import annotations
@@ -209,7 +209,7 @@ def _world(medial: float, dorsal: float, anterior: float, left: bool) -> tuple:
 
 
 class Orbit:
-    """Idle yaw. Left drag orbits; right, middle, or Shift drags pan. A toggles spin."""
+    """Left drag orbits; right, middle, or Shift drags pan. The view does not spin."""
 
     def __init__(self):
         self.yaw = YAW0
@@ -218,8 +218,8 @@ class Orbit:
         self.home_dist = DIST0
         self.pan_x = 0.0
         self.pan_y = 0.0
-        self.auto = True
-        self.idle = 1.0
+        self.auto = False
+        self.idle = 0.0
 
     def drag(self, dx: float, dy: float) -> None:
         self.idle = 0.0
@@ -243,10 +243,6 @@ class Orbit:
     def zoom(self, steps: float) -> None:
         self.dist = max(1.6, min(12.0, self.dist - float(steps) * 0.22))
 
-    def toggle(self) -> None:
-        self.auto = not self.auto
-        self.idle = 1.0 if self.auto else 0.0
-
     def reset(self) -> None:
         self.yaw = YAW0
         self.pitch = PITCH0
@@ -256,12 +252,8 @@ class Orbit:
         self.idle = 1.0
 
     def tick(self, dt: float, dragging: bool) -> None:
-        if dragging:
-            self.idle = 0.0
-            return
-        self.idle += float(dt)
-        if self.auto and self.idle > 0.45:
-            self.yaw += float(dt) * 0.16
+        """Camera stays until the mouse or a camera key moves it."""
+        return
 
 
 class BrainCloud:
@@ -596,10 +588,9 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     title = "грибовидное тело"
     surface.blit(font.render(title, True, _INK), (16, 12))
     note = "Л/П полушария   серые KC   свечение — кадр   янтарь MBON   зелёный PAM   красный PPL1"
-    spin = "A вращение вкл" if auto else "A вращение выкл"
     surface.blit(small.render(note, True, _INK), (16, 34))
-    surface.blit(small.render("чашечка, ножка, доли α/β α′/β′ γ   " + spin, True, _INK), (16, 52))
-    hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   A вращение   F каркас"
+    surface.blit(small.render("чашечка, ножка, доли α/β α′/β′ γ", True, _INK), (16, 52))
+    hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   F каркас"
     if frames:
         hint += " вкл"
     tiny = pygame.font.Font(None, 15)
@@ -1249,9 +1240,6 @@ def _keys(orbit: Orbit, event, frames=None) -> None:
     if key == pygame.K_f and not repeat:
         if frames is not None:
             frames[0] = not frames[0]
-        return
-    if key == pygame.K_a and not repeat:
-        orbit.toggle()
         return
     step = PAN_KEY
     if key in (pygame.K_LEFT, pygame.K_a):

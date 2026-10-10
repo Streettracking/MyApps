@@ -215,19 +215,19 @@ class BrainTests(unittest.TestCase):
         finally:
             pygame.quit()
 
-    def test_idle_orbit_stops_when_toggled_off(self):
+    def test_idle_orbit_does_not_spin(self):
         from sim.mb_view3d import Orbit
 
         orbit = Orbit()
+        self.assertFalse(orbit.auto)
         start = orbit.yaw
-        orbit.tick(0.6, False)
+        orbit.tick(2.0, False)
+        self.assertEqual(orbit.yaw, start)
+        orbit.drag(10, 0)
         self.assertGreater(orbit.yaw, start)
-        orbit.toggle()
         held = orbit.yaw
         orbit.tick(1.0, False)
         self.assertEqual(orbit.yaw, held)
-        orbit.drag(10, 0)
-        self.assertGreater(orbit.yaw, held)
 
     def test_pitch_pan_and_reset(self):
         import math
@@ -271,9 +271,10 @@ class BrainTests(unittest.TestCase):
             self.assertAlmostEqual(held.pan_y, PAN_KEY)
             _keys(held, _Key(pygame.K_a, repeat=False))
             self.assertFalse(held.auto)
-            self.assertAlmostEqual(held.pan_x, PAN_KEY)
-            _keys(held, _Key(pygame.K_a, repeat=True))
             self.assertAlmostEqual(held.pan_x, 0.0)
+            _keys(held, _Key(pygame.K_a, repeat=True))
+            self.assertAlmostEqual(held.pan_x, -PAN_KEY)
+            self.assertEqual(held.yaw, YAW0)
             _keys(held, _Key(pygame.K_HOME))
             self.assertEqual(held.yaw, YAW0)
             self.assertEqual(held.pan_x, 0.0)
