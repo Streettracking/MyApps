@@ -785,9 +785,16 @@ def _learning_now(session) -> bool:
 
 
 def _teacher_counts(session: LiveSession, teacher) -> str:
+    """Local teacher tallies, unless this window is the onboard brain.
+
+    The simulator and the robot window do not carry ``onboard``. Only a
+    session that actually has the flag set reads the dog's counters.
+    """
     from .yolo_teacher import counts_line
 
-    remote = session.remote if session.onboard else {}
+    remote = {}
+    if getattr(session, "onboard", False):
+        remote = getattr(session, "remote", {}) or {}
     if isinstance(remote, dict) and "teacher_pam_l" in remote:
         return counts_line(
             int(remote.get("teacher_pam_l") or 0),

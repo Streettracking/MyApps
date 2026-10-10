@@ -322,7 +322,6 @@ class PunishTests(unittest.TestCase):
         class Session:
             learner_kind = "mb"
             mb = None
-            onboard = False
             learn = True
             eye_l_recognized = True
             eye_r_recognized = False
@@ -347,6 +346,91 @@ class PunishTests(unittest.TestCase):
         _drive_teacher(session, None, 2, {}, False, None)
         self.assertEqual(session.teacher.skip_reason, "нет ответа YOLO")
         self.assertIn("нет ответа YOLO", session.teacher_skips)
+
+
+class SimGuiTests(unittest.TestCase):
+    def test_sim_and_robot_counts_do_not_read_onboard(self):
+        from sim.recognize_train_live import _teacher_counts
+        from sim.yolo_teacher import TeacherRuntime, counts_line
+
+        teacher = TeacherRuntime()
+        teacher.pam_l = 4
+        teacher.ppl1_r = 2
+
+        class Sim:
+            pass
+
+        class Robot:
+            remote = {
+                "teacher_pam_l": 99,
+                "teacher_pam_r": 1,
+                "teacher_ppl1_l": 3,
+                "teacher_ppl1_r": 0,
+            }
+
+        class Board:
+            onboard = True
+            remote = {
+                "teacher_pam_l": 7,
+                "teacher_pam_r": 1,
+                "teacher_ppl1_l": 3,
+                "teacher_ppl1_r": 0,
+            }
+
+        local = counts_line(4, 0, 0, 2)
+        self.assertEqual(_teacher_counts(Sim(), teacher), local)
+        self.assertEqual(_teacher_counts(Robot(), teacher), local)
+        self.assertEqual(_teacher_counts(Board(), teacher), counts_line(7, 1, 3, 0))
+
+    def test_sim_gui_teacher_runs_several_frames(self):
+        """The --sim window loop, headless. Learning and the teacher are on."""
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        import tempfile
+        from pathlib import Path
+
+        from sim.recognize_train import RecognizeTrainSim, run_gui
+        from sim.yolo_teacher import DetBox, TeacherRuntime, counts_line
+
+        real_init = TeacherRuntime.__init__
+
+        def _init(self, *args, **kwargs):
+            real_init(self, *args, **kwargs)
+            self.on = True
+            self.client.health = lambda: True
+            self.client.detect = lambda jpeg: [DetBox(0.05, 0.15, 0.28, 0.85, 0.92)]
+
+        TeacherRuntime.__init__ = _init
+        folder = tempfile.mkdtemp()
+        try:
+            session = RecognizeTrainSim(
+                n_agents=2,
+                seed=1,
+                state_path=Path(folder) / "mb_train_state.npz",
+                learner="mb",
+                dan="teacher",
+            )
+            self.assertTrue(session.learn)
+            self.assertFalse(hasattr(session, "onboard"))
+            summary = run_gui(session, seconds=0.5)
+            self.assertGreaterEqual(float(summary["t"]), 0.5)
+            self.assertTrue(session.teacher.on)
+            self.assertEqual(
+                session.teacher_counts,
+                counts_line(
+                    session.teacher.pam_l,
+                    session.teacher.pam_r,
+                    session.teacher.ppl1_l,
+                    session.teacher.ppl1_r,
+                ),
+            )
+            self.assertFalse(session.state_path.is_file())
+        finally:
+            TeacherRuntime.__init__ = real_init
+            import pygame
+
+            if pygame.get_init():
+                pygame.quit()
 
 
 class FlashTests(unittest.TestCase):
