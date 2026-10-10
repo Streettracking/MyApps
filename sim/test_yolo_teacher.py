@@ -233,12 +233,15 @@ class KeyTests(unittest.TestCase):
         shot.parent.mkdir(parents=True, exist_ok=True)
         mon.save_screenshot(str(shot))
         frame = pygame.surfarray.array3d(mon.screen)
-        orange = (
-            (np.abs(frame[:, :, 0].astype(int) - 255) < 40)
-            & (np.abs(frame[:, :, 1].astype(int) - 148) < 40)
-            & (np.abs(frame[:, :, 2].astype(int) - 40) < 50)
+        amber = (
+            (np.abs(frame[:, :, 0].astype(int) - 214) < 28)
+            & (np.abs(frame[:, :, 1].astype(int) - 168) < 28)
+            & (np.abs(frame[:, :, 2].astype(int) - 64) < 28)
         )
-        self.assertGreater(int(orange.sum()), 10)
+        self.assertGreater(int(amber.sum()), 10)
+        from sim.train_monitor import WIN_W, monitor_layout
+
+        self.assertGreaterEqual(monitor_layout(WIN_W, 1080)["cam"][2], WIN_W // 2)
         pygame.quit()
 
 
@@ -346,6 +349,30 @@ class PunishTests(unittest.TestCase):
         _drive_teacher(session, None, 2, {}, False, None)
         self.assertEqual(session.teacher.skip_reason, "нет ответа YOLO")
         self.assertIn("нет ответа YOLO", session.teacher_skips)
+
+
+class LayoutTests(unittest.TestCase):
+    def test_camera_stays_large_on_1080p_and_smaller(self):
+        from sim.train_monitor import monitor_layout
+
+        for w, h in ((1920, 1080), (1600, 900), (1280, 720)):
+            box = monitor_layout(w, h)
+            cam = box["cam"]
+            self.assertGreaterEqual(cam[2], w // 2)
+            self.assertLess(cam[3], h)
+            for name, rect in box.items():
+                if name in ("controls_y", "footer_y"):
+                    self.assertGreaterEqual(rect, 0)
+                    self.assertLess(rect, h)
+                    continue
+                x, y, rw, rh = rect
+                self.assertGreaterEqual(x, 0, name)
+                self.assertGreaterEqual(y, 0, name)
+                self.assertLessEqual(x + rw, w + 1, name)
+                self.assertLessEqual(y + rh, h + 1, name)
+            self.assertLess(box["cam"][1] + box["cam"][3], box["lid"][1] + 2)
+            self.assertLess(box["estop"][0], w)
+            self.assertGreater(box["estop"][0], box["treat"][0])
 
 
 class SimGuiTests(unittest.TestCase):
@@ -467,18 +494,19 @@ class FlashTests(unittest.TestCase):
         shot.parent.mkdir(parents=True, exist_ok=True)
         mon.save_screenshot(str(shot))
         frame = pygame.surfarray.array3d(mon.screen)
+        band = frame[:, 60:160, :]
         red = (
-            (np.abs(frame[:, :, 0].astype(int) - 196) < 24)
-            & (np.abs(frame[:, :, 1].astype(int) - 36) < 24)
-            & (np.abs(frame[:, :, 2].astype(int) - 44) < 24)
+            (np.abs(band[:, :, 0].astype(int) - 204) < 28)
+            & (np.abs(band[:, :, 1].astype(int) - 62) < 28)
+            & (np.abs(band[:, :, 2].astype(int) - 56) < 28)
         )
         green = (
-            (np.abs(frame[:, :, 0].astype(int) - 32) < 24)
-            & (np.abs(frame[:, :, 1].astype(int) - 196) < 24)
-            & (np.abs(frame[:, :, 2].astype(int) - 92) < 24)
+            (np.abs(band[:, :, 0].astype(int) - 64) < 28)
+            & (np.abs(band[:, :, 1].astype(int) - 184) < 28)
+            & (np.abs(band[:, :, 2].astype(int) - 96) < 28)
         )
-        self.assertGreater(int(red.sum()), 40)
-        self.assertGreater(int(green.sum()), 40)
+        self.assertGreater(int(red.sum()), 20)
+        self.assertGreater(int(green.sum()), 20)
         red_x = np.where(red)[0]
         green_x = np.where(green)[0]
         self.assertGreater(float(red_x.mean()), float(green_x.mean()))

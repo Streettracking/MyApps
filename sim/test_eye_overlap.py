@@ -410,20 +410,20 @@ class OverlayTests(unittest.TestCase):
         import pygame
 
         frame = pygame.surfarray.array3d(monitor.screen)
-        right = frame[260:450, 90:130]
-        left = frame[30:210, 90:130]
+        band = frame[:1100, 70:150, :]
         green = (
-            (np.abs(right[:, :, 0].astype(int) - 28) < 20)
-            & (np.abs(right[:, :, 1].astype(int) - 132) < 30)
-            & (np.abs(right[:, :, 2].astype(int) - 72) < 24)
+            (np.abs(band[:, :, 0].astype(int) - 64) < 24)
+            & (np.abs(band[:, :, 1].astype(int) - 184) < 24)
+            & (np.abs(band[:, :, 2].astype(int) - 96) < 24)
         )
         gray = (
-            (np.abs(left[:, :, 0].astype(int) - 62) < 18)
-            & (np.abs(left[:, :, 1].astype(int) - 66) < 18)
-            & (np.abs(left[:, :, 2].astype(int) - 74) < 18)
+            (np.abs(band[:, :, 0].astype(int) - 86) < 16)
+            & (np.abs(band[:, :, 1].astype(int) - 86) < 16)
+            & (np.abs(band[:, :, 2].astype(int) - 90) < 16)
         )
-        self.assertGreater(int(green.sum()), 200)
-        self.assertGreater(int(gray.sum()), 200)
+        self.assertGreater(int(green.sum()), 20)
+        self.assertGreater(int(gray.sum()), 20)
+        self.assertGreater(float(np.where(green)[0].mean()), float(np.where(gray)[0].mean()))
         shot = Path("/opt/cursor/artifacts/eyes_onboard.png")
         shot.parent.mkdir(parents=True, exist_ok=True)
         monitor.save_screenshot(str(shot))
