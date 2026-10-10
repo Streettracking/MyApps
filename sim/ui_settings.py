@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 FILE_NAME = "window.json"
+CRASH_NAME = "crash.log"
 APP_DIR = "recognize_trainer"
 
 
@@ -33,6 +34,32 @@ def settings_path() -> Path:
         return Path(root) / APP_DIR / FILE_NAME
     root = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(root) / APP_DIR / FILE_NAME
+
+
+def crash_log_path() -> Path:
+    """Native crash stack beside window.json, outside npz and outside _internal."""
+    return settings_path().with_name(CRASH_NAME)
+
+
+def install_crash_log():
+    """Enable faulthandler for the exe. The handle stays alive on this function."""
+    import faulthandler
+
+    if getattr(install_crash_log, "handle", None) is not None:
+        return crash_log_path()
+    path = crash_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a", encoding="utf-8")
+        faulthandler.enable(file=handle, all_threads=True)
+        install_crash_log.handle = handle
+        return path
+    except OSError:
+        faulthandler.enable(all_threads=True)
+        return None
+
+
+install_crash_log.handle = None
 
 
 def default_settings() -> dict:

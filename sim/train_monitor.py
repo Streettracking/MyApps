@@ -511,15 +511,24 @@ def _iter_leaves(node):
 
 
 _BRAIN_CACHE: dict = {}
+_BRAIN_MIN_INTERVAL = 1.0 / 30.0
 
 
 def _cached_brain_surface(size, yaw, pitch, dist, pan_x, pan_y, frames, packet):
-    """One software frame per camera and packet. Tests share the first paint."""
+    """One frame per camera and packet. Wheel steps reuse the last paint until 1/30 s."""
+    import time
+
     import pygame
 
+    w, h = int(size[0]), int(size[1])
+    if w <= 0 or h <= 0:
+        last = _cached_brain_surface.last
+        if last is not None:
+            return last[2]
+        return pygame.Surface((1, 1))
     key = (
-        int(size[0]),
-        int(size[1]),
+        w,
+        h,
         round(float(yaw), 3),
         round(float(pitch), 3),
         round(float(dist), 3),
@@ -536,13 +545,18 @@ def _cached_brain_surface(size, yaw, pitch, dist, pan_x, pan_y, frames, packet):
     hit = _BRAIN_CACHE.get(key)
     if hit is not None:
         return hit
+    started = time.monotonic()
+    last = _cached_brain_surface.last
+    # last[1] is the earliest time a new paint of this size may start.
+    if last is not None and last[0] == (w, h) and started < last[1]:
+        return last[2]
     from .mb_view3d import BrainCloud, paint
 
     cloud = _cached_brain_surface.cloud
     if cloud is None:
         cloud = BrainCloud()
         _cached_brain_surface.cloud = cloud
-    surface = pygame.Surface((key[0], key[1]))
+    surface = pygame.Surface((w, h))
     paint(
         surface,
         cloud,
@@ -560,10 +574,14 @@ def _cached_brain_surface(size, yaw, pitch, dist, pan_x, pan_y, frames, packet):
     if len(_BRAIN_CACHE) > 6:
         _BRAIN_CACHE.clear()
     _BRAIN_CACHE[key] = surface
+    finished = time.monotonic()
+    allow_at = max(finished, started + _BRAIN_MIN_INTERVAL)
+    _cached_brain_surface.last = ((w, h), allow_at, surface)
     return surface
 
 
 _cached_brain_surface.cloud = None
+_cached_brain_surface.last = None
 
 
 class TrainMonitor:
@@ -1366,6 +1384,7 @@ class TrainMonitor:
         self._fill_bg(screen)
         self._fixed_rows = []
         self._anchors = []
+        self._brain_rows = []
         self._chrome = []
         self._menu_hits = []
         self.cam_inner = None
@@ -1631,6 +1650,8 @@ class TrainMonitor:
         )
 
     def _draw_brain3d_block(self, screen, content) -> None:
+        if content.w <= 0 or content.h <= 0:
+            return
         orbit = self._ensure_orbit()
         orbit.auto = False
         packet = self._display_packet()
@@ -1651,7 +1672,7 @@ class TrainMonitor:
 
         return blit_cells(screen, text, x, y, color, size=size, rows=self._fixed_rows)
 
-    def _mixed(self, screen, line: str, x: int, y: int, pattern: str, value_color, label_color=None, status_samples=None) -> int:
+    def _mixed(self, screen, line: str, x: int, y: int, pattern: str, value_color, label_color=None, status_samples=None, limit=None) -> int:
         return paint_mixed(
             screen,
             x,
@@ -1664,7 +1685,45 @@ class TrainMonitor:
             rows=self._fixed_rows,
             anchors=self._anchors,
             status_samples=status_samples,
+            limit=limit,
         )
+
+    def _brain_row_h(self) -> int:
+        from .tabnum import load_font
+
+        return max(int(self.font_sm.get_height()), int(load_font(14).get_height())) + 4
+
+    def _note_brain_row(self, rect, tag: str) -> None:
+        import pygame
+
+        rows = getattr(self, "_brain_rows", None)
+        if rows is None:
+            self._brain_rows = []
+            rows = self._brain_rows
+        rows.append((pygame.Rect(rect), tag))
+
+    def _with_row_clip(self, screen, band, paint) -> None:
+        prev = screen.get_clip()
+        clip = band if prev is None else band.clip(prev)
+        if clip.w <= 0 or clip.h <= 0:
+            return
+        screen.set_clip(clip)
+        try:
+            paint()
+        finally:
+            screen.set_clip(prev)
+
+    def _paint_line(self, screen, panel, y: int, tag: str, paint) -> int | None:
+        """Draw one full row, or skip it when the block is too short."""
+        import pygame
+
+        row = self._brain_row_h()
+        if y + row > panel.bottom:
+            return None
+        band = pygame.Rect(panel.x, y, panel.w, row)
+        self._note_brain_row(band, tag)
+        self._with_row_clip(screen, band, paint)
+        return y + row
 
     def _sound_label(self) -> str:
         if self.beep_on and self.audio_ok is False:
@@ -2128,33 +2187,54 @@ class TrainMonitor:
         screen.blit(caption, (teacher_x + 12, rect.centery - caption.get_height() // 2))
         return {"recog": recog, "teacher": teacher}
 
-    def _eyes_banner(self, screen, view: MonitorView, rx: int, col_w: int, y: int) -> int:
-        self._lamp(
-            screen,
-            (rx + 10, y + 12),
-            self._eye_lamp_color(view.eye_r_recognized, view.eye_r_ready, view.eye_r_confidence),
-            5,
-        )
-        screen.blit(self.font_sm.render("П", True, PEACH), (rx + 20, y + 2))
-        self._lamp(
-            screen,
-            (rx + 52, y + 12),
-            self._eye_lamp_color(view.eye_l_recognized, view.eye_l_ready, view.eye_l_confidence),
-            5,
-        )
-        screen.blit(self.font_sm.render("Л", True, PEACH), (rx + 62, y + 2))
-        if view.eyes_line:
-            self._mixed(
+    def _eyes_banner(self, screen, view: MonitorView, rx: int, col_w: int, y: int, bottom: int | None = None) -> int:
+        import pygame
+
+        if bottom is None:
+            bottom = y + 4096
+        panel = pygame.Rect(rx, y, max(1, col_w), max(0, int(bottom) - int(y)))
+        limit = panel.right - 4
+
+        def eyes() -> None:
+            cy = y + self._brain_row_h() // 2
+            self._lamp(
                 screen,
-                view.eyes_line,
-                rx + 88,
-                y,
-                "R_L {7}  R_R {7}  [22]",
-                VALUE,
-                status_samples=EYES_STATUS,
+                (rx + 10, cy),
+                self._eye_lamp_color(view.eye_r_recognized, view.eye_r_ready, view.eye_r_confidence),
+                5,
             )
+            screen.blit(self.font_sm.render("П", True, PEACH), (rx + 20, y))
+            self._lamp(
+                screen,
+                (rx + 52, cy),
+                self._eye_lamp_color(view.eye_l_recognized, view.eye_l_ready, view.eye_l_confidence),
+                5,
+            )
+            screen.blit(self.font_sm.render("Л", True, PEACH), (rx + 62, y))
+            if view.eyes_line:
+                self._mixed(
+                    screen,
+                    view.eyes_line,
+                    rx + 88,
+                    y,
+                    "R_L {7}  R_R {7}  [22]",
+                    VALUE,
+                    status_samples=EYES_STATUS,
+                    limit=limit,
+                )
+
+        nxt = self._paint_line(screen, panel, y, "eyes", eyes)
+        if nxt is None:
+            return y
+        y = nxt
         if view.recog_line:
-            screen.blit(self.font_sm.render(view.recog_line, True, INK_DIM), (rx + 88, y + 22))
+            def recog() -> None:
+                screen.blit(self.font_sm.render(view.recog_line, True, INK_DIM), (rx + 8, y))
+
+            nxt = self._paint_line(screen, panel, y, "recog", recog)
+            if nxt is None:
+                return y
+            y = nxt
         word = view.pilot_mode or "РУЧНОЕ"
         if word == "АВТОНОМИЯ" or "ПЕРЕХВАТ" in word:
             tone = PEACH
@@ -2164,21 +2244,35 @@ class TrainMonitor:
             tone = VALUE
         mode = format_pilot_mode(word)
         rest = format_pilot_rest(view.pilot_who, view.phase_ru, view.last_seen_side)
-        self._cells(screen, mode, rx, y + 44, tone)
-        from .tabnum import cell_px
 
-        self._cells(screen, rest, rx + cell_px(14) * MODE_W, y + 44, INK_DIM)
+        def mode_row() -> None:
+            from .tabnum import cell_px
+
+            self._cells(screen, mode, rx, y, tone)
+            rest_x = rx + cell_px(14) * MODE_W
+            if rest_x + cell_px(14) * len(rest) <= limit:
+                self._cells(screen, rest, rest_x, y, INK_DIM)
+
+        nxt = self._paint_line(screen, panel, y, "mode", mode_row)
+        if nxt is None:
+            return y
+        y = nxt
         if view.pilot_hint:
-            screen.blit(self.font_sm.render(view.pilot_hint, True, PEACH), (rx, y + 68))
-            return y + 88
-        return y + 70
+            def hint() -> None:
+                screen.blit(self.font_sm.render(view.pilot_hint, True, PEACH), (rx, y))
+
+            nxt = self._paint_line(screen, panel, y, "hint", hint)
+            if nxt is None:
+                return y
+            y = nxt
+        return y
 
     def _draw_mb_head(self, screen, view: MonitorView, rx: int, y: int | None = None) -> None:
         col_w = self.panel_rect.w if hasattr(self, "panel_rect") else WIN_W - rx - 16
         if y is None:
             y = self.panel_rect.y if hasattr(self, "panel_rect") else 56
         if view.eyes_line or view.recog_line or view.learner == "mb":
-            self._eyes_banner(screen, view, rx, col_w, y)
+            self._eyes_banner(screen, view, rx, col_w, y, bottom=y + 76)
             return
         if view.recognized:
             phrase, tone = "УЗНАЮ СОРОДИЧА", GREEN
@@ -2195,83 +2289,100 @@ class TrainMonitor:
 
         sm = self.font_sm
         rx, col_w = panel.x, panel.w
-        y = self._eyes_banner(screen, view, rx, col_w, panel.y)
-        self._mixed(
-            screen,
-            format_raw(view.likeness, view.readout_caption),
-            rx,
-            y,
-            "сырой MBON {7}  [36]",
-            VALUE,
-            status_samples=RAW_STATUS,
-        )
-        y += 20
-        self._progress_box(screen, view, pygame.Rect(rx, y, col_w, 88))
-        y += 96
-        plot_w = (col_w - 8) // 2
-        plot_h = 88
-        _plot(screen, pygame.Rect(rx, y, plot_w, plot_h), view.peer_curve, 0.0, 1.0, GREEN, sm, "собака в кадре")
-        _plot(
-            screen,
-            pygame.Rect(rx + plot_w + 8, y, col_w - plot_w - 8, plot_h),
-            view.other_curve,
-            0.0, 1.0,
-            AMBER,
-            sm,
-            "нет собаки",
-        )
-        y += plot_h + 6
-        drift_hi = max((v for _, v in view.drift_curve), default=1.0)
-        if drift_hi <= 0:
-            drift_hi = 1.0
-        _plot(
-            screen,
-            pygame.Rect(rx, y, col_w, 52),
-            view.drift_curve,
-            0.0,
-            drift_hi,
-            INK_DIM,
-            sm,
-            "",
-        )
-        self._mixed(screen, format_drift(view.drift), rx + 8, y + 4, "дрейф KC→MBON  {7}", VALUE)
-        y += 58
-        self._dan_timeline(screen, view, pygame.Rect(rx, y, col_w, 72))
-        y += 78
-        self._kc_row(screen, view, rx, y, col_w)
-        y += 84
+        limit = panel.right - 4
+        y = self._eyes_banner(screen, view, rx, col_w, panel.y, bottom=panel.bottom)
+        raw = format_raw(view.likeness, view.readout_caption)
+
+        def raw_row() -> None:
+            self._mixed(screen, raw, rx, y, "сырой MBON {7}  [36]", VALUE, status_samples=RAW_STATUS, limit=limit)
+
+        nxt = self._paint_line(screen, panel, y, "raw", raw_row)
+        if nxt is None:
+            return y
+        y = nxt
+        y = self._progress_box(screen, view, panel, y)
+        row = self._brain_row_h()
+        # Curves are optional. The readout lines below them stay on their own rows.
+        keep_after_plots = row * 6 + 28
+        plot_h = 72
+        if y + plot_h + keep_after_plots <= panel.bottom and col_w >= 180:
+            plot_w = (col_w - 8) // 2
+            left = pygame.Rect(rx, y, plot_w, plot_h)
+            right = pygame.Rect(rx + plot_w + 8, y, col_w - plot_w - 8, plot_h)
+            self._note_brain_row(left, "plot")
+            self._note_brain_row(right, "plot")
+            _plot(screen, left, view.peer_curve, 0.0, 1.0, GREEN, sm, "собака в кадре")
+            _plot(screen, right, view.other_curve, 0.0, 1.0, AMBER, sm, "нет собаки")
+            y += plot_h + 6
+        drift_line = format_drift(view.drift)
+
+        def drift_row() -> None:
+            self._mixed(screen, drift_line, rx, y, "дрейф KC→MBON  {7}", VALUE, limit=limit)
+
+        nxt = self._paint_line(screen, panel, y, "drift", drift_row)
+        if nxt is None:
+            return y
+        y = nxt
+        keep_after_drift_plot = row * 5 + 28
+        drift_plot_h = 48
+        if y + drift_plot_h + keep_after_drift_plot <= panel.bottom:
+            drift_hi = max((v for _, v in view.drift_curve), default=1.0)
+            if drift_hi <= 0:
+                drift_hi = 1.0
+            drift_rect = pygame.Rect(rx, y, col_w, drift_plot_h)
+            self._note_brain_row(drift_rect, "drift-plot")
+            _plot(screen, drift_rect, view.drift_curve, 0.0, drift_hi, INK_DIM, sm, "")
+            y += drift_plot_h + 4
+        y = self._dan_timeline(screen, view, panel, y)
+        y = self._kc_row(screen, view, panel, y)
         if view.teacher_counts:
-            self._mixed(
-                screen,
-                view.teacher_counts,
-                rx,
-                y,
-                "учитель: PAM_L {7}  PAM_R {7}  PPL1_L {7}  PPL1_R {7}",
-                VALUE,
-            )
-            y += 20
+            counts = view.teacher_counts
+
+            def counts_row() -> None:
+                self._mixed(
+                    screen,
+                    counts,
+                    rx,
+                    y,
+                    "учитель: PAM_L {7}  PAM_R {7}  PPL1_L {7}  PPL1_R {7}",
+                    VALUE,
+                    limit=limit,
+                )
+
+            nxt = self._paint_line(screen, panel, y, "teacher", counts_row)
+            if nxt is None:
+                return y
+            y = nxt
         if view.teacher_skips:
             quiet = skips_are_quiet(view.teacher_skips)
             tone = LABEL if quiet else AMBER
-            self._mixed(
-                screen,
-                view.teacher_skips,
-                rx,
-                y,
-                "ложных узнаваний без наказания: {7}  [36]",
-                tone,
-                label_color=tone,
-                status_samples=SKIP_STATUS,
-            )
-            y += 20
-        return min(y + 4, panel.bottom - 96)
+            skips = view.teacher_skips
 
-    def _progress_line(self, screen, line: str, x: int, y: int) -> None:
+            def skips_row() -> None:
+                self._mixed(
+                    screen,
+                    skips,
+                    rx,
+                    y,
+                    "ложных узнаваний без наказания: {7}  [36]",
+                    tone,
+                    label_color=tone,
+                    status_samples=SKIP_STATUS,
+                    limit=limit,
+                )
+
+            nxt = self._paint_line(screen, panel, y, "skips", skips_row)
+            if nxt is None:
+                return y
+            y = nxt
+        return y
+
+    def _progress_line(self, screen, line: str, x: int, y: int, limit=None) -> None:
         if line.startswith("метки "):
             screen.blit(self.font_sm.render(line, True, LABEL), (x, y))
             return
         if line.startswith("Всего"):
-            self._mixed(screen, line, x, y, "Всего за всё время: PAM {7} / PPL1 {7} (всего {7})", VALUE)
+            self._mixed(screen, line, x, y, "Всего за всё время: PAM {7} / PPL1 {7} (всего {7})", VALUE, limit=limit)
             return
         if line.startswith("За этот"):
             self._mixed(
@@ -2282,47 +2393,89 @@ class TrainMonitor:
                 "За этот запуск: PAM {7} / PPL1 {7}  {12}  [15]",
                 VALUE,
                 status_samples=SOUND_STATUS,
+                limit=limit,
             )
             return
         if "знакомство" in line:
-            self._mixed(screen, line, x, y, "[8]{12}  знакомство {7}", VALUE)
+            self._mixed(screen, line, x, y, "[8]{12}  знакомство {7}", VALUE, limit=limit)
             return
         if line.startswith("D"):
-            self._mixed(screen, line, x, y, "D−N сессия {6} {4}% {5}  всего {6} {4}% {5}", VALUE)
+            self._mixed(screen, line, x, y, "D−N сессия {6} {4}% {5}  всего {6} {4}% {5}", VALUE, limit=limit)
+            return
+        from .tabnum import cell_px
+
+        width = cell_px(14) * len(line)
+        if limit is not None and x + width > int(limit):
             return
         self._cells(screen, line, x, y, VALUE)
 
-    def _progress_box(self, screen, view: MonitorView, rect) -> None:
+    def _progress_box(self, screen, view: MonitorView, panel, y: int) -> int:
         import pygame
 
-        self._inset(screen, rect)
-        screen.blit(self.font_sm.render("насколько обучен", True, PEACH), (rect.x + 12, rect.y + 8))
+        row = self._brain_row_h()
+        pad = 6
+        if y + pad + row + pad > panel.bottom:
+            return y
         if view.dan_mode == "familiarity":
-            line1 = format_familiar("сессия", view.session_time, view.session_novelty)
-            line2 = format_familiar("всего", view.total_time, view.total_novelty)
+            lines = [
+                format_familiar("сессия", view.session_time, view.session_novelty),
+                format_familiar("всего", view.total_time, view.total_novelty),
+            ]
         else:
-            line1 = format_lifetime(view.total_pam, view.total_ppl1, view.lifetime_known)
-            line2 = format_session_counts(view.n_pam, view.n_ppl1, view.session_time, self._sound_label())
-        line3 = format_metrics_line(
-            view.session_sep,
-            view.session_acc,
-            view.session_labeled,
-            view.total_sep,
-            view.total_acc,
-            view.total_labeled,
-            bool(view.session_labeled or view.total_labeled),
+            lines = [
+                format_lifetime(view.total_pam, view.total_ppl1, view.lifetime_known),
+                format_session_counts(view.n_pam, view.n_ppl1, view.session_time, self._sound_label()),
+            ]
+        lines.append(
+            format_metrics_line(
+                view.session_sep,
+                view.session_acc,
+                view.session_labeled,
+                view.total_sep,
+                view.total_acc,
+                view.total_labeled,
+                bool(view.session_labeled or view.total_labeled),
+            )
         )
-        self._progress_line(screen, line1, rect.x + 12, rect.y + 26)
-        self._progress_line(screen, line2, rect.x + 12, rect.y + 46)
-        self._progress_line(screen, line3, rect.x + 12, rect.y + 66)
+        n = 0
+        used = pad + row + pad
+        while n < len(lines) and y + used + row <= panel.bottom:
+            n += 1
+            used += row
+        rect = pygame.Rect(panel.x, y, panel.w, used)
+        self._inset(screen, rect)
+        limit = panel.right - 8
+        title_y = y + pad
 
-    def _dan_timeline(self, screen, view: MonitorView, rect) -> None:
+        def title() -> None:
+            screen.blit(self.font_sm.render("насколько обучен", True, PEACH), (panel.x + 8, title_y))
+
+        self._paint_line(screen, panel, title_y, "progress-title", title)
+        cursor = title_y + row
+        for index in range(n):
+            line = lines[index]
+            line_y = cursor
+
+            def paint(line=line, line_y=line_y) -> None:
+                self._progress_line(screen, line, panel.x + 8, line_y, limit=limit)
+
+            self._paint_line(screen, panel, line_y, "progress-%d" % index, paint)
+            cursor += row
+        return y + used + 4
+
+    def _dan_timeline(self, screen, view: MonitorView, panel, y: int) -> int:
         import pygame
 
-        self._inset(screen, rect)
-        sm = self.font_sm
+        row = self._brain_row_h()
         title = "шкала DAN    T = лакомство PAM    X = наказание PPL1"
-        screen.blit(sm.render(title, True, PEACH), (rect.x + 12, rect.y + 6))
+
+        def title_row() -> None:
+            screen.blit(self.font_sm.render(title, True, PEACH), (panel.x + 8, y))
+
+        nxt = self._paint_line(screen, panel, y, "dan-title", title_row)
+        if nxt is None:
+            return y
+        y = nxt
         if view.t <= 30.0:
             t0 = 0.0
             t1 = max(view.t, 1.0)
@@ -2331,33 +2484,64 @@ class TrainMonitor:
             t1 = view.t
             t0 = t1 - 30.0
             span_label = format_span(t1, True)
-        inner = pygame.Rect(rect.x + 8, rect.y + 24, rect.w - 16, rect.h - 32)
-        pygame.draw.line(screen, LINE, (inner.x, inner.centery), (inner.right, inner.centery), 1)
-        shown = 0
-        for t, kind in view.dan_events:
-            if t < t0 or t > t1:
-                continue
-            u = (float(t) - t0) / max(t1 - t0, 1e-6)
-            x = inner.x + int(u * max(inner.w - 1, 1))
-            if kind == "PAM":
-                pygame.draw.line(screen, GREEN, (x, inner.y + 2), (x, inner.centery - 1), 3)
-            elif kind == "PPL1":
-                pygame.draw.line(screen, RED, (x, inner.centery + 1), (x, inner.bottom - 2), 3)
-            else:
-                pygame.draw.line(screen, INK_DIM, (x, inner.y + 8), (x, inner.bottom - 8), 1)
-            shown += 1
-        if shown == 0:
-            hint = "каждое лакомство появится здесь — собака в кадре, клавиша T"
-            screen.blit(sm.render(hint, True, INK_DIM), (inner.x, inner.centery - 8))
+        axis_h = 28
+        if y + axis_h <= panel.bottom:
+            axis = pygame.Rect(panel.x + 8, y, max(1, panel.w - 16), axis_h)
+            self._note_brain_row(axis, "dan-axis")
+            prev = screen.get_clip()
+            clip = axis if prev is None else axis.clip(prev)
+            screen.set_clip(clip)
+            try:
+                shown = 0
+                pygame.draw.line(screen, LINE, (axis.x, axis.centery), (axis.right, axis.centery), 1)
+                for t, kind in view.dan_events:
+                    if t < t0 or t > t1:
+                        continue
+                    u = (float(t) - t0) / max(t1 - t0, 1e-6)
+                    x = axis.x + int(u * max(axis.w - 1, 1))
+                    if kind == "PAM":
+                        pygame.draw.line(screen, GREEN, (x, axis.y + 2), (x, axis.centery - 1), 3)
+                    elif kind == "PPL1":
+                        pygame.draw.line(screen, RED, (x, axis.centery + 1), (x, axis.bottom - 2), 3)
+                    else:
+                        pygame.draw.line(screen, INK_DIM, (x, axis.y + 4), (x, axis.bottom - 4), 1)
+                    shown += 1
+                if shown == 0:
+                    hint = "каждое лакомство появится здесь — собака в кадре, клавиша T"
+                    screen.blit(self.font_sm.render(hint, True, INK_DIM), (axis.x, axis.y + 2))
+            finally:
+                screen.set_clip(prev)
+            y += axis_h
         from .tabnum import cell_px
 
-        self._cells(screen, span_label, rect.right - 8 - cell_px(14) * len(span_label), rect.bottom - 18, INK_DIM)
+        span_w = cell_px(14) * len(span_label)
+        span_x = panel.right - 8 - span_w
 
-    def _kc_row(self, screen, view: MonitorView, x: int, y: int, width: int) -> None:
+        def span_row() -> None:
+            if span_x >= panel.x and span_w <= panel.w - 8:
+                self._cells(screen, span_label, span_x, y, INK_DIM)
+
+        nxt = self._paint_line(screen, panel, y, "dan-span", span_row)
+        if nxt is None:
+            return y
+        return nxt + 2
+
+    def _kc_row(self, screen, view: MonitorView, panel, y: int) -> int:
         import pygame
 
-        sm = self.font_sm
-        self._mixed(screen, format_kc(view.kc_on, view.kc_n), x, y, "активность KC  {7} из {7}", VALUE)
+        line = format_kc(view.kc_on, view.kc_n)
+        limit = panel.right - 4
+
+        def label() -> None:
+            self._mixed(screen, line, panel.x, y, "активность KC  {7} из {7}", VALUE, limit=limit)
+
+        nxt = self._paint_line(screen, panel, y, "kc", label)
+        if nxt is None:
+            return y
+        y = nxt
+        bars_h = 64
+        if y + bars_h > panel.bottom or panel.w < 48:
+            return y
         bins = view.kc_bins
         if bins is None or len(bins) == 0:
             bins = np.zeros(48)
@@ -2367,14 +2551,20 @@ class TrainMonitor:
             vmax = 1.0
         n = len(vals)
         gap = 2
-        cell = max(4, (width - gap * (n - 1)) // n)
-        base = y + 78
-        top = y + 20
+        cell = max(2, (panel.w - gap * (n - 1)) // n)
+        bars = pygame.Rect(panel.x, y, panel.w, bars_h)
+        self._note_brain_row(bars, "kc-bars")
+        base = bars.bottom - 4
+        top = bars.y + 2
+        span = max(1, bars_h - 8)
         for i, value in enumerate(vals):
-            h = int(54 * max(float(value) / vmax, 0.0))
-            rx = x + i * (cell + gap)
-            pygame.draw.rect(screen, BG_TOP, pygame.Rect(rx, top, max(1, cell), 58))
+            h = int(span * max(float(value) / vmax, 0.0))
+            rx = panel.x + i * (cell + gap)
+            if rx >= panel.right:
+                break
+            pygame.draw.rect(screen, BG_TOP, pygame.Rect(rx, top, max(1, cell), span))
             pygame.draw.rect(screen, PEACH, pygame.Rect(rx, base - h, max(1, cell), max(h, 1)))
+        return y + bars_h + 4
 
     def _draw_hebb(self, screen, view: MonitorView, panel) -> int:
         import pygame

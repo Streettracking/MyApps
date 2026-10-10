@@ -148,7 +148,7 @@ def _status_field(ui_font, text: str, samples) -> int:
     return max(widths) if widths else 0
 
 
-def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=None, anchors=None) -> int:
+def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=None, anchors=None, limit=None) -> int:
     """Draw a readout as separate slots. Each slot's x is fixed for fixed slot text.
 
     ``("ui", text)`` is a label in the interface font. Its width is the width of
@@ -166,19 +166,28 @@ def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=Non
     cell = cell_px(14)
     cursor = int(x)
     yy = int(y)
+    edge = None if limit is None else int(limit)
     for slot in slots:
         kind = slot[0]
-        if anchors is not None:
-            anchors.append((kind, cursor, yy))
         if kind == "ui":
             glyph = ui_font.render(slot[1], True, label_color)
+            width = int(glyph.get_width())
+            if edge is not None and cursor + width > edge:
+                break
+            if anchors is not None:
+                anchors.append((kind, cursor, yy))
             screen.blit(glyph, (cursor, yy))
-            cursor += int(glyph.get_width()) + SLOT_GAP
+            cursor += width + SLOT_GAP
             continue
         if kind in ("num", "mono"):
             text = slot[1]
+            width = cell * max(len(text), 1)
+            if edge is not None and cursor + width > edge:
+                break
+            if anchors is not None:
+                anchors.append((kind, cursor, yy))
             blit_cells(screen, text, cursor, yy, value_color, size=14, rows=rows)
-            cursor += cell * max(len(text), 1) + SLOT_GAP
+            cursor += width + SLOT_GAP
             continue
         if kind == "status":
             text = slot[1]
@@ -186,6 +195,10 @@ def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=Non
             field = _status_field(ui_font, "", samples)
             if field <= 0:
                 field = _status_field(ui_font, text, ())
+            if edge is not None and cursor + int(field) > edge:
+                break
+            if anchors is not None:
+                anchors.append((kind, cursor, yy))
             glyph = ui_font.render(text, True, value_color)
             clip = pygame.Surface((max(field, 1), max(glyph.get_height(), 1)), pygame.SRCALPHA)
             clip.blit(glyph, (0, 0))
@@ -237,6 +250,7 @@ def paint_mixed(
     rows=None,
     anchors=None,
     status_samples=None,
+    limit=None,
 ) -> int:
     """Paint one formatted readout. A mismatch falls back to a single mono run."""
     try:
@@ -256,7 +270,9 @@ def paint_mixed(
             slots.append(("status", text.rstrip(), status_samples))
         else:
             slots.append(("mono", text))
-    return paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=rows, anchors=anchors)
+    return paint_slots(
+        screen, x, y, slots, ui_font, value_color, label_color, rows=rows, anchors=anchors, limit=limit
+    )
 
 
 def format_eyes_line(r_l, r_r, text: str) -> str:

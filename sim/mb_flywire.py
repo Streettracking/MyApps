@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +45,40 @@ _HINT = (168, 170, 176)
 _SCENE = None
 _GL = None
 _GL_FAILED = False
+_LAST_PAINT = "none"
+# Worker threads that must never touch the standalone GL context.
+_GL_FORBIDDEN = frozenset({"yolo-teacher", "preview", "lidar-reset", "yolo-frames"})
+_SORT_INTERVAL = 0.1
+
+
+def _gl_caller_ok() -> bool:
+    """Standalone moderngl stays on the main thread, never on a worker."""
+    thread = threading.current_thread()
+    if thread.name in _GL_FORBIDDEN:
+        return False
+    return thread is threading.main_thread()
+
+
+def gl_frame_size_ok(w, h) -> bool:
+    return int(w) > 0 and int(h) > 0
+
+
+def gl_read_length_ok(nbytes, w, h) -> bool:
+    return int(nbytes) == int(w) * int(h) * 3
+
+
+def gl_sort_due(last_key, last_t, yaw, pitch, now, interval: float = _SORT_INTERVAL):
+    """Triangle order depends on yaw and pitch only.
+
+    Zoom and pan add the same depth to every vertex, so a wheel step must
+    not rewrite the index buffer. Angle changes are also limited to about 10 Hz.
+    """
+    key = (round(float(yaw), 3), round(float(pitch), 3))
+    if last_key is not None and key == last_key:
+        return False, key
+    if last_key is not None and last_t is not None and (float(now) - float(last_t)) < float(interval):
+        return False, key
+    return True, key
 
 
 def view_path() -> Path:
@@ -296,8 +332,10 @@ class _GLRenderer:
         self.line_prog = self.ctx.program(vertex_shader=_LINE_VERT, fragment_shader=_LINE_FRAG)
         optic = scene.optic.astype(np.float32).reshape(-1, 1)
         mesh = np.concatenate([scene.vertices, optic], axis=1).astype(np.float32)
-        self.mesh_vbo = self.ctx.buffer(np.ascontiguousarray(mesh).tobytes())
-        self.mesh_ibo = self.ctx.buffer(np.ascontiguousarray(scene.faces.astype(np.uint32)).tobytes())
+        self._mesh_hold = np.ascontiguousarray(mesh).tobytes()
+        self.mesh_vbo = self.ctx.buffer(self._mesh_hold)
+        self._ibo_hold = np.ascontiguousarray(scene.faces.astype(np.uint32)).tobytes()
+        self.mesh_ibo = self.ctx.buffer(self._ibo_hold)
         self.mesh_vao = self.ctx.vertex_array(
             self.mesh_prog,
             [(self.mesh_vbo, "3f 1f", "in_pos", "in_optic")],
@@ -322,16 +360,35 @@ class _GLRenderer:
         self._hot_vbo = None
         self._hot_vao = None
         self._hot_cap = 0
+        self._hot_hold = None
+        self._read_hold = None
+        self._owner = threading.get_ident()
+        self._sort_key = None
+        self._sort_at = None
+        self.ibo_writes = 0
 
-    def resize(self, w: int, h: int) -> None:
+    def _on_owner(self) -> bool:
+        return threading.get_ident() == self._owner
+
+    def resize(self, w: int, h: int) -> bool:
+        """Reuse the framebuffer when the size matches. Never drop it for w/h <= 0."""
+        w, h = int(w), int(h)
+        if not gl_frame_size_ok(w, h):
+            return False
         if self.size == (w, h) and self.fbo is not None:
-            return
+            return True
+        try:
+            color = self.ctx.texture((w, h), 4)
+            fbo = self.ctx.framebuffer(color_attachments=[color])
+        except Exception:
+            return False
         if self.fbo is not None:
             self.fbo.release()
             self.color.release()
-        self.color = self.ctx.texture((w, h), 4)
-        self.fbo = self.ctx.framebuffer(color_attachments=[self.color])
+        self.color = color
+        self.fbo = fbo
         self.size = (w, h)
+        return True
 
     def _uniforms(self, prog, yaw, pitch, dist, pan_x, pan_y, w, h) -> None:
         fov = float(min(w, h) * 1.05)
@@ -360,11 +417,15 @@ class _GLRenderer:
             self._hot_vao = self.ctx.vertex_array(
                 self.line_prog, [(self._hot_vbo, "3f 3f", "in_pos", "in_color")]
             )
-        self._hot_vbo.write(raw.tobytes())
+        self._hot_hold = raw.tobytes()
+        self._hot_vbo.write(self._hot_hold)
         self._hot_vao.render(self.moderngl.LINES, vertices=int(raw.shape[0]))
 
     def draw(self, scene: FlyScene, packet: dict, w: int, h: int, yaw, pitch, dist, pan_x, pan_y, frames: bool) -> np.ndarray:
-        self.resize(w, h)
+        if not self._on_owner():
+            raise RuntimeError("GL с чужого потока")
+        if not self.resize(w, h):
+            raise RuntimeError("размер кадра GL")
         self.fbo.use()
         self.ctx.viewport = (0, 0, w, h)
         self.ctx.disable(self.moderngl.DEPTH_TEST)
@@ -388,11 +449,19 @@ class _GLRenderer:
         self.line_prog["alpha"].value = 1.0
         self._draw_hot(scene, lit, flash)
         data = self.fbo.read(components=3, alignment=1)
-        image = np.frombuffer(data, dtype=np.uint8).reshape(h, w, 3)
-        return np.flipud(image).copy()
+        self._read_hold = data
+        if not gl_read_length_ok(len(data), w, h):
+            raise RuntimeError("чтение GL %s байт, ждали %s" % (len(data), int(w) * int(h) * 3))
+        image = np.frombuffer(self._read_hold, dtype=np.uint8).reshape(int(h), int(w), 3)
+        copied = np.flipud(image).copy()
+        return copied
 
     def _sort_mesh(self, scene: FlyScene, yaw, pitch, dist, pan_x, pan_y) -> None:
-        """Far triangles first, so the translucent shell does not stack on itself."""
+        """Far triangles first. Zoom does not change the order, so the IBO stays."""
+        now = time.monotonic()
+        due, key = gl_sort_due(self._sort_key, self._sort_at, yaw, pitch, now)
+        if not due:
+            return
         x = scene.vertices[:, 0].astype(np.float64)
         y = scene.vertices[:, 1].astype(np.float64)
         z = scene.vertices[:, 2].astype(np.float64)
@@ -402,7 +471,11 @@ class _GLRenderer:
         z2 = y * sp + z1 * cp + float(dist)
         depth = z2[scene.faces].mean(axis=1)
         ordered = scene.faces[np.argsort(-depth)].astype(np.uint32)
-        self.mesh_ibo.write(np.ascontiguousarray(ordered).tobytes())
+        self._ibo_hold = np.ascontiguousarray(ordered).tobytes()
+        self.mesh_ibo.write(self._ibo_hold)
+        self._sort_key = key
+        self._sort_at = now
+        self.ibo_writes += 1
 
     def _draw_hot(self, scene: FlyScene, lit: np.ndarray, flash: np.ndarray) -> None:
         if lit.any():
@@ -423,13 +496,18 @@ class _GLRenderer:
 
 def _gl_renderer(scene: FlyScene):
     global _GL, _GL_FAILED
+    if not _gl_caller_ok():
+        return None
     if _GL_FAILED or os.environ.get("MB_VIEW_SOFTWARE") == "1":
         return None
     if _moderngl() is None:
         return None
     try:
-        if _GL is None or _GL.token != scene.token:
-            _GL = _GLRenderer(scene)
+        if _GL is not None and _GL.token == scene.token:
+            if not _GL._on_owner():
+                return None
+            return _GL
+        _GL = _GLRenderer(scene)
         return _GL
     except Exception as exc:
         _GL_FAILED = True
@@ -442,7 +520,11 @@ def _blit_rgb(surface, image: np.ndarray) -> None:
     import pygame
 
     view = np.ascontiguousarray(np.transpose(image, (1, 0, 2)))
+    _blit_rgb.hold = view
     pygame.surfarray.blit_array(surface, view)
+
+
+_blit_rgb.hold = None
 
 
 def _camera(w: int, h: int):
@@ -598,15 +680,157 @@ def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool
 
 
 def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None) -> bool:
+    global _LAST_PAINT
+    if not _gl_caller_ok():
+        _LAST_PAINT = "skip"
+        return False
     scene = load_scene()
     if scene is None:
+        _LAST_PAINT = "none"
         return False
+    w, h = surface.get_size()
     renderer = _gl_renderer(scene)
     if renderer is not None:
-        w, h = surface.get_size()
-        image = renderer.draw(scene, packet, w, h, yaw, pitch, dist, pan_x, pan_y, frames)
-        _blit_rgb(surface, image)
+        try:
+            image = renderer.draw(scene, packet, w, h, yaw, pitch, dist, pan_x, pan_y, frames)
+            _blit_rgb(surface, image)
+            _LAST_PAINT = "gl"
+        except Exception as exc:
+            _LAST_PAINT = "software"
+            print("мозг: кадр GL не собрался, рисую линиями pygame (%s)" % exc, file=sys.stderr)
+            if gl_frame_size_ok(w, h):
+                _paint_software(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, frames, fast)
+            else:
+                return False
     else:
+        _LAST_PAINT = "software"
+        if not gl_frame_size_ok(w, h):
+            return False
         _paint_software(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, frames, fast)
     _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, auto, frames, hint)
     return True
+
+
+def stress_zoom(sizes=None, zooms: int = 60) -> dict:
+    """Wheel-zoom and framebuffer resize. Safe when moderngl cannot start.
+
+    Yaw and pitch stay put, so a live GL context rewrites the index buffer
+    at most once. A worker named like the YOLO thread must not touch GL.
+    """
+    import pygame
+
+    if sizes is None:
+        sizes = (
+            (320, 180),
+            (640, 360),
+            (160, 120),
+            (960, 400),
+            (64, 48),
+            (0, 120),
+            (120, 0),
+            (-8, 64),
+            (64, -3),
+            (800, 450),
+            (48, 48),
+            (1, 1),
+        )
+    pygame.init()
+    stats = {
+        "frames": 0,
+        "gl": 0,
+        "software": 0,
+        "ibo_writes": 0,
+        "errors": 0,
+        "rejected": 0,
+        "resize_kept": True,
+        "worker_paint": None,
+        "worker_gl": False,
+    }
+    yaw, pitch = 0.35, -0.15
+    packet = {"rec_l": False, "rec_r": True, "kc_l": [], "kc_r": []}
+    scene = load_scene()
+    renderer = _gl_renderer(scene) if scene is not None else None
+    base_writes = int(renderer.ibo_writes) if renderer is not None else 0
+    for i in range(int(zooms)):
+        w, h = sizes[i % len(sizes)]
+        dist = 1.6 + (10.4 * ((i * 5) % 17) / 16.0)
+        if i % 19 == 0:
+            dist = 0.05
+        elif i % 23 == 0:
+            dist = 80.0
+        try:
+            if not gl_frame_size_ok(w, h):
+                snap = None
+                if renderer is not None and renderer.fbo is not None:
+                    snap = (id(renderer.fbo), renderer.size)
+                if renderer is not None and renderer.resize(w, h):
+                    stats["errors"] += 1
+                    stats["resize_kept"] = False
+                if snap is not None and (id(renderer.fbo), renderer.size) != snap:
+                    stats["errors"] += 1
+                    stats["resize_kept"] = False
+                stats["rejected"] += 1
+                stats["frames"] += 1
+                continue
+            surface = pygame.Surface((int(w), int(h)))
+            ok = paint_scene(
+                surface,
+                packet,
+                yaw,
+                pitch,
+                dist,
+                auto=False,
+                pan_x=0.1,
+                pan_y=-0.05,
+                frames=False,
+                fast=True,
+            )
+            stats["frames"] += 1
+            if not ok:
+                stats["errors"] += 1
+            elif _LAST_PAINT == "gl":
+                stats["gl"] += 1
+            elif _LAST_PAINT == "software":
+                stats["software"] += 1
+            else:
+                stats["errors"] += 1
+            if renderer is None and scene is not None:
+                renderer = _gl_renderer(scene)
+        except Exception:
+            stats["errors"] += 1
+            stats["frames"] += 1
+    if renderer is not None and renderer.fbo is not None:
+        stats["ibo_writes"] = int(renderer.ibo_writes) - base_writes
+        snap = (id(renderer.fbo), renderer.size)
+        if renderer.resize(0, 200) or renderer.resize(180, -1) or renderer.resize(-2, -2):
+            stats["resize_kept"] = False
+            stats["errors"] += 1
+        if (id(renderer.fbo), renderer.size) != snap:
+            stats["resize_kept"] = False
+            stats["errors"] += 1
+    elif renderer is not None:
+        stats["ibo_writes"] = int(renderer.ibo_writes) - base_writes
+    box: dict = {}
+
+    def _worker() -> None:
+        box["caller"] = _gl_caller_ok()
+        box["renderer"] = _gl_renderer(scene) if scene is not None else None
+        try:
+            surf = pygame.Surface((32, 24))
+            box["paint"] = paint_scene(surf, packet, yaw, pitch, 4.0, auto=False, fast=True)
+        except Exception as exc:
+            box["paint"] = "exc:%s" % type(exc).__name__
+
+    before = int(renderer.ibo_writes) if renderer is not None else 0
+    worker = threading.Thread(target=_worker, name="yolo-teacher")
+    worker.start()
+    worker.join()
+    after = int(renderer.ibo_writes) if renderer is not None else 0
+    stats["worker_paint"] = box.get("paint")
+    stats["worker_gl"] = box.get("renderer") is not None or box.get("caller") is True
+    if after != before:
+        stats["errors"] += 1
+        stats["worker_gl"] = True
+    if box.get("paint") is True:
+        stats["errors"] += 1
+    return stats

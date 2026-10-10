@@ -42,6 +42,9 @@ import sim.world  # noqa: F401
 
 
 def main(argv: list[str] | None = None) -> int:
+    from sim.ui_settings import install_crash_log
+
+    install_crash_log()
     args = list(sys.argv[1:] if argv is None else argv)
     if "--mb-view3d" in args:
         return sim.mb_view3d.main(args)
