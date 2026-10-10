@@ -101,6 +101,7 @@ class WindowTests(unittest.TestCase):
         self.assertIn(" B", SIM_KEYS)
         pygame.init()
         mon = TrainMonitor("window")
+        mon._on_resize(1920, 1080)
         ww, wh = mon.window.get_size()
         logical = mon._logical_pos((ww // 2, wh // 2))
         self.assertAlmostEqual(logical[0], 960, delta=2)
@@ -120,81 +121,165 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(beep.brain_toggle)
         pygame.quit()
 
-    def test_letterbox_keeps_aspect_and_bars_miss_buttons(self):
+    def test_width_sets_scale_and_short_windows_scroll(self):
         import pygame
         import numpy as np
 
         from sim.train_monitor import (
-            BG_TOP,
+            MIN_CONTENT_W,
+            MIN_SCALE,
+            SCROLL_THUMB,
             WIN_H,
             WIN_W,
             MonitorView,
             TrainMonitor,
-            content_rect,
+            fit_window,
             logical_from_window,
+            scroll_limits,
             window_from_logical,
         )
 
-        sizes = {
-            "4:3": (1024, 768),
-            "16:10": (1280, 800),
-            "16:9": (1600, 900),
-            "narrow": (700, 900),
-            "wide": (1500, 640),
-        }
-        for name, (ww, wh) in sizes.items():
-            ox, oy, cw, ch = content_rect(ww, wh)
-            self.assertAlmostEqual(cw / float(ch), WIN_W / float(WIN_H), delta=0.01, msg=name)
-            self.assertGreaterEqual(ox, 0)
-            self.assertGreaterEqual(oy, 0)
-            self.assertLessEqual(ox + cw, ww)
-            self.assertLessEqual(oy + ch, wh)
-            self.assertEqual(logical_from_window((ww // 2, wh // 2), ww, wh)[0], 960, msg=name)
-        self.assertEqual(content_rect(WIN_W, WIN_H), (0, 0, WIN_W, WIN_H))
-        self.assertGreater(content_rect(1024, 768)[1], 0)
-        self.assertGreater(content_rect(1500, 640)[0], 0)
-        self.assertEqual(logical_from_window((4, 4), 1024, 768), (-1, -1))
+        scale, lw, lh, cw, ch = fit_window(WIN_W, WIN_H)
+        self.assertEqual((scale, lw, lh, cw, ch), (1.0, WIN_W, WIN_H, WIN_W, WIN_H))
+        self.assertEqual(scroll_limits(WIN_W, WIN_H), (0, 0))
+
+        scale, _lw, lh, cw, ch = fit_window(1800, 1400)
+        self.assertAlmostEqual(scale, 1800 / float(WIN_W), places=6)
+        self.assertEqual(cw, 1800)
+        self.assertEqual(ch, 1400)
+        self.assertGreater(lh, WIN_H)
+        self.assertEqual(scroll_limits(1800, 1400), (0, 0))
+
+        scale, _lw, lh, cw, ch = fit_window(1000, 700)
+        self.assertEqual(scale, MIN_SCALE)
+        self.assertEqual(cw, MIN_CONTENT_W)
+        self.assertEqual(lh, WIN_H)
+        self.assertGreater(cw, 1000)
+        self.assertGreater(ch, 700)
+        max_x, max_y = scroll_limits(1000, 700)
+        self.assertGreater(max_x, 0)
+        self.assertGreater(max_y, 0)
+        shifted = logical_from_window((20, 30), 1000, 700, (300, 80))
+        self.assertAlmostEqual(shifted[0], round((20 + 300) / MIN_SCALE), delta=1)
+        self.assertAlmostEqual(shifted[1], round((30 + 80) / MIN_SCALE), delta=1)
+        self.assertEqual(logical_from_window((1000 - 4, 40), 1000, 700, (0, 0)), (-1, -1))
 
         pygame.init()
-        mon = TrainMonitor("aspect")
+        mon = TrainMonitor("fit")
         camera = np.zeros((90, 160, 3), dtype=np.uint8)
         camera[:] = (20, 24, 32)
         lidar = np.zeros((80, 80, 3), dtype=np.uint8)
         lidar[:] = (12, 14, 18)
         yy, xx = np.ogrid[:80, :80]
-        ring = np.abs(np.hypot(xx - 39.5, yy - 39.5) - 28) < 1.6
-        lidar[ring] = (0, 40, 255)
-        mon.draw(MonitorView(camera=camera, lidar=lidar, learner="mb", lidar_mode="карта"))
-        cam = mon.cam_inner
-        lid = mon.lid_inner
-        self.assertIsNotNone(cam)
-        self.assertIsNotNone(lid)
-        self.assertAlmostEqual(cam.w / float(cam.h), 160 / 90.0, delta=0.03)
-        self.assertAlmostEqual(lid.w, lid.h, delta=1)
+        lidar[np.abs(np.hypot(xx - 39.5, yy - 39.5) - 28) < 1.6] = (0, 40, 255)
+        logs = ["  %d.0s  строка журнала %d" % (i, i) for i in range(1, 28)]
+        view = MonitorView(
+            camera=camera,
+            lidar=lidar,
+            learner="mb",
+            lidar_mode="карта",
+            log_lines=logs,
+            learning_on=True,
+            eye_l_recognized=True,
+            teacher_flash_l="ppl1",
+            teacher_flash_r="pam",
+            title="recognition training",
+        )
+        mon._on_resize(1920, 1080)
+        mon.draw(view)
+        base_cam = (mon.cam_rect.w, mon.cam_rect.h)
+        base_lid = mon.lid_rect.h
+        base_journal = mon.journal_rect.h
+        base_rows = mon.log_rows
+        self.assertIsNotNone(mon.cam_inner)
+        self.assertAlmostEqual(mon.cam_inner.w / float(mon.cam_inner.h), 160 / 90.0, delta=0.03)
+        self.assertAlmostEqual(mon.lid_inner.w, mon.lid_inner.h, delta=1)
 
-        for name, size in (("4:3", (1024, 768)), ("narrow", (700, 900)), ("wide", (1500, 640))):
-            mon._on_resize(*size)
-            self.assertEqual(mon.window.get_size(), size)
-            shown = pygame.surfarray.array3d(mon.present_into(size))
-            blue = (shown[:, :, 2] > 180) & (shown[:, :, 0] < 50) & (shown[:, :, 1] < 90)
-            xs, ys = np.where(blue)
-            self.assertGreater(len(xs), 20, msg=name)
-            self.assertAlmostEqual(int(xs.max() - xs.min()), int(ys.max() - ys.min()), delta=4, msg=name)
-            ox, oy, cw, ch = content_rect(*size)
-            if oy > 8:
-                bar = shown[size[0] // 2, 2]
-                self.assertLess(int(np.abs(bar.astype(int) - np.array(BG_TOP)).max()), 8, msg=name)
-            if ox > 8:
-                bar = shown[2, size[1] // 2]
-                self.assertLess(int(np.abs(bar.astype(int) - np.array(BG_TOP)).max()), 30, msg=name)
-            wx, wy = window_from_logical(mon.brain_rect.center, *size)
-            self.assertNotEqual(logical_from_window((wx, wy), *size), (-1, -1), msg=name)
-            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(4, 4), button=1))
-            missed = mon.pump()
-            self.assertFalse(missed.brain_toggle, msg=name)
-            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(wx, wy), button=1))
-            hit = mon.pump()
-            self.assertTrue(hit.brain_toggle, msg=name)
+        mon._on_resize(1440, 1600)
+        mon.draw(view)
+        self.assertEqual((mon.cam_rect.w, mon.cam_rect.h), base_cam)
+        self.assertGreater(mon.lid_rect.h, base_lid + 80)
+        self.assertGreater(mon.panel_rect.h, 900)
+        self.assertGreater(mon.journal_rect.h, base_journal + 40)
+        self.assertGreater(mon.log_rows, base_rows)
+        self.assertEqual(mon.screen.get_size()[0], WIN_W)
+        self.assertGreater(mon.screen.get_size()[1], WIN_H)
+        tall = pygame.surfarray.array3d(mon.present_into((1440, 1600)))
+        self.assertGreater(int((tall[:, :40].max(axis=2) <= 90).sum()), 30)
+        self.assertAlmostEqual(mon.lid_inner.w, mon.lid_inner.h, delta=1)
+        blue = (tall[:, :, 2] > 180) & (tall[:, :, 0] < 50) & (tall[:, :, 1] < 90)
+        xs, ys = np.where(blue)
+        self.assertGreater(len(xs), 20)
+        self.assertAlmostEqual(int(xs.max() - xs.min()), int(ys.max() - ys.min()), delta=4)
+        out = __import__("pathlib").Path("/opt/cursor/artifacts")
+        out.mkdir(parents=True, exist_ok=True)
+        pygame.image.save(mon.present_into((1440, 1600)), str(out / "trainer_window_tall.png"))
+
+        mon._on_resize(1800, 1100)
+        mon.draw(view)
+        pygame.image.save(mon.present_into((1800, 1100)), str(out / "trainer_window_wide.png"))
+        wide_top = pygame.surfarray.array3d(mon.present_into((1800, 1100)))
+        self.assertGreater(int((wide_top[:, :40].max(axis=2) <= 90).sum()), 30)
+        self.assertEqual(scroll_limits(1800, 1100), (0, 0))
+
+        mon._on_resize(800, 600)
+        mon.scroll_x = 0
+        mon.scroll_y = 0
+        mon.draw(view)
+        wx, wy = window_from_logical(mon.brain_rect.center, 800, 600, (0, 0))
+        self.assertGreaterEqual(wx, 800)
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(48, 18), button=1))
+        missed = mon.pump()
+        self.assertFalse(missed.brain_toggle)
+        mon.scroll_x = scroll_limits(800, 600)[0]
+        wx, wy = window_from_logical(mon.brain_rect.center, 800, 600, (mon.scroll_x, mon.scroll_y))
+        self.assertGreaterEqual(wx, 0)
+        self.assertLess(wx, 800)
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(wx, wy), button=1))
+        hit = mon.pump()
+        self.assertTrue(hit.brain_toggle)
+
+        mon._on_resize(1000, 700)
+        mon.scroll_x = 0
+        mon.scroll_y = 0
+        mon.draw(view)
+        pygame.event.post(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-1, precise_x=0.0, precise_y=-1.0))
+        mon.pump()
+        self.assertGreater(mon.scroll_y, 0)
+        pygame.key.set_mods(pygame.KMOD_SHIFT)
+        pygame.event.post(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-1, precise_x=0.0, precise_y=-1.0))
+        mon.pump()
+        pygame.key.set_mods(0)
+        self.assertGreater(mon.scroll_x, 0)
+
+        mon.scroll_x = 0
+        mon.scroll_y = 0
+        thumb = mon.scroll_geometry((1000, 700))["thumb_y"]
+        self.assertIsNotNone(thumb)
+        origin = thumb.center
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=origin, button=1))
+        mon.pump()
+        pygame.event.post(
+            pygame.event.Event(pygame.MOUSEMOTION, pos=(origin[0], origin[1] + 70), rel=(0, 70), buttons=(1, 0, 0))
+        )
+        mon.pump()
+        self.assertGreater(mon.scroll_y, 0)
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, pos=(origin[0], origin[1] + 70), button=1))
+        mon.pump()
+
+        mon.scroll_x = 0
+        mon.scroll_y = 0
+        scroll_frame = mon.present_into((1000, 700))
+        shown = pygame.surfarray.array3d(scroll_frame)
+        geom = mon.scroll_geometry((1000, 700))
+        thumb = geom["thumb_y"]
+        pix = shown[thumb.centerx, thumb.centery]
+        self.assertLess(int(np.abs(pix.astype(int) - np.array(SCROLL_THUMB)).max()), 8)
+        thumb_x = geom["thumb_x"]
+        self.assertIsNotNone(thumb_x)
+        pix_x = shown[thumb_x.centerx, thumb_x.centery]
+        self.assertLess(int(np.abs(pix_x.astype(int) - np.array(SCROLL_THUMB)).max()), 8)
+        pygame.image.save(scroll_frame, str(out / "trainer_window_scroll.png"))
         pygame.quit()
 
 

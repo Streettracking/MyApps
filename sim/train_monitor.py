@@ -43,6 +43,11 @@ from .tabnum import (
 
 WIN_W = 1920
 WIN_H = 1080
+MIN_SCALE = 0.75
+MIN_CONTENT_W = int(round(WIN_W * MIN_SCALE))  # 1440
+SCROLL_BAR = 14
+SCROLL_TRACK = (214, 210, 204)
+SCROLL_THUMB = (90, 82, 74)
 
 # Light warm chrome. Peach is the only accent. Green and red stay semantic.
 BG_TOP = (236, 234, 230)  # #ECEAE6
@@ -198,46 +203,111 @@ class MonitorView:
     recog_line: str = ""
 
 
-def content_rect(ww: int, wh: int) -> tuple:
-    """Letterbox the 1920×1080 canvas into a window. Returns ``(ox, oy, cw, ch)``.
+def fit_window(ww: int, wh: int) -> tuple:
+    """Width sets a uniform scale. Returns ``(scale, logical_w, logical_h, content_w, content_h)``.
 
-    Scale is uniform, so a circle on the canvas stays a circle. Extra space
-    is a bar on the short axis (letterbox or pillarbox), not a stretch.
+    Scale never drops below 0.75, so the canvas stays at least 1440 window
+    pixels wide. Extra window height grows the logical canvas from the top;
+    a shorter window keeps the 1080-tall layout and scrolls. Content is
+    top-left, never letterboxed.
     """
+    ww = max(1, int(ww))
+    wh = max(1, int(wh))
+    if ww >= MIN_CONTENT_W:
+        scale = ww / float(WIN_W)
+        content_w = ww
+    else:
+        scale = MIN_SCALE
+        content_w = MIN_CONTENT_W
+    min_content_h = max(1, int(round(WIN_H * scale)))
+    if wh >= min_content_h:
+        content_h = wh
+        logical_h = max(WIN_H, int(round(wh / scale)))
+        while int(round(logical_h * scale)) < wh:
+            logical_h += 1
+    else:
+        content_h = min_content_h
+        logical_h = WIN_H
+    return scale, WIN_W, logical_h, content_w, content_h
+
+
+def scroll_limits(ww: int, wh: int) -> tuple:
+    _scale, _lw, _lh, content_w, content_h = fit_window(ww, wh)
+    return max(0, content_w - int(ww)), max(0, content_h - int(wh))
+
+
+def scrollbar_geom(ww: int, wh: int, scroll_x: int = 0, scroll_y: int = 0) -> dict:
+    """Tracks and thumbs in window pixels. Missing bars are ``None``."""
+    import pygame
+
     ww = int(ww)
     wh = int(wh)
-    if ww < 1 or wh < 1:
-        return (0, 0, max(ww, 1), max(wh, 1))
-    scale = min(ww / float(WIN_W), wh / float(WIN_H))
-    cw = max(1, min(ww, int(round(WIN_W * scale))))
-    ch = max(1, min(wh, int(round(WIN_H * scale))))
-    return (ww - cw) // 2, (wh - ch) // 2, cw, ch
+    max_x, max_y = scroll_limits(ww, wh)
+    _scale, _lw, _lh, content_w, content_h = fit_window(ww, wh)
+    sx = max(0, min(int(scroll_x), max_x))
+    sy = max(0, min(int(scroll_y), max_y))
+    show_x = max_x > 0
+    show_y = max_y > 0
+    track_x = track_y = thumb_x = thumb_y = None
+    if show_y:
+        track_h = wh - (SCROLL_BAR if show_x else 0)
+        track_y = pygame.Rect(ww - SCROLL_BAR, 0, SCROLL_BAR, max(1, track_h))
+        thumb_h = max(28, int(track_y.h * min(1.0, wh / float(max(content_h, 1)))))
+        thumb_h = min(thumb_h, track_y.h)
+        travel = max(1, track_y.h - thumb_h)
+        thumb_y = pygame.Rect(track_y.x, int(round(travel * sy / float(max_y))) if max_y else 0, SCROLL_BAR, thumb_h)
+    if show_x:
+        track_w = ww - (SCROLL_BAR if show_y else 0)
+        track_x = pygame.Rect(0, wh - SCROLL_BAR, max(1, track_w), SCROLL_BAR)
+        thumb_w = max(28, int(track_x.w * min(1.0, ww / float(max(content_w, 1)))))
+        thumb_w = min(thumb_w, track_x.w)
+        travel = max(1, track_x.w - thumb_w)
+        thumb_x = pygame.Rect(int(round(travel * sx / float(max_x))) if max_x else 0, track_x.y, thumb_w, SCROLL_BAR)
+    return {
+        "max_x": max_x,
+        "max_y": max_y,
+        "scroll": (sx, sy),
+        "track_x": track_x,
+        "track_y": track_y,
+        "thumb_x": thumb_x,
+        "thumb_y": thumb_y,
+        "content": (content_w, content_h),
+    }
 
 
-def logical_from_window(pos, ww: int, wh: int) -> tuple:
-    """Window pixels → canvas pixels. A click in the bar is ``(-1, -1)``."""
-    ox, oy, cw, ch = content_rect(ww, wh)
-    x, y = int(pos[0]), int(pos[1])
-    if x < ox or y < oy or x >= ox + cw or y >= oy + ch:
+def logical_from_window(pos, ww: int, wh: int, scroll=(0, 0)) -> tuple:
+    """Window pixels → canvas pixels, including scroll. A bar click is ``(-1, -1)``."""
+    scale, logical_w, logical_h, content_w, content_h = fit_window(ww, wh)
+    geom = scrollbar_geom(ww, wh, scroll[0], scroll[1])
+    px, py = int(pos[0]), int(pos[1])
+    for bar in (geom["track_x"], geom["track_y"]):
+        if bar is not None and bar.collidepoint(px, py):
+            return (-1, -1)
+    sx, sy = geom["scroll"]
+    x = px + sx
+    y = py + sy
+    if x < 0 or y < 0 or x >= content_w or y >= content_h:
         return (-1, -1)
-    lx = int(round((x - ox) * WIN_W / float(cw)))
-    ly = int(round((y - oy) * WIN_H / float(ch)))
-    return (max(0, min(WIN_W - 1, lx)), max(0, min(WIN_H - 1, ly)))
+    lx = int(round(x / scale))
+    ly = int(round(y / scale))
+    return (max(0, min(logical_w - 1, lx)), max(0, min(logical_h - 1, ly)))
 
 
-def window_from_logical(pos, ww: int, wh: int) -> tuple:
-    """Canvas pixels → window pixels, including the letterbox offset."""
-    ox, oy, cw, ch = content_rect(ww, wh)
-    wx = ox + int(round(float(pos[0]) * cw / float(WIN_W)))
-    wy = oy + int(round(float(pos[1]) * ch / float(WIN_H)))
+def window_from_logical(pos, ww: int, wh: int, scroll=(0, 0)) -> tuple:
+    """Canvas pixels → window pixels. Scroll shifts the point toward the origin."""
+    scale, _lw, _lh, _cw, _ch = fit_window(ww, wh)
+    geom = scrollbar_geom(ww, wh, scroll[0], scroll[1])
+    sx, sy = geom["scroll"]
+    wx = int(round(float(pos[0]) * scale)) - sx
+    wy = int(round(float(pos[1]) * scale)) - sy
     return wx, wy
 
 
 def monitor_layout(w: int, h: int) -> dict:
-    """Rects for one logical 1920×1080 frame. The camera slot is at least half the width.
+    """Rects for one logical frame. Width stays 1920; height grows with the window.
 
-    The OS window is a normal resizable frame. Each presented frame keeps this
-    canvas's aspect: uniform scale, then bars filled with the page background.
+    The camera keeps a 16:9 slot. Leftover height goes to the lidar card and
+    the right-hand panel. The OS window scales that frame uniformly.
     """
     m = 16
     header = 48
@@ -431,8 +501,13 @@ class TrainMonitor:
         self._bg = None
         self._win_bg = None
         self._content = (0, 0, WIN_W, WIN_H)
+        self.scroll_x = 0
+        self.scroll_y = 0
+        self._scroll_drag = None
         self.cam_inner = None
         self.lid_inner = None
+        self.journal_rect = None
+        self.log_rows = 5
         self.eye_lamps: dict = {}
         self._fixed_rows: list = []
         self._anchors: list = []
@@ -451,8 +526,8 @@ class TrainMonitor:
         x, y, w, h = self.layout[name]
         return pygame.Rect(int(x), int(y), int(w), int(h))
 
-    def _apply_layout(self) -> None:
-        self.layout = monitor_layout(WIN_W, WIN_H)
+    def _apply_layout(self, height: int = WIN_H) -> None:
+        self.layout = monitor_layout(WIN_W, int(height))
         self.cam_rect = self._rect("cam")
         self.lid_rect = self._rect("lid")
         self.panel_rect = self._rect("panel")
@@ -497,11 +572,11 @@ class TrainMonitor:
         return ww, wh
 
     def _open_display(self) -> None:
-        """Bordered resizable window. Drawing stays on a 1920×1080 surface.
+        """Bordered resizable window. Drawing uses a logical frame at least 1920×1080.
 
-        Fullscreen is only the FULLSCREEN flag (F11 or --fullscreen). The
-        logical canvas is letterboxed into the window each frame, which is
-        the SCALED behaviour without that flag and without stretching.
+        Fullscreen is only the FULLSCREEN flag (F11 or --fullscreen). Width
+        sets a uniform scale (never below 0.75). Extra height stretches the
+        lidar, the brain panel, and the journal. A narrower window scrolls.
         SCALED on Windows opens a borderless frame that cannot be minimized.
         """
         import pygame
@@ -526,7 +601,7 @@ class TrainMonitor:
                 self._window_size = actual
             elif actual[0] >= 64 and actual[1] >= 64 and self._window_size is None:
                 self._window_size = (int(actual[0]), int(actual[1]))
-        if self.screen is None or self.screen.get_size() != (WIN_W, WIN_H):
+        if self.screen is None:
             self.screen = pygame.Surface((WIN_W, WIN_H))
         self._minimized = False
 
@@ -538,14 +613,15 @@ class TrainMonitor:
         return self.fullscreen
 
     def _logical_pos(self, pos) -> tuple:
-        """Window pixels → the 1920×1080 canvas. Bars do not hit a button."""
+        """Window pixels → the logical canvas. Scrollbars do not hit a button."""
         win = self.window
         if win is None:
             return (int(pos[0]), int(pos[1]))
         ww, wh = win.get_size()
         if ww < 2 or wh < 2:
             return (int(pos[0]), int(pos[1]))
-        return logical_from_window(pos, ww, wh)
+        self._clamp_scroll(ww, wh)
+        return logical_from_window(pos, ww, wh, (self.scroll_x, self.scroll_y))
 
     def _mouse(self) -> tuple:
         import pygame
@@ -566,9 +642,40 @@ class TrainMonitor:
             return
         self._window_size = (w, h)
         self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+        self._clamp_scroll(w, h)
+
+    def _clamp_scroll(self, ww: int | None = None, wh: int | None = None) -> None:
+        if ww is None or wh is None:
+            if self.window is None:
+                return
+            ww, wh = self.window.get_size()
+        max_x, max_y = scroll_limits(int(ww), int(wh))
+        self.scroll_x = max(0, min(int(self.scroll_x), max_x))
+        self.scroll_y = max(0, min(int(self.scroll_y), max_y))
+
+    def _scroll_by(self, dx: int, dy: int) -> None:
+        self.scroll_x += int(dx)
+        self.scroll_y += int(dy)
+        self._clamp_scroll()
+
+    def scroll_geometry(self, size=None) -> dict:
+        if size is None:
+            if self.window is None:
+                return scrollbar_geom(WIN_W, WIN_H, 0, 0)
+            size = self.window.get_size()
+        return scrollbar_geom(int(size[0]), int(size[1]), self.scroll_x, self.scroll_y)
+
+    def _sync_canvas(self, ww: int, wh: int) -> None:
+        _scale, logical_w, logical_h, _cw, _ch = fit_window(ww, wh)
+        self._clamp_scroll(ww, wh)
+        if self.screen is None or self.screen.get_size() != (logical_w, logical_h):
+            import pygame
+
+            self.screen = pygame.Surface((logical_w, logical_h))
+            self._apply_layout(logical_h)
 
     def _present(self) -> None:
-        """Letterbox the logical canvas into the OS window. A minimized window skips the blit."""
+        """Scale the logical canvas from the top-left. A minimized window skips the blit."""
         import pygame
 
         if self._minimized or self.window is None:
@@ -582,21 +689,97 @@ class TrainMonitor:
         pygame.display.flip()
 
     def present_into(self, size) -> "object":
-        """Composite the canvas into ``size`` with bars. Aspect stays 16:9."""
+        """Composite the canvas into ``size``, top-aligned, with scrollbars when needed."""
         import pygame
 
         ww, wh = int(size[0]), int(size[1])
-        ox, oy, cw, ch = content_rect(ww, wh)
-        self._content = (ox, oy, cw, ch)
-        if (cw, ch) == (WIN_W, WIN_H):
-            scaled = self.screen
+        _scale, logical_w, logical_h, content_w, content_h = fit_window(ww, wh)
+        self._content = (0, 0, content_w, content_h)
+        self._clamp_scroll(ww, wh)
+        source = self.screen
+        if source is None:
+            source = pygame.Surface((logical_w, logical_h))
+        sw, sh = source.get_size()
+        target_w = content_w
+        target_h = max(1, int(round(sh * (content_w / float(max(sw, 1))))))
+        if source.get_size() != (target_w, target_h):
+            scaled = pygame.transform.smoothscale(source, (target_w, target_h))
         else:
-            scaled = pygame.transform.smoothscale(self.screen, (cw, ch))
-        if ox == 0 and oy == 0 and (cw, ch) == (ww, wh):
-            return scaled
-        out = self._window_bg((ww, wh)).copy()
-        out.blit(scaled, (ox, oy))
-        return out
+            scaled = source
+        if (target_w, target_h) == (ww, wh) and self.scroll_x == 0 and self.scroll_y == 0:
+            out = scaled
+        else:
+            out = pygame.Surface((ww, wh))
+            out.fill(BG_BOT)
+            out.blit(scaled, (-self.scroll_x, -self.scroll_y))
+        return self._paint_scrollbars(out, ww, wh)
+
+    def _paint_scrollbars(self, surface, ww: int, wh: int):
+        import pygame
+
+        geom = scrollbar_geom(ww, wh, self.scroll_x, self.scroll_y)
+        for track, thumb in ((geom["track_x"], geom["thumb_x"]), (geom["track_y"], geom["thumb_y"])):
+            if track is None or thumb is None:
+                continue
+            pygame.draw.rect(surface, SCROLL_TRACK, track)
+            pygame.draw.rect(surface, SCROLL_THUMB, thumb, border_radius=4)
+        return surface
+
+    def _on_wheel(self, event) -> None:
+        import pygame
+
+        step = 48
+        shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+        dx = int(getattr(event, "x", 0) or 0)
+        dy = int(getattr(event, "y", 0) or 0)
+        if shift:
+            self._scroll_by(-dy * step - dx * step, 0)
+        else:
+            self._scroll_by(-dx * step, -dy * step)
+
+    def _begin_scroll_drag(self, pos) -> bool:
+        geom = self.scroll_geometry()
+        px, py = int(pos[0]), int(pos[1])
+        if geom["thumb_y"] is not None and geom["thumb_y"].collidepoint(px, py):
+            self._scroll_drag = ("y", py - geom["thumb_y"].y)
+            return True
+        if geom["thumb_x"] is not None and geom["thumb_x"].collidepoint(px, py):
+            self._scroll_drag = ("x", px - geom["thumb_x"].x)
+            return True
+        if geom["track_y"] is not None and geom["track_y"].collidepoint(px, py):
+            self._page_scroll("y", py, geom)
+            return True
+        if geom["track_x"] is not None and geom["track_x"].collidepoint(px, py):
+            self._page_scroll("x", px, geom)
+            return True
+        return False
+
+    def _page_scroll(self, axis: str, coord: int, geom: dict) -> None:
+        if self.window is None:
+            return
+        ww, wh = self.window.get_size()
+        if axis == "y" and geom["thumb_y"] is not None:
+            page = max(40, int(wh * 0.8))
+            self._scroll_by(0, -page if coord < geom["thumb_y"].centery else page)
+        elif axis == "x" and geom["thumb_x"] is not None:
+            page = max(40, int(ww * 0.8))
+            self._scroll_by(-page if coord < geom["thumb_x"].centerx else page, 0)
+
+    def _drag_scroll(self, pos) -> None:
+        if not self._scroll_drag or self.window is None:
+            return
+        axis, grab = self._scroll_drag
+        ww, wh = self.window.get_size()
+        geom = scrollbar_geom(ww, wh, self.scroll_x, self.scroll_y)
+        if axis == "y" and geom["track_y"] is not None and geom["thumb_y"] is not None:
+            travel = max(1, geom["track_y"].h - geom["thumb_y"].h)
+            thumb_top = max(0, min(int(pos[1]) - grab, travel))
+            self.scroll_y = int(round(thumb_top / float(travel) * geom["max_y"])) if geom["max_y"] else 0
+        elif axis == "x" and geom["track_x"] is not None and geom["thumb_x"] is not None:
+            travel = max(1, geom["track_x"].w - geom["thumb_x"].w)
+            thumb_left = max(0, min(int(pos[0]) - grab, travel))
+            self.scroll_x = int(round(thumb_left / float(travel) * geom["max_x"])) if geom["max_x"] else 0
+        self._clamp_scroll(ww, wh)
 
     def pump(self) -> MonitorInput:
         import pygame
@@ -663,7 +846,17 @@ class TrainMonitor:
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
                     inp.stand_down = True
+            elif event.type == pygame.MOUSEWHEEL:
+                self._on_wheel(event)
+            elif event.type == pygame.MOUSEMOTION and self._scroll_drag is not None:
+                buttons = getattr(event, "buttons", (1, 0, 0))
+                if buttons and buttons[0]:
+                    self._drag_scroll(event.pos)
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                self._scroll_drag = None
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if self._begin_scroll_drag(event.pos):
+                    continue
                 pos = self._logical_pos(event.pos)
                 if self.estop_rect.collidepoint(pos):
                     inp.estop = True
@@ -726,6 +919,10 @@ class TrainMonitor:
     def draw(self, view: MonitorView) -> None:
         import pygame
 
+        if self.window is not None and not self._minimized:
+            ww, wh = self.window.get_size()
+            if ww >= 64 and wh >= 64:
+                self._sync_canvas(ww, wh)
         screen = self.screen
         self._fill_bg(screen)
         self._fixed_rows = []
@@ -780,12 +977,16 @@ class TrainMonitor:
             )
 
         panel = self.panel_rect
-        journal_h = 108 if panel.h > 420 else 76
+        base_panel_h = monitor_layout(WIN_W, WIN_H)["panel"][3]
+        extra = max(0, panel.h - base_panel_h)
+        journal_h = (108 if panel.h > 420 else 76) + extra // 2
+        journal_h = min(journal_h, max(76, panel.h - 160))
         body = pygame.Rect(panel.x, panel.y, panel.w, max(140, panel.h - journal_h - 12))
         journal = pygame.Rect(panel.x, body.bottom + 12, panel.w, max(48, panel.bottom - (body.bottom + 12)))
+        self.journal_rect = journal
         self._card(screen, body)
         self._card(screen, journal)
-        log_n = 5
+        log_n = max(5, (journal.h - 34) // 16)
         if view.learner == "mb" and self.flash_open:
             self._draw_mb_head(screen, view, body.x + 8)
             from .learn_flash import draw_learn_panel
@@ -800,7 +1001,7 @@ class TrainMonitor:
                 view.t,
                 view.learn_flash_r,
             )
-            log_n = 3
+            log_n = max(3, (journal.h - 34) // 16)
         elif view.learner == "mb":
             self._draw_mb(screen, view, pygame.Rect(body.x + 12, body.y + 12, body.w - 24, body.h - 20))
         else:
@@ -808,6 +1009,7 @@ class TrainMonitor:
         screen.blit(sm.render("журнал", True, PEACH), (journal.x + 16, journal.y + 10))
         y = journal.y + 30
         width_chars = max(24, journal.w // 8)
+        self.log_rows = int(log_n)
         for line in view.log_lines[-log_n:]:
             screen.blit(sm.render(line[:width_chars], True, LABEL), (journal.x + 16, y))
             y += 16
