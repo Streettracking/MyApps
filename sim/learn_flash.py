@@ -13,6 +13,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .mb_runtime import ACTIONS, MBForward, MushroomBodyRuntime
+from .ui_theme import LABEL as _LABEL
+from .ui_theme import VALUE as _VALUE
 
 FADE_S = 1.6
 _REST_ALPHA = 0.20
@@ -20,8 +22,6 @@ _REST_ALPHA = 0.20
 # Same light chrome as the trainer. Semantic green and red stay pastel.
 _PAPER = (255, 255, 255)
 _LINE = (226, 224, 220)
-_LABEL = (34, 34, 34)  # #222222
-_VALUE = (17, 17, 17)  # #111111
 _PEACH = (201, 120, 91)
 _GREEN = (141, 181, 150)
 _RED = (217, 136, 128)

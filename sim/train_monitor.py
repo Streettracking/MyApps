@@ -11,7 +11,37 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .dock_layout import (
+    BLOCK_TITLES,
+    BLOCKS,
+    HEADER as DOCK_HEADER,
+    SPLIT as DOCK_SPLIT,
+    content_rect as dock_content,
+    default_tree,
+    find_leaf,
+    header_controls,
+    hit_header,
+    layout_dock,
+    swap_blocks,
+    tree_from_dict,
+)
 from .hemifield import DEFAULT_OVERLAP
+from .ui_settings import default_settings, load_settings, persist_enabled, save_settings
+from .ui_theme import (
+    BG_BOT,
+    BG_TOP,
+    CARD,
+    INK_DIM,
+    INSET,
+    LABEL,
+    LINE,
+    MENU,
+    SCROLL_THUMB,
+    SCROLL_TRACK,
+    VALUE,
+    apply_theme,
+    theme_name,
+)
 from .tabnum import (
     EYES_STATUS,
     FLY_STATUS,
@@ -45,20 +75,13 @@ WIN_W = 1920
 WIN_H = 1080
 MIN_SCALE = 0.75
 MIN_CONTENT_W = int(round(WIN_W * MIN_SCALE))  # 1440
-SCROLL_BAR = 14
-SCROLL_TRACK = (214, 210, 204)
-SCROLL_THUMB = (90, 82, 74)
+SCROLL_BAR = 8
+MENU_H = 32
+FOOTER_H = 56
 
-# Light warm chrome. Peach is the only accent. Green and red stay semantic.
-BG_TOP = (236, 234, 230)  # #ECEAE6
-BG_BOT = (244, 242, 239)  # #F4F2EF
-CARD = (247, 246, 244)  # #F7F6F4
+# Light warm chrome is the default. Peach, green, and red stay semantic.
 CARD_ALPHA = 217  # ~0.85
-LINE = (226, 224, 220)  # #E2E0DC
-LABEL = (34, 34, 34)  # #222222
-VALUE = (17, 17, 17)  # #111111
 INK = VALUE
-INK_DIM = (68, 68, 68)  # #444444 secondary text, no lighter
 PEACH = (201, 120, 91)  # #C9785B
 PEACH_SOFT = (227, 164, 135)  # #E3A487
 GREEN = (141, 181, 150)  # #8DB596 узнаю / PAM
@@ -429,7 +452,7 @@ def _surf_from_rgb(rgb: np.ndarray):
 def _plot(screen, rect, series, y0, y1, color, font, label):
     import pygame
 
-    pygame.draw.rect(screen, (255, 255, 255), rect, border_radius=12)
+    pygame.draw.rect(screen, INSET, rect, border_radius=12)
     pygame.draw.rect(screen, LINE, rect, 1, border_radius=12)
     if y1 <= y0:
         y1 = y0 + 1.0
@@ -477,8 +500,76 @@ def _bars(screen, font, origin, values, width, title, color):
     return base + 18
 
 
+def _iter_leaves(node):
+    from .dock_layout import Leaf, Split
+
+    if isinstance(node, Leaf):
+        return [node]
+    if isinstance(node, Split):
+        return _iter_leaves(node.a) + _iter_leaves(node.b)
+    return []
+
+
+_BRAIN_CACHE: dict = {}
+
+
+def _cached_brain_surface(size, yaw, pitch, dist, pan_x, pan_y, frames, packet):
+    """One software frame per camera and packet. Tests share the first paint."""
+    import pygame
+
+    key = (
+        int(size[0]),
+        int(size[1]),
+        round(float(yaw), 3),
+        round(float(pitch), 3),
+        round(float(dist), 3),
+        round(float(pan_x), 3),
+        round(float(pan_y), 3),
+        bool(frames),
+        str(packet.get("flash_l") or ""),
+        str(packet.get("flash_r") or ""),
+        bool(packet.get("rec_l")),
+        bool(packet.get("rec_r")),
+        len(packet.get("kc_l") or []),
+        len(packet.get("kc_r") or []),
+    )
+    hit = _BRAIN_CACHE.get(key)
+    if hit is not None:
+        return hit
+    from .mb_view3d import BrainCloud, paint
+
+    cloud = _cached_brain_surface.cloud
+    if cloud is None:
+        cloud = BrainCloud()
+        _cached_brain_surface.cloud = cloud
+    surface = pygame.Surface((key[0], key[1]))
+    paint(
+        surface,
+        cloud,
+        packet,
+        yaw,
+        pitch,
+        dist,
+        auto=False,
+        pan_x=pan_x,
+        pan_y=pan_y,
+        frames=frames,
+        fast=True,
+        hint="ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   кнопка «каркас»",
+    )
+    if len(_BRAIN_CACHE) > 6:
+        _BRAIN_CACHE.clear()
+    _BRAIN_CACHE[key] = surface
+    return surface
+
+
+_cached_brain_surface.cloud = None
+
+
 class TrainMonitor:
     def __init__(self, title: str, fullscreen: bool = False):
+        import os
+
         import pygame
 
         pygame.init()
@@ -486,13 +577,40 @@ class TrainMonitor:
 
         reset_fonts()
         pygame.display.set_caption(title)
-        self.fullscreen = bool(fullscreen)
+        self._persist = persist_enabled()
+        self._settings = load_settings() if self._persist else default_settings()
+        apply_theme(self._settings.get("theme") if self._persist else "light")
+        self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
+        self.menu_open = False
+        self._menu_hits: list = []
+        self._chrome: list = []
+        self._split_drag = None
+        self._split_dirty = False
+        self._block_drag = None
+        self._orbit_drag = None
+        self._orbit = None
+        self.brain_frames = False
+        self.brain_packet = None
+        self.brain3d_rect = None
+        self._last_view = None
         self.screen = None
         self.window = None
         self._window_size = None
         self._minimized = False
         self.brain_open = False
+        self.fullscreen = bool(fullscreen) or bool(self._persist and self._settings.get("fullscreen"))
+        if self._persist and not self.fullscreen:
+            saved_w = self._settings.get("w")
+            saved_h = self._settings.get("h")
+            if saved_w and saved_h:
+                self._window_size = (max(320, int(saved_w)), max(240, int(saved_h)))
+            saved_x = self._settings.get("x")
+            saved_y = self._settings.get("y")
+            if saved_x is not None and saved_y is not None:
+                os.environ["SDL_VIDEO_WINDOW_POS"] = "%d,%d" % (int(saved_x), int(saved_y))
         self._open_display()
+        if self._persist and self._settings.get("maximized") and not self.fullscreen:
+            self._try_maximize()
         self.font = _ui_font(15)
         self.font_sm = _ui_font(14)
         self.font_tiny = _ui_font(11)
@@ -526,25 +644,202 @@ class TrainMonitor:
         x, y, w, h = self.layout[name]
         return pygame.Rect(int(x), int(y), int(w), int(h))
 
+    def _zero(self):
+        import pygame
+
+        return pygame.Rect(0, 0, 0, 0)
+
     def _apply_layout(self, height: int = WIN_H) -> None:
-        self.layout = monitor_layout(WIN_W, int(height))
-        self.cam_rect = self._rect("cam")
-        self.lid_rect = self._rect("lid")
-        self.panel_rect = self._rect("panel")
-        self.estop_rect = self._rect("estop")
-        self.treat_rect = self._rect("treat")
-        self.lidar_reset_rect = self._rect("lidar_reset")
-        self.lidar_fresh_rect = self._rect("lidar_fresh")
-        self.learn_rect = self._rect("learn")
-        self.auto_rect = self._rect("auto")
-        self.take_rect = self._rect("take")
-        self.steer_rect = self._rect("steer")
-        self.record_rect = self._rect("record")
-        self.teacher_rect = self._rect("teacher")
-        self.brain_rect = self._rect("brain")
-        self.stand_up_rect = self._rect("stand_up")
-        self.stand_down_rect = self._rect("stand_down")
-        self.recovery_rect = self._rect("recovery")
+        import pygame
+
+        height = max(WIN_H, int(height))
+        footer_y = height - FOOTER_H
+        area_h = max(160, footer_y - MENU_H)
+        placed = layout_dock(self.dock, 12, MENU_H, WIN_W - 24, area_h)
+        self._dock_blocks = placed["blocks"]
+        self._dock_splitters = placed["splitters"]
+        self._dock_leaves = {leaf.block: leaf for leaf in _iter_leaves(self.dock)}
+
+        def block(name: str):
+            rect = self._dock_blocks.get(name)
+            if rect is None:
+                return self._zero()
+            return pygame.Rect(int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+
+        self.cam_rect = block("camera")
+        self.lid_rect = block("lidar")
+        self.panel_rect = block("brain")
+        self.journal_rect = block("journal")
+        self.brain3d_rect = block("brain3d")
+        controls = block("controls")
+        self.controls_rect = controls
+
+        def row(items, x, y, row_h, limit):
+            gap_b = 8
+            total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
+            avail = max(1, limit - x)
+            scale = min(1.0, avail / float(total))
+            out = {}
+            cursor = x
+            for name, ww in items:
+                rw = max(48, int(ww * scale))
+                if cursor + rw > limit:
+                    rw = max(32, limit - cursor)
+                out[name] = pygame.Rect(cursor, y, max(1, rw), row_h)
+                cursor += rw + gap_b
+            return out
+
+        header_items = [("brain", 168), ("teacher", 280), ("record", 250)]
+        header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
+        header_x = WIN_W - 16 - header_total
+        buttons = row(header_items, header_x, 4, 24, WIN_W - 16)
+        self.brain_rect = buttons["brain"]
+        self.teacher_rect = buttons["teacher"]
+        self.record_rect = buttons["record"]
+        self.view_rect = pygame.Rect(8, 4, 52, 24)
+
+        leaf = self._dock_leaves.get("controls")
+        inner = None
+        if controls.w > 8 and leaf is not None and leaf.visible and not leaf.collapsed:
+            got = dock_content((controls.x, controls.y, controls.w, controls.h), False)
+            if got is not None:
+                inner = pygame.Rect(*got)
+        if inner is not None and inner.h >= 24:
+            placed_row = row(
+                [
+                    ("learn", 220),
+                    ("auto", 190),
+                    ("take", 180),
+                    ("steer", 210),
+                    ("treat", 190),
+                    ("estop", 150),
+                ],
+                inner.x,
+                inner.y,
+                min(40, inner.h),
+                inner.right,
+            )
+        else:
+            placed_row = {name: self._zero() for name in ("learn", "auto", "take", "steer", "treat", "estop")}
+        self.learn_rect = placed_row["learn"]
+        self.auto_rect = placed_row["auto"]
+        self.take_rect = placed_row["take"]
+        self.steer_rect = placed_row["steer"]
+        self.treat_rect = placed_row["treat"]
+        self.estop_rect = placed_row["estop"]
+
+        lid_leaf = self._dock_leaves.get("lidar")
+        lid_inner = None
+        if self.lid_rect.w > 8 and lid_leaf is not None and lid_leaf.visible and not lid_leaf.collapsed:
+            got = dock_content((self.lid_rect.x, self.lid_rect.y, self.lid_rect.w, self.lid_rect.h), False)
+            if got is not None:
+                lid_inner = pygame.Rect(*got)
+        if lid_inner is not None:
+            bx = max(lid_inner.x, lid_inner.right - 250)
+            self.lidar_reset_rect = pygame.Rect(bx, lid_inner.y, min(210, lid_inner.w), 28)
+            self.lidar_fresh_rect = pygame.Rect(bx, lid_inner.y + 34, min(230, lid_inner.w), 28)
+            self.stand_up_rect = pygame.Rect(bx, lid_inner.y + 72, 140, 28)
+            self.stand_down_rect = pygame.Rect(bx + 148, lid_inner.y + 72, 110, 28)
+            self.recovery_rect = pygame.Rect(bx, lid_inner.y + 106, 160, 28)
+        else:
+            self.lidar_reset_rect = self._zero()
+            self.lidar_fresh_rect = self._zero()
+            self.stand_up_rect = self._zero()
+            self.stand_down_rect = self._zero()
+            self.recovery_rect = self._zero()
+        self.layout = {
+            "footer_y": footer_y,
+            "controls_y": controls.y,
+            "cam": (self.cam_rect.x, self.cam_rect.y, self.cam_rect.w, self.cam_rect.h),
+            "lid": (self.lid_rect.x, self.lid_rect.y, self.lid_rect.w, self.lid_rect.h),
+            "panel": (self.panel_rect.x, self.panel_rect.y, self.panel_rect.w, self.panel_rect.h),
+        }
+
+    def _try_maximize(self) -> None:
+        try:
+            from pygame._sdl2.video import Window
+
+            Window.from_display_module().maximize()
+        except Exception:
+            return
+
+    def _save_ui(self) -> None:
+        if not self._persist:
+            return
+        data = default_settings()
+        data.update(self._settings)
+        data["theme"] = theme_name()
+        data["fullscreen"] = bool(self.fullscreen)
+        data["layout"] = self.dock.to_dict()
+        try:
+            from pygame._sdl2.video import Window
+
+            win = Window.from_display_module()
+            pos = win.position
+            size = win.size
+            data["x"], data["y"] = int(pos[0]), int(pos[1])
+            data["w"], data["h"] = int(size[0]), int(size[1])
+            data["maximized"] = bool(getattr(win, "maximized", False))
+        except Exception:
+            if self._window_size:
+                data["w"], data["h"] = int(self._window_size[0]), int(self._window_size[1])
+        self._settings = data
+        save_settings(data)
+
+    def _set_theme(self, name: str) -> None:
+        apply_theme(name)
+        self._bg = None
+        self._win_bg = None
+        self._save_ui()
+
+    def _reset_layout(self) -> None:
+        self.dock = default_tree()
+        height = self.screen.get_height() if self.screen is not None else WIN_H
+        self._apply_layout(height)
+        self._save_ui()
+
+    def _leaf(self, name: str):
+        return self._dock_leaves.get(name) or find_leaf(self.dock, name)
+
+    def _content_of(self, name: str):
+        import pygame
+
+        leaf = self._leaf(name)
+        rect = self._dock_blocks.get(name) if hasattr(self, "_dock_blocks") else None
+        if leaf is None or rect is None or not leaf.visible or leaf.collapsed:
+            return None
+        got = dock_content(rect, False)
+        if got is None:
+            return None
+        box = pygame.Rect(*got)
+        if box.w < 8 or box.h < 8:
+            return None
+        return box
+
+    def _ensure_orbit(self):
+        if self._orbit is None:
+            from .mb_view3d import Orbit
+
+            self._orbit = Orbit()
+            self._orbit.auto = False
+        return self._orbit
+
+    def _display_packet(self, view=None) -> dict:
+        if isinstance(self.brain_packet, dict):
+            return self.brain_packet
+        view = view if view is not None else self._last_view
+        return {
+            "t": float(getattr(view, "t", 0.0) or 0.0),
+            "r_l": 0.0,
+            "r_r": 0.0,
+            "kc_l": [],
+            "kc_r": [],
+            "flash_l": str(getattr(view, "teacher_flash_l", "") or ""),
+            "flash_r": str(getattr(view, "teacher_flash_r", "") or ""),
+            "rec_l": bool(getattr(view, "eye_l_recognized", False)),
+            "rec_r": bool(getattr(view, "eye_r_recognized", False)),
+            "edges": [],
+        }
 
     def _desktop(self):
         import pygame
@@ -610,6 +905,7 @@ class TrainMonitor:
         self.fullscreen = not self.fullscreen
         self._minimized = False
         self._open_display()
+        self._save_ui()
         return self.fullscreen
 
     def _logical_pos(self, pos) -> tuple:
@@ -643,6 +939,7 @@ class TrainMonitor:
         self._window_size = (w, h)
         self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
         self._clamp_scroll(w, h)
+        self._save_ui()
 
     def _clamp_scroll(self, ww: int | None = None, wh: int | None = None) -> None:
         if ww is None or wh is None:
@@ -732,10 +1029,164 @@ class TrainMonitor:
         shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
         dx = int(getattr(event, "x", 0) or 0)
         dy = int(getattr(event, "y", 0) or 0)
+        logical = self._logical_pos(pygame.mouse.get_pos())
+        brain = self._content_of("brain3d")
+        if brain is not None and not shift and brain.collidepoint(logical):
+            self._ensure_orbit().zoom(dy)
+            return
         if shift:
             self._scroll_by(-dy * step - dx * step, 0)
         else:
             self._scroll_by(-dx * step, -dy * step)
+
+    def _chrome_at(self, pos):
+        for rect, kind, arg in self._chrome:
+            if rect.collidepoint(pos):
+                return kind, arg
+        return None, None
+
+    def _menu_at(self, pos):
+        for rect, action in self._menu_hits:
+            if rect.collidepoint(pos):
+                return action
+        return None
+
+    def _run_menu(self, action) -> None:
+        kind = action[0]
+        if kind == "toggle":
+            leaf = find_leaf(self.dock, action[1])
+            if leaf is not None:
+                leaf.visible = not leaf.visible
+                self._apply_layout(self.screen.get_height() if self.screen is not None else WIN_H)
+                self._save_ui()
+        elif kind == "reset":
+            self._reset_layout()
+        elif kind == "theme":
+            self._set_theme(action[1])
+        self.menu_open = False
+
+    def _drag_splitter(self, win_pos) -> None:
+        if not self._split_drag:
+            return
+        node, axis, bounds = self._split_drag
+        lx, ly = self._logical_pos(win_pos)
+        if lx < 0:
+            return
+        x, y, w, h = bounds
+        if axis == "x":
+            span = max(1, w - DOCK_SPLIT)
+            ratio = (lx - x) / float(span)
+            node.ratio = min(0.85, max(0.15, ratio))
+        else:
+            span = max(1, h - DOCK_SPLIT)
+            ratio = (ly - y) / float(span)
+            node.ratio = min(0.9, max(0.1, ratio))
+        node.locked = True
+        self._split_dirty = True
+        height = self.screen.get_height() if self.screen is not None else WIN_H
+        self._apply_layout(height)
+
+    def _drag_orbit(self, event) -> None:
+        if not self._orbit_drag:
+            return
+        kind, _origin = self._orbit_drag
+        rel = getattr(event, "rel", (0, 0)) or (0, 0)
+        orbit = self._ensure_orbit()
+        if kind == "pan":
+            orbit.pan_pixels(rel[0], rel[1])
+        else:
+            orbit.drag(rel[0], rel[1])
+
+    def _finish_block_drag(self, win_pos) -> None:
+        name = self._block_drag
+        self._block_drag = None
+        if not name:
+            return
+        lx, ly = self._logical_pos(win_pos)
+        if lx < 0:
+            return
+        target = hit_header(self._dock_blocks, self._dock_leaves, lx, ly)
+        if target and target != name and swap_blocks(self.dock, name, target):
+            self._apply_layout(self.screen.get_height() if self.screen is not None else WIN_H)
+            self._save_ui()
+
+    def _on_primary_down(self, win_pos, inp) -> None:
+        import pygame
+
+        if self._begin_scroll_drag(win_pos):
+            return
+        pos = self._logical_pos(win_pos)
+        if pos[0] < 0:
+            return
+        if self.view_rect.collidepoint(pos):
+            self.menu_open = not self.menu_open
+            return
+        if self.menu_open:
+            action = self._menu_at(pos)
+            if action is not None:
+                self._run_menu(action)
+                return
+            self.menu_open = False
+        kind, arg = self._chrome_at(pos)
+        if kind == "collapse":
+            leaf = find_leaf(self.dock, arg)
+            if leaf is not None:
+                leaf.collapsed = not leaf.collapsed
+                self._apply_layout(self.screen.get_height() if self.screen is not None else WIN_H)
+                self._save_ui()
+            return
+        if kind == "close":
+            leaf = find_leaf(self.dock, arg)
+            if leaf is not None:
+                leaf.visible = False
+                self._apply_layout(self.screen.get_height() if self.screen is not None else WIN_H)
+                self._save_ui()
+            return
+        if kind == "wire":
+            self.brain_frames = not self.brain_frames
+            return
+        for splitter in self._dock_splitters:
+            rect = pygame.Rect(*splitter["rect"])
+            if rect.collidepoint(pos):
+                self._split_drag = (splitter["node"], splitter["axis"], splitter["bounds"])
+                return
+        brain = self._content_of("brain3d")
+        if brain is not None and brain.collidepoint(pos):
+            shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+            self._orbit_drag = ("pan" if shift else "orbit", pos)
+            return
+        header = hit_header(self._dock_blocks, self._dock_leaves, pos[0], pos[1])
+        if header:
+            self._block_drag = header
+            return
+        if self.estop_rect.collidepoint(pos):
+            inp.estop = True
+        elif self.treat_rect.collidepoint(pos):
+            inp.treat = True
+        elif self.lidar_reset_rect.collidepoint(pos):
+            inp.lidar_reset = True
+        elif self.lidar_fresh_rect.collidepoint(pos):
+            inp.lidar_toggle = True
+        elif self.learn_rect.collidepoint(pos):
+            inp.pause_learn = True
+        elif self.auto_rect.collidepoint(pos):
+            inp.autonomy_toggle = True
+        elif self.take_rect.collidepoint(pos):
+            inp.takeover = True
+        elif self.steer_rect.collidepoint(pos):
+            inp.steer_toggle = True
+        elif self.record_rect.collidepoint(pos):
+            inp.record_toggle = True
+        elif self.teacher_rect.collidepoint(pos):
+            inp.teacher_toggle = True
+        elif self.brain_rect.collidepoint(pos):
+            inp.brain_toggle = True
+        elif self.show_stand and self.stand_up_rect.collidepoint(pos):
+            inp.stand_up = True
+        elif self.show_stand and self.stand_down_rect.collidepoint(pos):
+            inp.stand_down = True
+        elif self.show_stand and self.recovery_rect.collidepoint(pos):
+            inp.recovery = True
 
     def _begin_scroll_drag(self, pos) -> bool:
         geom = self.scroll_geometry()
@@ -848,44 +1299,31 @@ class TrainMonitor:
                     inp.stand_down = True
             elif event.type == pygame.MOUSEWHEEL:
                 self._on_wheel(event)
-            elif event.type == pygame.MOUSEMOTION and self._scroll_drag is not None:
-                buttons = getattr(event, "buttons", (1, 0, 0))
-                if buttons and buttons[0]:
-                    self._drag_scroll(event.pos)
-            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                self._scroll_drag = None
+            elif event.type == pygame.MOUSEMOTION:
+                if self._scroll_drag is not None:
+                    buttons = getattr(event, "buttons", (1, 0, 0))
+                    if buttons and buttons[0]:
+                        self._drag_scroll(event.pos)
+                elif self._split_drag is not None:
+                    self._drag_splitter(event.pos)
+                elif self._orbit_drag is not None:
+                    self._drag_orbit(event)
+            elif event.type == pygame.MOUSEBUTTONUP and event.button in (1, 2, 3):
+                if event.button == 1:
+                    self._scroll_drag = None
+                    self._finish_block_drag(event.pos)
+                    self._split_drag = None
+                    if self._split_dirty:
+                        self._split_dirty = False
+                        self._save_ui()
+                self._orbit_drag = None
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if self._begin_scroll_drag(event.pos):
-                    continue
+                self._on_primary_down(event.pos, inp)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (2, 3):
                 pos = self._logical_pos(event.pos)
-                if self.estop_rect.collidepoint(pos):
-                    inp.estop = True
-                elif self.treat_rect.collidepoint(pos):
-                    inp.treat = True
-                elif self.lidar_reset_rect.collidepoint(pos):
-                    inp.lidar_reset = True
-                elif self.lidar_fresh_rect.collidepoint(pos):
-                    inp.lidar_toggle = True
-                elif self.learn_rect.collidepoint(pos):
-                    inp.pause_learn = True
-                elif self.auto_rect.collidepoint(pos):
-                    inp.autonomy_toggle = True
-                elif self.take_rect.collidepoint(pos):
-                    inp.takeover = True
-                elif self.steer_rect.collidepoint(pos):
-                    inp.steer_toggle = True
-                elif self.record_rect.collidepoint(pos):
-                    inp.record_toggle = True
-                elif self.teacher_rect.collidepoint(pos):
-                    inp.teacher_toggle = True
-                elif self.brain_rect.collidepoint(pos):
-                    inp.brain_toggle = True
-                elif self.show_stand and self.stand_up_rect.collidepoint(pos):
-                    inp.stand_up = True
-                elif self.show_stand and self.stand_down_rect.collidepoint(pos):
-                    inp.stand_down = True
-                elif self.show_stand and self.recovery_rect.collidepoint(pos):
-                    inp.recovery = True
+                brain = self._content_of("brain3d")
+                if brain is not None and pos[0] >= 0 and brain.collidepoint(pos):
+                    self._orbit_drag = ("pan", pos)
             elif event.type == pygame.VIDEORESIZE:
                 self._on_resize(int(event.w), int(event.h))
             elif event.type == getattr(pygame, "WINDOWMINIMIZED", -1):
@@ -919,6 +1357,7 @@ class TrainMonitor:
     def draw(self, view: MonitorView) -> None:
         import pygame
 
+        self._last_view = view
         if self.window is not None and not self._minimized:
             ww, wh = self.window.get_size()
             if ww >= 64 and wh >= 64:
@@ -927,33 +1366,184 @@ class TrainMonitor:
         self._fill_bg(screen)
         self._fixed_rows = []
         self._anchors = []
+        self._chrome = []
+        self._menu_hits = []
+        self.cam_inner = None
+        self.lid_inner = None
+        self.show_stand = bool(view.onboard)
         sm = self.font_sm
-        screen.blit(self.font.render(view.title, True, LABEL), (16, 14))
+        self._draw_menu_bar(screen, view)
+        self._draw_blocks(screen, view)
+        self._draw_splitters(screen)
+        footer = int(self.layout["footer_y"])
+        pygame.draw.line(screen, LINE, (24, footer), (WIN_W - 24, footer), 1)
+        focus = "окно в фокусе" if view.focused else "нажмите на окно — клавиши не читаются"
+        from .tabnum import phrase as tab_phrase
+
+        self._cells(screen, tab_phrase(view.udp_status, 78) + "  " + tab_phrase(focus, 42), 16, footer + 6, LABEL)
+        self._cells(screen, format_command(view.last_command or "—"), 16, footer + 26, VALUE)
+        screen.blit(sm.render(view.keys_hint, True, LABEL), (16, footer + 40))
+        if view.learner == "mb":
+            if view.recognized and not self._prev_rec and self.beep_on:
+                self._play_beep()
+            self._prev_rec = view.recognized
+        else:
+            self._prev_rec = False
+        if self.menu_open:
+            self._draw_menu(screen)
+        self._present()
+        self.clock.tick(30)
+
+    def _draw_menu_bar(self, screen, view: MonitorView) -> None:
+        import pygame
+
+        pygame.draw.rect(screen, MENU, pygame.Rect(0, 0, WIN_W, MENU_H))
+        pygame.draw.line(screen, LINE, (0, MENU_H - 1), (WIN_W, MENU_H - 1), 1)
+        hot = self.view_rect.collidepoint(self._mouse()) or self.menu_open
+        self._button(screen, self.view_rect, "View", None, hot)
+        screen.blit(self.font.render(view.title, True, LABEL), (68, 6))
         self._link_lamp(screen, view)
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
         self._record_button(screen, view)
 
-        cam_inner = self._frame(screen, self.cam_rect, view.camera, "камера", view.sensor_error)
+    def _draw_blocks(self, screen, view: MonitorView) -> None:
+        titles = dict(BLOCK_TITLES)
+        if view.lidar_mode:
+            titles["lidar"] = view.lidar_mode
+        import pygame
+
+        for name in BLOCKS:
+            rect = self._dock_blocks.get(name) if hasattr(self, "_dock_blocks") else None
+            leaf = self._leaf(name)
+            if rect is None or leaf is None or not leaf.visible:
+                continue
+            box = pygame.Rect(*rect)
+            self._draw_block_chrome(screen, box, titles.get(name, name), name, leaf.collapsed)
+            if leaf.collapsed:
+                continue
+            content = self._content_of(name)
+            if content is None:
+                continue
+            if name == "camera":
+                self._draw_camera_block(screen, view, content)
+            elif name == "lidar":
+                self._draw_lidar_block(screen, view, content)
+            elif name == "brain":
+                self._draw_brain_block(screen, view, content)
+            elif name == "journal":
+                self._draw_journal_block(screen, view, content)
+            elif name == "controls":
+                self._draw_controls_block(screen, view)
+            elif name == "brain3d":
+                self._draw_brain3d_block(screen, content)
+
+    def _draw_block_chrome(self, screen, rect, title: str, name: str, collapsed: bool) -> None:
+        import pygame
+
+        self._card(screen, rect, radius=12)
+        bar = header_controls((rect.x, rect.y, rect.w, rect.h))
+        pygame.draw.rect(screen, MENU, pygame.Rect(*bar["bar"]))
+        pygame.draw.line(screen, LINE, (rect.x + 8, rect.y + DOCK_HEADER - 1), (rect.right - 8, rect.y + DOCK_HEADER - 1), 1)
+        label = self.font_sm.render(title, True, LABEL)
+        screen.blit(label, (rect.x + 12, rect.y + 4))
+        collapse = pygame.Rect(*bar["collapse"])
+        close = pygame.Rect(*bar["close"])
+        self._chrome.append((collapse, "collapse", name))
+        self._chrome.append((close, "close", name))
+        self._mini_glyph(screen, collapse, "–" if not collapsed else "+")
+        self._mini_glyph(screen, close, "×")
+        if name == "brain3d" and rect.w > 140:
+            wire = pygame.Rect(rect.right - 118, rect.y + 3, 64, 20)
+            self._chrome.append((wire, "wire", name))
+            self._mini_glyph(screen, wire, "каркас" if not self.brain_frames else "каркас •")
+
+    def _mini_glyph(self, screen, rect, text: str) -> None:
+        import pygame
+
+        pygame.draw.rect(screen, CARD, rect, border_radius=4)
+        pygame.draw.rect(screen, LINE, rect, 1, border_radius=4)
+        label = self.font_tiny.render(text, True, LABEL)
+        screen.blit(label, (rect.centerx - label.get_width() // 2, rect.centery - label.get_height() // 2))
+
+    def _draw_splitters(self, screen) -> None:
+        import pygame
+
+        for splitter in getattr(self, "_dock_splitters", []):
+            rect = pygame.Rect(*splitter["rect"])
+            pygame.draw.rect(screen, LINE, rect)
+            if splitter["axis"] == "y":
+                mid = rect.centery
+                pygame.draw.line(screen, INK_DIM, (rect.centerx - 18, mid), (rect.centerx + 18, mid), 2)
+            else:
+                mid = rect.centerx
+                pygame.draw.line(screen, INK_DIM, (mid, rect.centery - 18), (mid, rect.centery + 18), 2)
+
+    def _draw_menu(self, screen) -> None:
+        import pygame
+
+        rows = [(("toggle", name), BLOCK_TITLES[name], "check", name) for name in BLOCKS]
+        rows.append((("reset",), "Сброс раскладки", "button", None))
+        rows.append((("theme", "light"), "Светлая тема", "radio", "light"))
+        rows.append((("theme", "dark"), "Тёмная тема", "radio", "dark"))
+        width = 240
+        row_h = 28
+        x = self.view_rect.x
+        y = self.view_rect.bottom + 4
+        panel = pygame.Rect(x, y, width, row_h * len(rows) + 8)
+        self._card(screen, panel, radius=10)
+        self._menu_hits = []
+        cursor = panel.y + 4
+        for action, label, kind, arg in rows:
+            row = pygame.Rect(panel.x + 4, cursor, panel.w - 8, row_h)
+            self._menu_hits.append((row, action))
+            if kind == "check":
+                leaf = self._leaf(arg)
+                mark = "✓" if leaf is not None and leaf.visible else ""
+            elif kind == "radio":
+                mark = "✓" if theme_name() == arg else ""
+            else:
+                mark = ""
+            box = pygame.Rect(row.x + 6, row.centery - 7, 14, 14)
+            pygame.draw.rect(screen, INSET, box, border_radius=2)
+            pygame.draw.rect(screen, LINE, box, 1, border_radius=2)
+            if mark:
+                tick = self.font_tiny.render(mark, True, PEACH)
+                screen.blit(tick, (box.x + 2, box.y - 1))
+            screen.blit(self.font_sm.render(label, True, LABEL), (row.x + 28, row.centery - 8))
+            cursor += row_h
+
+    def _draw_camera_block(self, screen, view: MonitorView, content) -> None:
+        cam_inner = self._frame(screen, content, view.camera, "", view.sensor_error, chrome=False)
         self.cam_inner = cam_inner
-        if cam_inner is not None and view.learner == "mb":
+        if cam_inner is None:
+            return
+        if view.learner == "mb":
             self._camera_overlap(screen, cam_inner, view)
             self._draw_det_boxes(screen, cam_inner, view.teacher_boxes)
             self._eye_plaques(screen, cam_inner, view)
-        elif cam_inner is not None:
+        else:
             self._camera_halves(screen, cam_inner, view)
-        lid_title = view.lidar_mode or "карта лидара"
+
+    def _draw_lidar_block(self, screen, view: MonitorView, content) -> None:
+        import pygame
+
+        image_rect = content
+        if content.w > 520:
+            image_rect = pygame.Rect(content.x, content.y, content.w - 250, content.h)
         lid_msg = "" if view.lidar is not None else view.lidar_hold
-        inner = self._frame(screen, self.lid_rect, view.lidar, lid_title, lid_msg)
+        inner = self._frame(screen, image_rect, view.lidar, "", lid_msg, chrome=False)
         self.lid_inner = inner
         if inner is not None and view.marks:
             self._draw_marks(screen, inner, view.marks)
         self._lidar_reset_button(screen)
         self._lidar_fresh_button(screen, view)
+        if self.show_stand or view.onboard:
+            self._stand_buttons(screen)
         note_x = self.lidar_fresh_rect.x
-        note_y = (self.recovery_rect.bottom + 8) if view.onboard else (self.lidar_fresh_rect.bottom + 10)
+        note_y = (self.recovery_rect.bottom + 8) if view.onboard else (self.lidar_fresh_rect.bottom + 8)
         if view.lidar_warning:
-            screen.blit(sm.render(view.lidar_warning[:42], True, PEACH), (note_x, note_y))
+            screen.blit(self.font_sm.render(view.lidar_warning[:42], True, PEACH), (note_x, note_y))
             note_y += 18
         if view.fly_line:
             self._mixed(
@@ -976,67 +1566,85 @@ class TrainMonitor:
                 VALUE,
             )
 
-        panel = self.panel_rect
-        base_panel_h = monitor_layout(WIN_W, WIN_H)["panel"][3]
-        extra = max(0, panel.h - base_panel_h)
-        journal_h = (108 if panel.h > 420 else 76) + extra // 2
-        journal_h = min(journal_h, max(76, panel.h - 160))
-        body = pygame.Rect(panel.x, panel.y, panel.w, max(140, panel.h - journal_h - 12))
-        journal = pygame.Rect(panel.x, body.bottom + 12, panel.w, max(48, panel.bottom - (body.bottom + 12)))
-        self.journal_rect = journal
-        self._card(screen, body)
-        self._card(screen, journal)
-        log_n = max(5, (journal.h - 34) // 16)
+    def _draw_brain_block(self, screen, view: MonitorView, content) -> None:
+        import pygame
+
+        body = pygame.Rect(content.x, content.y, content.w, content.h)
+        log_source = self.journal_rect
+        self.log_rows = max(5, (log_source.h - 34) // 16) if log_source is not None else 5
+        previous = screen.get_clip()
+        screen.set_clip(body)
+        try:
+            self._draw_brain_body(screen, view, body)
+        finally:
+            screen.set_clip(previous)
+
+    def _draw_brain_body(self, screen, view: MonitorView, body) -> None:
+        import pygame
+
         if view.learner == "mb" and self.flash_open:
-            self._draw_mb_head(screen, view, body.x + 8)
+            self._draw_mb_head(screen, view, body.x + 8, body.y)
             from .learn_flash import draw_learn_panel
 
             draw_learn_panel(
                 screen,
                 self.font,
-                sm,
+                self.font_sm,
                 pygame.Rect(body.x + 8, body.y + 78, body.w - 16, max(80, body.h - 96)),
                 view.mb_layout,
                 view.learn_flash,
                 view.t,
                 view.learn_flash_r,
             )
-            log_n = max(3, (journal.h - 34) // 16)
+            if self.journal_rect is not None:
+                self.log_rows = max(3, (self.journal_rect.h - 34) // 16)
         elif view.learner == "mb":
-            self._draw_mb(screen, view, pygame.Rect(body.x + 12, body.y + 12, body.w - 24, body.h - 20))
+            self._draw_mb(screen, view, pygame.Rect(body.x + 4, body.y + 4, body.w - 8, body.h - 8))
         else:
-            self._draw_hebb(screen, view, pygame.Rect(body.x + 12, body.y + 12, body.w - 24, body.h - 20))
-        screen.blit(sm.render("журнал", True, PEACH), (journal.x + 16, journal.y + 10))
-        y = journal.y + 30
-        width_chars = max(24, journal.w // 8)
+            self._draw_hebb(screen, view, pygame.Rect(body.x + 4, body.y + 4, body.w - 8, body.h - 8))
+
+    def _draw_journal_block(self, screen, view: MonitorView, content) -> None:
+        journal = self.journal_rect
+        log_n = max(5, (journal.h - 34) // 16) if journal is not None else 5
+        if view.learner == "mb" and self.flash_open:
+            log_n = max(3, (journal.h - 34) // 16)
         self.log_rows = int(log_n)
+        y = content.y + 2
+        width_chars = max(24, content.w // 8)
         for line in view.log_lines[-log_n:]:
-            screen.blit(sm.render(line[:width_chars], True, LABEL), (journal.x + 16, y))
+            if y + 16 > content.bottom:
+                break
+            screen.blit(self.font_sm.render(line[:width_chars], True, LABEL), (content.x + 4, y))
             y += 16
 
+    def _draw_controls_block(self, screen, view: MonitorView) -> None:
         self._mode_buttons(screen, view)
-        self.show_stand = bool(view.onboard)
-        if view.onboard:
-            self._stand_buttons(screen)
-        footer = int(self.layout["footer_y"])
-        pygame.draw.line(screen, LINE, (24, footer), (WIN_W - 24, footer), 1)
-        focus = "окно в фокусе" if view.focused else "нажмите на окно — клавиши не читаются"
-        from .tabnum import phrase as tab_phrase
-
-        self._cells(screen, tab_phrase(view.udp_status, 78) + "  " + tab_phrase(focus, 42), 16, footer + 6, LABEL)
-        self._cells(screen, format_command(view.last_command or "—"), 16, footer + 26, VALUE)
-        screen.blit(sm.render(view.keys_hint, True, LABEL), (16, footer + 40))
-
         if view.learner == "mb":
             self._treat_button(screen, view, self._mouse())
-            if view.recognized and not self._prev_rec and self.beep_on:
-                self._play_beep()
-            self._prev_rec = view.recognized
-        else:
-            self._prev_rec = False
-        self._button(screen, self.estop_rect, "E-STOP", ESTOP, self.estop_rect.collidepoint(self._mouse()), label_color=ESTOP)
-        self._present()
-        self.clock.tick(30)
+        self._button(
+            screen,
+            self.estop_rect,
+            "E-STOP",
+            ESTOP,
+            self.estop_rect.collidepoint(self._mouse()),
+            label_color=ESTOP,
+        )
+
+    def _draw_brain3d_block(self, screen, content) -> None:
+        orbit = self._ensure_orbit()
+        orbit.auto = False
+        packet = self._display_packet()
+        surface = _cached_brain_surface(
+            (content.w, content.h),
+            orbit.yaw,
+            orbit.pitch,
+            orbit.dist,
+            orbit.pan_x,
+            orbit.pan_y,
+            self.brain_frames,
+            packet,
+        )
+        screen.blit(surface, content.topleft)
 
     def _cells(self, screen, text: str, x: int, y: int, color, size: int = 14) -> int:
         from .tabnum import blit_cells
@@ -1095,6 +1703,8 @@ class TrainMonitor:
     def _card(self, screen, rect, radius: int = 16) -> None:
         import pygame
 
+        if rect.w < 2 or rect.h < 2:
+            return
         radius = min(int(radius), rect.w // 2, rect.h // 2)
         shadow = pygame.Surface((rect.w + 28, rect.h + 32), pygame.SRCALPHA)
         for spread, alpha in ((12, 16), (7, 24), (3, 32)):
@@ -1117,7 +1727,7 @@ class TrainMonitor:
         if rect.w < 2 or rect.h < 2:
             return
         radius = max(0, min(int(radius), rect.w // 2, rect.h // 2))
-        pygame.draw.rect(screen, (255, 255, 255), rect, border_radius=radius)
+        pygame.draw.rect(screen, INSET, rect, border_radius=radius)
         pygame.draw.rect(screen, LINE, rect, 1, border_radius=radius)
 
     def _lamp(self, screen, center, color, radius: int = 6) -> None:
@@ -1149,7 +1759,9 @@ class TrainMonitor:
     def _button(self, screen, rect, text: str, lamp, hot: bool, label_color=None) -> None:
         import pygame
 
-        self._card(screen, rect, radius=min(16, rect.h // 2))
+        if rect.w < 8 or rect.h < 8:
+            return
+        self._card(screen, rect, radius=min(16, max(1, rect.h // 2)))
         if hot:
             pygame.draw.rect(screen, PEACH, rect, 1, border_radius=min(16, rect.h // 2))
         x = rect.x + 12
@@ -1561,9 +2173,10 @@ class TrainMonitor:
             return y + 88
         return y + 70
 
-    def _draw_mb_head(self, screen, view: MonitorView, rx: int) -> None:
+    def _draw_mb_head(self, screen, view: MonitorView, rx: int, y: int | None = None) -> None:
         col_w = self.panel_rect.w if hasattr(self, "panel_rect") else WIN_W - rx - 16
-        y = self.panel_rect.y if hasattr(self, "panel_rect") else 56
+        if y is None:
+            y = self.panel_rect.y if hasattr(self, "panel_rect") else 56
         if view.eyes_line or view.recog_line or view.learner == "mb":
             self._eyes_banner(screen, view, rx, col_w, y)
             return
@@ -1803,15 +2416,21 @@ class TrainMonitor:
             self._mixed(screen, format_purity(float(purity)), rx, y + 400, "чистота {4} / {2}", VALUE)
         return min(y + 430, panel.bottom - 96)
 
-    def _frame(self, screen, rect, image, title, error: str):
+    def _frame(self, screen, rect, image, title, error: str, chrome: bool = True):
         import pygame
 
-        self._card(screen, rect)
-        screen.blit(self.font_sm.render(title, True, PEACH), (rect.x + 16, rect.y + 12))
+        if rect.w < 4 or rect.h < 4:
+            return None
+        if chrome:
+            self._card(screen, rect)
+            if title:
+                screen.blit(self.font_sm.render(title, True, PEACH), (rect.x + 16, rect.y + 12))
+            avail = pygame.Rect(rect.x + 10, rect.y + 36, max(1, rect.w - 20), max(1, rect.h - 48))
+        else:
+            avail = pygame.Rect(rect.x + 4, rect.y + 4, max(1, rect.w - 8), max(1, rect.h - 8))
         inner = None
         if image is not None and getattr(image, "size", 0):
             surf = _surf_from_rgb(image)
-            avail = pygame.Rect(rect.x + 10, rect.y + 36, max(1, rect.w - 20), max(1, rect.h - 48))
             iw, ih = surf.get_size()
             scale = min(avail.w / float(max(iw, 1)), avail.h / float(max(ih, 1)))
             tw = max(1, int(round(iw * scale)))

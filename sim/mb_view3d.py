@@ -573,11 +573,11 @@ def _scale(color, k: float):
     return tuple(int(max(0, min(255, round(channel * k)))) for channel in color)
 
 
-def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False) -> None:
+def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None) -> None:
     """Perspective view. FlyWire shell when the cache exists, else the soma cloud."""
     from .mb_flywire import paint_scene
 
-    if paint_scene(surface, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast):
+    if paint_scene(surface, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast, hint=hint):
         return
     import pygame
 
@@ -1132,10 +1132,12 @@ def drive_brain(session, inp, now: float, mon=None) -> None:
         session._brain_view = link
     if getattr(inp, "brain_toggle", False):
         session._log(link.toggle())
+    packet = packet_from_session(session, now)
     if link.alive:
-        link.send(packet_from_session(session, now), now)
+        link.send(packet, now)
     if mon is not None:
         mon.brain_open = bool(link.alive)
+        mon.brain_packet = packet
 
 
 def close_brain(session) -> None:

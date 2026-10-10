@@ -538,7 +538,7 @@ def _draw_indexed(surface, sx, sy, dep, edges, indices, color, w, h, verts=None,
         pygame.draw.line(surface, rgb, (x0, y0), (x1, y1), 1)
 
 
-def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool, frames: bool) -> None:
+def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool, frames: bool, hint: str | None = None) -> None:
     import pygame
 
     from .mb_view3d import _project
@@ -553,9 +553,10 @@ def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool
     note = "оболочка FlyWire   скелеты KC γ / αβ / a'b'   MBON   PAM   PPL1"
     surface.blit(small.render(note, True, _INK), (16, 34))
     surface.blit(small.render("глаз Л и глаз П — зрительные доли, светятся при узнавании", True, _INK), (16, 52))
-    hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   F каркас"
-    if frames:
-        hint += " вкл"
+    if hint is None:
+        hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   F каркас"
+        if frames:
+            hint += " вкл"
     surface.blit(tiny.render(hint, True, _HINT), (12, h - 20))
     rec_l = bool(packet.get("rec_l"))
     rec_r = bool(packet.get("rec_r"))
@@ -596,7 +597,7 @@ def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool
     surface.blit(caption, (x1 - caption.get_width() // 2, y1 - caption.get_height() - 4))
 
 
-def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False) -> bool:
+def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None) -> bool:
     scene = load_scene()
     if scene is None:
         return False
@@ -607,5 +608,5 @@ def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, au
         _blit_rgb(surface, image)
     else:
         _paint_software(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, frames, fast)
-    _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, auto, frames)
+    _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, auto, frames, hint)
     return True
