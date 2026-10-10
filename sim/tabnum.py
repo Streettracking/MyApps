@@ -83,6 +83,9 @@ def reset_fonts() -> None:
 def load_font(size: int = 14):
     import pygame
 
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
     if not pygame.font.get_init():
         pygame.font.init()
     cached = _FONTS.get(int(size))

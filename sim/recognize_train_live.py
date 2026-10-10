@@ -78,11 +78,14 @@ class PreviewPull:
     def __init__(self, base: str):
         self.base = base
         self.error = ""
-        self.camera = None
         self.camera_jpeg = b""
-        self.lidar = None
         self.scan = None
         self.frame_id = 0
+        self._cam_jpeg = b""
+        self._lid_jpeg = b""
+        self._decoded_id = -1
+        self._decoded_cam = None
+        self._decoded_lid = None
         self._lock = threading.Lock()
         self._stop = False
         self._thread = threading.Thread(target=self._loop, name="preview", daemon=True)
@@ -95,12 +98,11 @@ class PreviewPull:
         self._thread.join(timeout=2.0)
 
     def _loop(self) -> None:
+        """Fetch JPEG bytes only. pygame stays on the thread that owns the window."""
         while not self._stop:
             try:
                 cam_b = fetch_bytes(f"{self.base}/camera.jpg", timeout=2.0)
                 lid_b = fetch_bytes(f"{self.base}/lidar.jpg", timeout=2.0)
-                cam = decode_image_bytes(cam_b)
-                lid = decode_image_bytes(lid_b)
             except Exception as exc:
                 with self._lock:
                     self.error = offline_message(self.base, exc)
@@ -108,20 +110,43 @@ class PreviewPull:
                 continue
             scan = _fetch_scan(self.base)
             with self._lock:
-                self.camera = cam
+                self._cam_jpeg = bytes(cam_b)
+                self._lid_jpeg = bytes(lid_b)
                 self.camera_jpeg = bytes(cam_b)
-                self.lidar = lid
                 self.scan = scan
                 self.error = ""
                 self.frame_id += 1
             time.sleep(0.05)
 
     def latest(self):
+        from .sdl_thread import require_main_thread
+
+        require_main_thread()
         with self._lock:
-            camera = None if self.camera is None else np.array(self.camera, copy=True)
-            lidar = None if self.lidar is None else np.array(self.lidar, copy=True)
+            frame_id = self.frame_id
+            cam_b = bytes(self._cam_jpeg)
+            lid_b = bytes(self._lid_jpeg)
             scan = None if self.scan is None else dict(self.scan)
-            return self.frame_id, camera, lidar, scan, self.error, bytes(self.camera_jpeg)
+            error = self.error
+            jpeg = bytes(self.camera_jpeg)
+        if error or not cam_b or not lid_b:
+            return frame_id, None, None, scan, error, jpeg
+        if frame_id != self._decoded_id:
+            try:
+                cam = decode_image_bytes(cam_b)
+                lid = decode_image_bytes(lid_b)
+            except Exception as exc:
+                message = offline_message(self.base, exc)
+                with self._lock:
+                    if self.frame_id == frame_id:
+                        self.error = message
+                return frame_id, None, None, scan, message, jpeg
+            self._decoded_id = frame_id
+            self._decoded_cam = cam
+            self._decoded_lid = lid
+        camera = np.array(self._decoded_cam, copy=True)
+        lidar = np.array(self._decoded_lid, copy=True)
+        return frame_id, camera, lidar, scan, error, jpeg
 
 
 def _fetch_scan(base: str):

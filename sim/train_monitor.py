@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .sdl_thread import require_main_thread
 from .dock_layout import (
     BLOCK_TITLES,
     BLOCKS,
@@ -426,6 +427,8 @@ def _ui_font(size: int):
 
     import pygame
 
+    require_main_thread()
+
     windir = os.environ.get("WINDIR", r"C:\Windows")
     for path in (
         os.path.join(windir, "Fonts", "segoeuil.ttf"),
@@ -445,13 +448,19 @@ def _mix(a, b, t: float):
 def _surf_from_rgb(rgb: np.ndarray):
     import pygame
 
+    require_main_thread()
     arr = np.ascontiguousarray(np.transpose(rgb, (1, 0, 2)))
+    _surf_from_rgb.hold = arr
     return pygame.surfarray.make_surface(arr)
+
+
+_surf_from_rgb.hold = None
 
 
 def _plot(screen, rect, series, y0, y1, color, font, label):
     import pygame
 
+    require_main_thread()
     pygame.draw.rect(screen, INSET, rect, border_radius=12)
     pygame.draw.rect(screen, LINE, rect, 1, border_radius=12)
     if y1 <= y0:
@@ -476,6 +485,7 @@ def _plot(screen, rect, series, y0, y1, color, font, label):
 def _bars(screen, font, origin, values, width, title, color):
     import pygame
 
+    require_main_thread()
     x, y = origin
     screen.blit(font.render(title, True, PEACH), (x, y))
     y += 18
@@ -504,6 +514,7 @@ def _snap(screen, rect):
     """Own the pixels. A subsurface of the live canvas is not a safe cache."""
     import pygame
 
+    require_main_thread()
     snap = pygame.Surface((int(rect.w), int(rect.h)))
     snap.blit(screen, (0, 0), area=rect)
     return snap
@@ -544,6 +555,8 @@ class TrainMonitor:
         self._card_cache: dict = {}
         self._journal_cache = None
         self._brain_panel_cache = None
+        self._bg = None
+        self._win_bg = None
         self._last_view = None
         self.screen = None
         self.window = None
@@ -564,6 +577,7 @@ class TrainMonitor:
         if self._persist and self._settings.get("maximized") and not self.fullscreen:
             self._try_maximize()
         self.font = _ui_font(15)
+
         self.font_sm = _ui_font(14)
         self.font_tiny = _ui_font(11)
         self.font_big = _ui_font(26)
@@ -737,13 +751,17 @@ class TrainMonitor:
         self._settings = data
         save_settings(data)
 
-    def _set_theme(self, name: str) -> None:
-        apply_theme(name)
+    def _drop_surface_caches(self) -> None:
+        """Forget pictures taken from a canvas or window that is about to go away."""
         self._bg = None
         self._win_bg = None
         self._card_cache = {}
         self._journal_cache = None
         self._brain_panel_cache = None
+
+    def _set_theme(self, name: str) -> None:
+        apply_theme(name)
+        self._drop_surface_caches()
         self._save_ui()
 
     def _reset_layout(self) -> None:
@@ -805,6 +823,8 @@ class TrainMonitor:
         """
         import pygame
 
+        require_main_thread()
+        self._drop_surface_caches()
         if self.fullscreen:
             dw, dh = self._desktop()
             try:
@@ -857,19 +877,24 @@ class TrainMonitor:
     def _on_resize(self, w: int, h: int) -> None:
         import pygame
 
+        require_main_thread()
         if w < 64 or h < 64:
             self._minimized = True
             return
         self._minimized = False
         if self.fullscreen:
             return
-        if self.window is not None and self.window.get_size() == (w, h):
-            self._window_size = (w, h)
-            return
         self._window_size = (w, h)
-        self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+        # pygame 2 has already resized the display by the time VIDEORESIZE
+        # arrives. A second set_mode frees that surface while its events are
+        # still queued, and the next event.get walks a dead window.
+        if self.window is None or self.window.get_size() != (w, h):
+            self._drop_surface_caches()
+            self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+            # set_mode frees the previous display. Events already queued for
+            # it point at that window; delivering them is a use-after-free.
+            pygame.event.clear()
         self._clamp_scroll(w, h)
-        pygame.event.clear()
         self._save_ui()
 
     def _clamp_scroll(self, ww: int | None = None, wh: int | None = None) -> None:
@@ -899,6 +924,7 @@ class TrainMonitor:
         if self.screen is None or self.screen.get_size() != (logical_w, logical_h):
             import pygame
 
+            self._drop_surface_caches()
             self.screen = pygame.Surface((logical_w, logical_h))
             self._apply_layout(logical_h)
 
@@ -920,6 +946,7 @@ class TrainMonitor:
         """Composite the canvas into ``size``, top-aligned, with scrollbars when needed."""
         import pygame
 
+        require_main_thread()
         ww, wh = int(size[0]), int(size[1])
         _scale, logical_w, logical_h, content_w, content_h = fit_window(ww, wh)
         self._content = (0, 0, content_w, content_h)
@@ -1142,7 +1169,10 @@ class TrainMonitor:
     def pump(self) -> MonitorInput:
         import pygame
 
+        require_main_thread()
         inp = MonitorInput()
+        pending_size = None
+        pending_full = False
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 inp.quit = True
@@ -1196,8 +1226,7 @@ class TrainMonitor:
                 elif event.key == pygame.K_j and not getattr(event, "repeat", False):
                     inp.brain_toggle = True
                 elif event.key == pygame.K_F11 and not getattr(event, "repeat", False):
-                    self.toggle_fullscreen()
-                    inp.fullscreen_toggle = True
+                    pending_full = True
                 elif event.key == pygame.K_u and not getattr(event, "repeat", False):
                     inp.record_toggle = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
@@ -1223,7 +1252,7 @@ class TrainMonitor:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 self._on_primary_down(event.pos, inp)
             elif event.type == pygame.VIDEORESIZE:
-                self._on_resize(int(event.w), int(event.h))
+                pending_size = (int(event.w), int(event.h))
             elif event.type == getattr(pygame, "WINDOWMINIMIZED", -1):
                 self._minimized = True
             elif event.type in (
@@ -1232,6 +1261,11 @@ class TrainMonitor:
                 getattr(pygame, "WINDOWSHOWN", -4),
             ):
                 self._minimized = False
+        if pending_full:
+            self.toggle_fullscreen()
+            inp.fullscreen_toggle = True
+        elif pending_size is not None:
+            self._on_resize(pending_size[0], pending_size[1])
         inp.focused = bool(pygame.key.get_focused())
         if inp.focused:
             keys = pygame.key.get_pressed()
@@ -1250,11 +1284,13 @@ class TrainMonitor:
     def save_screenshot(self, path: str) -> None:
         import pygame
 
+        require_main_thread()
         pygame.image.save(self.screen, path)
 
     def draw(self, view: MonitorView) -> None:
         import pygame
 
+        require_main_thread()
         self._last_view = view
         if self.window is not None and not self._minimized:
             ww, wh = self.window.get_size()
@@ -1643,6 +1679,7 @@ class TrainMonitor:
     def _window_bg(self, size):
         import pygame
 
+        require_main_thread()
         if self._win_bg is None or self._win_bg.get_size() != tuple(size):
             bg = pygame.Surface((int(size[0]), int(size[1])))
             self._gradient(bg)
@@ -1652,6 +1689,7 @@ class TrainMonitor:
     def _fill_bg(self, screen) -> None:
         import pygame
 
+        require_main_thread()
         size = screen.get_size()
         if self._bg is None or self._bg.get_size() != size:
             bg = pygame.Surface(size)
@@ -1662,6 +1700,7 @@ class TrainMonitor:
     def _card(self, screen, rect, radius: int = 16) -> None:
         import pygame
 
+        require_main_thread()
         if rect.w < 2 or rect.h < 2:
             return
         radius = min(int(radius), rect.w // 2, rect.h // 2)
@@ -1698,6 +1737,7 @@ class TrainMonitor:
     def _lamp(self, screen, center, color, radius: int = 6) -> None:
         import pygame
 
+        require_main_thread()
         x, y = int(center[0]), int(center[1])
         if color == LAMP_OFF or color is None:
             pygame.draw.circle(screen, RING, (x, y), radius, 1)
@@ -1877,6 +1917,7 @@ class TrainMonitor:
         try:
             import pygame
 
+            require_main_thread()
             if pygame.mixer.get_init() is None:
                 pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
             spec = pygame.mixer.get_init()
@@ -1892,7 +1933,8 @@ class TrainMonitor:
                 wave = np.column_stack([mono, mono])
             else:
                 wave = mono
-            self._beep_sound = pygame.sndarray.make_sound(wave)
+            self._beep_samples = wave
+            self._beep_sound = pygame.sndarray.make_sound(self._beep_samples)
             self.audio_ok = True
         except Exception:
             self.audio_ok = False
@@ -1952,6 +1994,7 @@ class TrainMonitor:
     def _draw_marks(self, screen, inner, marks) -> None:
         import pygame
 
+        require_main_thread()
         overlay = pygame.Surface((inner.w, inner.h), pygame.SRCALPHA)
 
         def pt(nx: float, ny: float) -> tuple[int, int]:
@@ -2038,6 +2081,7 @@ class TrainMonitor:
         """
         import pygame
 
+        require_main_thread()
         height = 36
         mid = inner.x + inner.w // 2
         veil = pygame.Surface((inner.w, height), pygame.SRCALPHA)
@@ -2515,6 +2559,7 @@ class TrainMonitor:
     def _frame(self, screen, rect, image, title, error: str, chrome: bool = True):
         import pygame
 
+        require_main_thread()
         if rect.w < 4 or rect.h < 4:
             return None
         if chrome:
@@ -2554,6 +2599,7 @@ class TrainMonitor:
         """
         import pygame
 
+        require_main_thread()
         from .hemifield import overlap_bands
 
         lo, hi = overlap_bands(view.overlap)
@@ -2587,6 +2633,7 @@ class TrainMonitor:
     def _zone_tag(self, screen, x_lo: int, x_hi: int, inner, name: str) -> None:
         import pygame
 
+        require_main_thread()
         if x_hi - x_lo < 16:
             return
         label = self.font_sm.render(name, True, PEACH)
@@ -2620,6 +2667,7 @@ class TrainMonitor:
     def _wash(self, screen, rect, color: tuple[int, int, int]) -> None:
         import pygame
 
+        require_main_thread()
         veil = pygame.Surface((max(1, rect.w), max(1, rect.h)), pygame.SRCALPHA)
         veil.fill((color[0], color[1], color[2], 52))
         screen.blit(veil, rect.topleft)
@@ -2627,6 +2675,7 @@ class TrainMonitor:
     def _half_tag(self, screen, rect, name: str, value: float | None) -> None:
         import pygame
 
+        require_main_thread()
         from .tabnum import cell_px
 
         text = format_half(name, value)

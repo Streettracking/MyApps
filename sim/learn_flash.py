@@ -261,6 +261,9 @@ def flash_alpha(age: float) -> float:
 def _scratch_surface(w: int, h: int):
     import pygame
 
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
     surf = getattr(_scratch_surface, "surf", None)
     if surf is None or surf.get_size() != (w, h):
         surf = pygame.Surface((max(w, 1), max(h, 1)), pygame.SRCALPHA)

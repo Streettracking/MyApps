@@ -520,6 +520,9 @@ def _gl_renderer(scene: FlyScene):
 def _blit_rgb(surface, image: np.ndarray) -> None:
     import pygame
 
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
     view = np.ascontiguousarray(np.transpose(image, (1, 0, 2)))
     _blit_rgb.hold = view
     pygame.surfarray.blit_array(surface, view)
@@ -536,6 +539,9 @@ def _paint_software(surface, scene: FlyScene, packet: dict, yaw, pitch, dist, pa
     import pygame
 
     from .mb_view3d import _project
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
 
     w, h = surface.get_size()
     surface.fill((0, 0, 0))
@@ -685,6 +691,9 @@ def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, au
     if not _gl_caller_ok():
         _LAST_PAINT = "skip"
         return False
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
     scene = load_scene()
     if scene is None:
         _LAST_PAINT = "none"
@@ -814,11 +823,11 @@ def stress_zoom(sizes=None, zooms: int = 60) -> dict:
     box: dict = {}
 
     def _worker() -> None:
+        # No Surface here. A worker named like YOLO must not touch SDL.
         box["caller"] = _gl_caller_ok()
         box["renderer"] = _gl_renderer(scene) if scene is not None else None
         try:
-            surf = pygame.Surface((32, 24))
-            box["paint"] = paint_scene(surf, packet, yaw, pitch, 4.0, auto=False, fast=True)
+            box["paint"] = paint_scene(None, packet, yaw, pitch, 4.0, auto=False, fast=True)
         except Exception as exc:
             box["paint"] = "exc:%s" % type(exc).__name__
 

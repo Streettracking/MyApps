@@ -489,6 +489,9 @@ def _flags(n: int, ids) -> np.ndarray:
 def _background(w: int, h: int):
     import pygame
 
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
     cache = getattr(_background, "_cache", None)
     if cache is not None and cache.get_size() == (w, h):
         return cache
@@ -507,6 +510,9 @@ def _background(w: int, h: int):
 def _sphere(color, diameter: int, alpha: int = 255):
     import pygame
 
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
     diameter = max(4, int(diameter))
     key = (tuple(color), diameter, int(alpha))
     cache = getattr(_sphere, "_cache", {})
@@ -529,11 +535,15 @@ def _sphere(color, diameter: int, alpha: int = 255):
         rgb[:, :, channel] = np.where(inside, channel_px, 0.0)
     surf = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
     view = pygame.surfarray.pixels3d(surf)
-    view[:] = np.transpose(rgb.astype(np.uint8), (1, 0, 2))
-    del view
+    try:
+        view[:] = np.transpose(rgb.astype(np.uint8), (1, 0, 2))
+    finally:
+        del view
     mask = pygame.surfarray.pixels_alpha(surf)
-    mask[:] = np.where(rr.T <= 1.0, int(alpha), 0).astype(np.uint8)
-    del mask
+    try:
+        mask[:] = np.where(rr.T <= 1.0, int(alpha), 0).astype(np.uint8)
+    finally:
+        del mask
     cache[key] = surf
     _sphere._cache = cache
     return surf
@@ -542,6 +552,9 @@ def _sphere(color, diameter: int, alpha: int = 255):
 def _glow(color, diameter: int):
     import pygame
 
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
     diameter = max(6, int(diameter))
     key = (tuple(color), diameter)
     cache = getattr(_glow, "_cache", {})
@@ -560,11 +573,15 @@ def _glow(color, diameter: int):
         rgb[:, :, channel] = color[channel] * fall * 0.34
     surf = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
     view = pygame.surfarray.pixels3d(surf)
-    view[:] = np.transpose(rgb.astype(np.uint8), (1, 0, 2))
-    del view
+    try:
+        view[:] = np.transpose(rgb.astype(np.uint8), (1, 0, 2))
+    finally:
+        del view
     mask = pygame.surfarray.pixels_alpha(surf)
-    mask[:] = (fall.T * 255).astype(np.uint8)
-    del mask
+    try:
+        mask[:] = (fall.T * 255).astype(np.uint8)
+    finally:
+        del mask
     cache[key] = surf
     _glow._cache = cache
     return surf
@@ -577,6 +594,9 @@ def _scale(color, k: float):
 def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None, software_only: bool = False) -> None:
     """Perspective view. FlyWire shell when the cache exists, else the soma cloud."""
     from .mb_flywire import paint_scene
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
 
     if paint_scene(surface, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast, hint=hint, software_only=software_only):
         return
@@ -903,6 +923,9 @@ def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = 
     import pygame
 
     from .mb_flywire import load_scene
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
 
     if dist is None:
         scene = load_scene()
@@ -1211,6 +1234,9 @@ def run_viewer(port: int = VIEW_PORT) -> int:
 
     import pygame
 
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
     pygame.init()
     pygame.display.set_caption("Грибовидное тело")
     width, height = _saved_viewer_size()

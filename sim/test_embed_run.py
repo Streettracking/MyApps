@@ -179,5 +179,105 @@ class SeparateWindowTests(unittest.TestCase):
                 state.unlink()
 
 
+class SdlThreadTests(unittest.TestCase):
+    def test_decode_and_preview_stay_off_worker_threads(self):
+        import io
+        import threading
+
+        import pygame
+
+        import sim.recognize_train_live as live
+        from sim.frame_sense import decode_image_bytes
+        from sim.sdl_thread import require_main_thread
+
+        pygame.init()
+        image = pygame.Surface((4, 3))
+        image.fill((10, 20, 30))
+        buf = io.BytesIO()
+        pygame.image.save(image, buf, "png")
+        blob = buf.getvalue()
+        rgb = decode_image_bytes(blob)
+        self.assertEqual(tuple(rgb.shape), (3, 4, 3))
+        self.assertEqual(int(rgb[0, 0, 0]), 10)
+
+        box: dict = {}
+
+        def worker() -> None:
+            try:
+                require_main_thread()
+                box["assert"] = False
+            except AssertionError as exc:
+                box["assert"] = str(exc)
+            try:
+                decode_image_bytes(blob)
+                box["decode"] = True
+            except AssertionError:
+                box["decode"] = False
+
+        thread = threading.Thread(target=worker, name="preview")
+        thread.start()
+        thread.join()
+        self.assertIn("preview", box["assert"])
+        self.assertFalse(box["decode"])
+
+        calls: list = []
+        real_load = pygame.image.load
+
+        def spy_load(*args, **kwargs):
+            calls.append(threading.current_thread().name)
+            return real_load(*args, **kwargs)
+
+        pull = live.PreviewPull("http://127.0.0.1:9")
+
+        def fake_fetch(url: str, timeout: float = 2.0) -> bytes:
+            pull._stop = True
+            return blob
+
+        previous = live.fetch_bytes
+        live.fetch_bytes = fake_fetch
+        pygame.image.load = spy_load
+        try:
+            pull.start()
+            pull._thread.join(timeout=2.0)
+            self.assertFalse(pull._thread.is_alive())
+            self.assertEqual(calls, [])
+            self.assertGreater(pull.frame_id, 0)
+            frame_id, camera, lidar, _scan, error, jpeg = pull.latest()
+            self.assertGreater(frame_id, 0)
+            self.assertEqual(error, "")
+            self.assertEqual(jpeg[:8], blob[:8])
+            self.assertEqual(tuple(camera.shape), (3, 4, 3))
+            self.assertEqual(tuple(lidar.shape), (3, 4, 3))
+            self.assertTrue(calls)
+            self.assertTrue(all(name == threading.main_thread().name for name in calls))
+        finally:
+            live.fetch_bytes = previous
+            pygame.image.load = real_load
+            pull.stop()
+            pygame.quit()
+
+    def test_canvas_recreate_drops_surface_caches(self):
+        import pygame
+
+        from sim.train_monitor import TrainMonitor
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("cache")
+            mon.screen = pygame.Surface((1920, 1080))
+            mon._journal_cache = ("old", mon.screen.subsurface((0, 0, 8, 8)))
+            mon._brain_panel_cache = ((8, 8), (), mon.screen)
+            mon._card_cache["k"] = mon.screen
+            mon._bg = mon.screen
+            mon._sync_canvas(1440, 1600)
+            self.assertIsNone(mon._journal_cache)
+            self.assertIsNone(mon._brain_panel_cache)
+            self.assertIsNone(mon._bg)
+            self.assertEqual(mon._card_cache, {})
+            self.assertNotEqual(mon.screen.get_size(), (1920, 1080))
+        finally:
+            pygame.quit()
+
+
 if __name__ == "__main__":
     unittest.main()
