@@ -176,6 +176,63 @@ class BrainTests(unittest.TestCase):
         orbit.drag(10, 0)
         self.assertGreater(orbit.yaw, held)
 
+    def test_pitch_pan_and_reset(self):
+        import math
+
+        import numpy as np
+
+        from sim.mb_view3d import DIST0, PAN_KEY, PITCH0, PITCH_LIM, YAW0, Orbit, _keys, _project
+
+        orbit = Orbit()
+        orbit.drag(0, 500)
+        self.assertAlmostEqual(orbit.pitch, PITCH_LIM, places=4)
+        self.assertGreater(PITCH_LIM, math.radians(80))
+        orbit.drag(0, -1000)
+        self.assertAlmostEqual(orbit.pitch, -PITCH_LIM, places=4)
+        orbit.pan_pixels(80, -40)
+        self.assertLess(orbit.pan_x, 0.0)
+        self.assertLess(orbit.pan_y, 0.0)
+        orbit.nudge(PAN_KEY, PAN_KEY)
+        moved_x, moved_y = orbit.pan_x, orbit.pan_y
+        orbit.reset()
+        self.assertEqual(orbit.yaw, YAW0)
+        self.assertEqual(orbit.pitch, PITCH0)
+        self.assertEqual(orbit.dist, DIST0)
+        self.assertEqual(orbit.pan_x, 0.0)
+        self.assertEqual(orbit.pan_y, 0.0)
+        self.assertNotEqual((moved_x, moved_y), (0.0, 0.0))
+
+        class _Key:
+            def __init__(self, key, repeat=False):
+                self.key = key
+                self.repeat = repeat
+
+        import pygame
+
+        pygame.init()
+        try:
+            held = Orbit()
+            _keys(held, _Key(pygame.K_d))
+            self.assertAlmostEqual(held.pan_x, PAN_KEY)
+            _keys(held, _Key(pygame.K_PAGEUP))
+            self.assertAlmostEqual(held.pan_y, PAN_KEY)
+            _keys(held, _Key(pygame.K_a, repeat=False))
+            self.assertFalse(held.auto)
+            self.assertAlmostEqual(held.pan_x, PAN_KEY)
+            _keys(held, _Key(pygame.K_a, repeat=True))
+            self.assertAlmostEqual(held.pan_x, 0.0)
+            _keys(held, _Key(pygame.K_HOME))
+            self.assertEqual(held.yaw, YAW0)
+            self.assertEqual(held.pan_x, 0.0)
+        finally:
+            pygame.quit()
+
+        origin = np.zeros((1, 3), dtype=np.float64)
+        x0, y0, _z0 = _project(origin, 0.0, 0.0, 3.0, 100.0, 100.0, 200.0, 0.0, 0.0)
+        x1, y1, _z1 = _project(origin, 0.0, 0.0, 3.0, 100.0, 100.0, 200.0, 0.4, 0.3)
+        self.assertLess(float(x1[0]), float(x0[0]))
+        self.assertGreater(float(y1[0]), float(y0[0]))
+
     def test_udp_packet_is_local_and_rate_limited(self):
         from sim.mb_view3d import HOST, VIEW_PORT, BrainView, compact_ids, packet_from_session
         import numpy as np

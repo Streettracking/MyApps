@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import socket
 import subprocess
 import sys
@@ -69,6 +70,9 @@ _ANCHOR = {
 YAW0 = 0.62
 PITCH0 = 0.48
 DIST0 = 3.05
+# Nearly straight up or down, short of the flip at ±90°.
+PITCH_LIM = 89.0 * math.pi / 180.0
+PAN_KEY = 0.07
 
 
 def artifact_dir() -> Path:
@@ -205,19 +209,35 @@ def _world(medial: float, dorsal: float, anterior: float, left: bool) -> tuple:
 
 
 class Orbit:
-    """Idle yaw. Mouse drag pauses it; A toggles it."""
+    """Idle yaw. Left drag orbits; right, middle, or Shift drags pan. A toggles spin."""
 
     def __init__(self):
         self.yaw = YAW0
         self.pitch = PITCH0
         self.dist = DIST0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
         self.auto = True
         self.idle = 1.0
 
     def drag(self, dx: float, dy: float) -> None:
         self.idle = 0.0
         self.yaw += float(dx) * 0.008
-        self.pitch = max(-1.15, min(1.15, self.pitch + float(dy) * 0.008))
+        pitched = self.pitch + float(dy) * 0.008
+        self.pitch = max(-PITCH_LIM, min(PITCH_LIM, pitched))
+
+    def pan_pixels(self, dx: float, dy: float) -> None:
+        """Grab the scene: it follows the mouse."""
+        self.idle = 0.0
+        sens = 0.0024 * float(self.dist)
+        self.pan_x -= float(dx) * sens
+        self.pan_y += float(dy) * sens
+
+    def nudge(self, right: float, up: float) -> None:
+        """Move the camera in the view plane. Positive up shifts the scene down."""
+        self.idle = 0.0
+        self.pan_x += float(right)
+        self.pan_y += float(up)
 
     def zoom(self, steps: float) -> None:
         self.dist = max(1.6, min(9.0, self.dist - float(steps) * 0.22))
@@ -225,6 +245,14 @@ class Orbit:
     def toggle(self) -> None:
         self.auto = not self.auto
         self.idle = 1.0 if self.auto else 0.0
+
+    def reset(self) -> None:
+        self.yaw = YAW0
+        self.pitch = PITCH0
+        self.dist = DIST0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.idle = 1.0
 
     def tick(self, dt: float, dragging: bool) -> None:
         if dragging:
@@ -428,7 +456,7 @@ def _mix(a, b, t: float):
     return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
 
 
-def _project(pos, yaw: float, pitch: float, dist: float, cx: float, cy: float, fov: float):
+def _project(pos, yaw: float, pitch: float, dist: float, cx: float, cy: float, fov: float, pan_x: float = 0.0, pan_y: float = 0.0):
     """Perspective. Smaller returned depth is closer to the camera."""
     if len(pos) == 0:
         empty = np.zeros(0, dtype=np.float64)
@@ -438,9 +466,9 @@ def _project(pos, yaw: float, pitch: float, dist: float, cx: float, cy: float, f
     z = pos[:, 2].astype(np.float64)
     cyaw, syaw = np.cos(yaw), np.sin(yaw)
     cp, sp = np.cos(pitch), np.sin(pitch)
-    x1 = x * cyaw - z * syaw
+    x1 = x * cyaw - z * syaw - float(pan_x)
     z1 = x * syaw + z * cyaw
-    y2 = y * cp - z1 * sp
+    y2 = y * cp - z1 * sp - float(pan_y)
     z2 = y * sp + z1 * cp + float(dist)
     scale = float(fov) / np.maximum(z2, 0.25)
     return cx + x1 * scale, cy - y2 * scale, z2
@@ -535,7 +563,7 @@ def _glow(color, diameter: int):
     fall = np.clip(1.0 - rr, 0.0, 1.0) ** 2.1
     rgb = np.zeros((diameter, diameter, 3), dtype=np.float32)
     for channel in range(3):
-        rgb[:, :, channel] = color[channel] * fall * 0.8
+        rgb[:, :, channel] = color[channel] * fall * 0.34
     surf = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
     view = pygame.surfarray.pixels3d(surf)
     view[:] = np.transpose(rgb.astype(np.uint8), (1, 0, 2))
@@ -548,7 +576,11 @@ def _glow(color, diameter: int):
     return surf
 
 
-def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True) -> None:
+def _scale(color, k: float):
+    return tuple(int(max(0, min(255, round(channel * k)))) for channel in color)
+
+
+def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0) -> None:
     """Perspective point cloud. Inactive cells stay dim; active KC add light."""
     import pygame
 
@@ -561,7 +593,10 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     note = "Л/П полушария   серые KC   свечение — кадр   янтарь MBON   зелёный PAM   красный PPL1"
     spin = "A вращение вкл" if auto else "A вращение выкл"
     surface.blit(small.render(note, True, _INK), (16, 34))
-    surface.blit(small.render("чашечка, ножка, доли α/β α′/β′ γ   " + spin + "   мышь — обзор   колесо — зум", True, _INK), (16, 52))
+    surface.blit(small.render("чашечка, ножка, доли α/β α′/β′ γ   " + spin, True, _INK), (16, 52))
+    hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD PgUp/PgDn   Home сброс   A вращение"
+    tiny = pygame.font.Font(None, 15)
+    surface.blit(tiny.render(hint, True, (168, 170, 176)), (12, h - 20))
     cx, cy, fov = w * 0.50, h * 0.54, min(w, h) * 1.05
     kc_l = _flags(cloud.n_kc, packet.get("kc_l"))
     kc_r = _flags(cloud.n_kc, packet.get("kc_r"))
@@ -569,10 +604,10 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     r_r = float(packet.get("r_r") or 0.0)
     flash_l = str(packet.get("flash_l") or "")
     flash_r = str(packet.get("flash_r") or "")
-    sx, sy, depth = _project(cloud.kc_pos, yaw, pitch, dist, cx, cy, fov)
+    sx, sy, depth = _project(cloud.kc_pos, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
     fog = _depth_t(depth)
-    _draw_grid(surface, cloud, yaw, pitch, dist, cx, cy, fov)
-    _draw_hulls(surface, cloud, yaw, pitch, dist, cx, cy, fov)
+    _draw_grid(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+    _draw_hulls(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
     idle = pygame.Surface((w, h), pygame.SRCALPHA)
     glow = pygame.Surface((w, h), pygame.SRCALPHA)
     order = np.argsort(-depth)
@@ -593,39 +628,39 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
             else:
                 color = _GLOW_R
             color = _fog(color, far * 0.28)
-            radius = max(2, int(round((5.0 - 2.0 * far))))
-            pygame.draw.circle(glow, (*_fog(color, far * 0.2), 120), (x, y), radius + 2)
-            pygame.draw.circle(glow, (*color, 210), (x, y), radius)
+            radius = 2 if far < 0.55 else 1
+            pygame.draw.circle(glow, (*_scale(color, 0.16), 255), (x, y), radius + 1)
+            pygame.draw.circle(glow, (*_scale(color, 0.38), 255), (x, y), radius)
         else:
-            color = _fog(_KC_IDLE, far * 0.42)
-            alpha = int(118 - 70 * far)
-            radius = 3 if far < 0.55 else 2
-            pygame.draw.circle(idle, (*color, max(40, alpha)), (x, y), radius)
+            color = _fog(_KC_IDLE, far * 0.22)
+            alpha = int(168 - 36 * far)
+            radius = 2
+            pygame.draw.circle(idle, (*color, max(90, alpha)), (x, y), radius)
     # Calyx is the posterior cup. Draw a thin sample so the wire box is not empty.
     if len(cloud.calyx_pos):
-        csx, csy, cdep = _project(cloud.calyx_pos[::2], yaw, pitch, dist, cx, cy, fov)
+        csx, csy, cdep = _project(cloud.calyx_pos[::2], yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
         for i in range(len(cdep)):
             if cdep[i] <= 0.3:
                 continue
             x, y = int(csx[i]), int(csy[i])
             if x < -4 or y < -4 or x >= w + 4 or y >= h + 4:
                 continue
-            pygame.draw.circle(idle, (*_KC_IDLE, 70), (x, y), 2)
-    idle.set_alpha(210)
+            pygame.draw.circle(idle, (*_KC_IDLE, 110), (x, y), 2)
+    idle.set_alpha(235)
     surface.blit(idle, (0, 0))
     surface.blit(glow, (0, 0), special_flags=pygame.BLEND_ADD)
-    _draw_spheres(surface, cloud.mbon_pos, cloud.mbon_side, "mbon", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h)
-    _draw_spheres(surface, cloud.pam_pos, cloud.pam_side, "pam", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h)
-    _draw_spheres(surface, cloud.ppl_pos, cloud.ppl_side, "ppl1", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h)
-    _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov)
-    _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov)
+    _draw_spheres(surface, cloud.mbon_pos, cloud.mbon_side, "mbon", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h, pan_x, pan_y)
+    _draw_spheres(surface, cloud.pam_pos, cloud.pam_side, "pam", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h, pan_x, pan_y)
+    _draw_spheres(surface, cloud.ppl_pos, cloud.ppl_side, "ppl1", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h, pan_x, pan_y)
+    _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+    _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
 
 
 def _fog(color, t: float):
     return _mix(color, _BG_EDGE, max(0.0, min(0.85, float(t))))
 
 
-def _draw_grid(surface, cloud, yaw, pitch, dist, cx, cy, fov) -> None:
+def _draw_grid(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x: float = 0.0, pan_y: float = 0.0) -> None:
     import pygame
 
     floor = float(np.percentile(cloud.kc_pos[:, 1], 4) - 0.18)
@@ -637,13 +672,13 @@ def _draw_grid(surface, cloud, yaw, pitch, dist, cx, cy, fov) -> None:
         lines.append((np.array([[-1.5, floor, z], [1.5, floor, z]]),))
     color = (58, 62, 70)
     for (pts,) in lines:
-        px, py, dep = _project(pts, yaw, pitch, dist, cx, cy, fov)
+        px, py, dep = _project(pts, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
         if dep[0] <= 0.3 or dep[1] <= 0.3:
             continue
         pygame.draw.line(surface, color, (int(px[0]), int(py[0])), (int(px[1]), int(py[1])), 1)
 
 
-def _draw_hulls(surface, cloud, yaw, pitch, dist, cx, cy, fov) -> None:
+def _draw_hulls(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x: float = 0.0, pan_y: float = 0.0) -> None:
     import pygame
 
     layer = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
@@ -655,19 +690,19 @@ def _draw_hulls(surface, cloud, yaw, pitch, dist, cx, cy, fov) -> None:
             color = (*rgb, 78)
         for a, b in segments:
             pair = np.vstack((a, b)).astype(np.float64)
-            px, py, dep = _project(pair, yaw, pitch, dist, cx, cy, fov)
+            px, py, dep = _project(pair, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
             if dep[0] <= 0.3 or dep[1] <= 0.3:
                 continue
             pygame.draw.line(layer, color, (int(px[0]), int(py[0])), (int(px[1]), int(py[1])), 1)
     surface.blit(layer, (0, 0))
 
 
-def _draw_spheres(surface, pos, side, kind, r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h) -> None:
+def _draw_spheres(surface, pos, side, kind, r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h, pan_x: float = 0.0, pan_y: float = 0.0) -> None:
     if len(pos) == 0:
         return
     import pygame
 
-    px, py, dep = _project(pos, yaw, pitch, dist, cx, cy, fov)
+    px, py, dep = _project(pos, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
     fog = _depth_t(dep)
     order = np.argsort(-dep)
     halo_pts = {0: [], 1: []}
@@ -689,15 +724,15 @@ def _draw_spheres(surface, pos, side, kind, r_l, r_r, flash_l, flash_r, yaw, pit
         elif kind == "pam":
             hot = flash == "pam"
             color = _PAM if hot else _fog((78, 96, 84), far * 0.25)
-            diameter = 5 if hot else int(round(4 - far))
-            alpha = 170 if hot else 130
+            diameter = 4 if hot else int(round(4 - far))
+            alpha = 150 if hot else 130
             if hot:
                 halo_pts[1 if anatomical_left else 0].append((x, y))
         else:
             hot = flash == "ppl1"
             color = _PPL if hot else _fog((96, 74, 74), far * 0.25)
-            diameter = 5 if hot else int(round(4 - far))
-            alpha = 170 if hot else 130
+            diameter = 4 if hot else int(round(4 - far))
+            alpha = 150 if hot else 130
             if hot:
                 halo_pts[1 if anatomical_left else 0].append((x, y))
         diameter = max(4, diameter)
@@ -709,11 +744,11 @@ def _draw_spheres(surface, pos, side, kind, r_l, r_r, flash_l, flash_r, yaw, pit
             continue
         hx = int(sum(p[0] for p in pts) / len(pts))
         hy = int(sum(p[1] for p in pts) / len(pts))
-        halo = _glow(halo_color, 78)
+        halo = _glow(halo_color, 28)
         surface.blit(halo, (hx - halo.get_width() // 2, hy - halo.get_height() // 2), special_flags=pygame.BLEND_ADD)
 
 
-def _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov) -> None:
+def _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov, pan_x: float = 0.0, pan_y: float = 0.0) -> None:
     import pygame
 
     edges = packet.get("edges") or []
@@ -727,7 +762,7 @@ def _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov) -> None:
         if pre < 0 or pre >= cloud.n_kc or post < 0 or post >= len(cloud.mbon_pos):
             continue
         pair = np.vstack((cloud.kc_pos[pre], cloud.mbon_pos[post]))
-        px, py, dep = _project(pair, yaw, pitch, dist, cx, cy, fov)
+        px, py, dep = _project(pair, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
         if dep[0] <= 0.3 or dep[1] <= 0.3:
             continue
         color = (*_AMBER, 90) if weight >= 0 else (*_PPL, 90)
@@ -735,7 +770,7 @@ def _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov) -> None:
     surface.blit(layer, (0, 0))
 
 
-def _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov) -> None:
+def _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x: float = 0.0, pan_y: float = 0.0) -> None:
     import pygame
 
     font = pygame.font.Font(None, 36)
@@ -746,19 +781,19 @@ def _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov) -> None:
         mean = cloud.kc_pos[mask].mean(axis=0).copy()
         mean[0] += -0.26 if side == 1 else 0.26
         mean[1] += 0.22
-        px, py, dep = _project(mean.reshape(1, 3), yaw, pitch, dist, cx, cy, fov)
+        px, py, dep = _project(mean.reshape(1, 3), yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
         if dep[0] <= 0.3:
             continue
         label = font.render(text, True, _INK)
         surface.blit(label, (int(px[0]) - label.get_width() // 2, int(py[0]) - label.get_height() // 2))
 
 
-def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = YAW0, pitch: float = PITCH0, dist: float = DIST0, auto: bool = True):
+def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = YAW0, pitch: float = PITCH0, dist: float = DIST0, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0):
     import pygame
 
     pygame.font.init()
     surface = pygame.Surface(size)
-    paint(surface, cloud, packet, yaw, pitch, dist, auto=auto)
+    paint(surface, cloud, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y)
     return surface
 
 
@@ -1012,24 +1047,31 @@ def run_viewer(port: int = VIEW_PORT) -> int:
     packet = {"r_l": 0.0, "r_r": 0.0, "kc_l": [], "kc_r": [], "flash_l": "", "flash_r": "", "edges": []}
     orbit = Orbit()
     drag = None
+    pygame.key.set_repeat(180, 40)
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return 0
             if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_j):
                 return 0
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_a and not getattr(event, "repeat", False):
-                orbit.toggle()
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                drag = event.pos
+            if event.type == pygame.KEYDOWN:
+                _keys(orbit, event)
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 2, 3):
+                shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                drag = ("pan" if event.button != 1 or shifted else "orbit", event.pos)
                 orbit.idle = 0.0
-            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            elif event.type == pygame.MOUSEBUTTONUP and event.button in (1, 2, 3):
                 drag = None
-            elif event.type == pygame.MOUSEMOTION and drag is not None and event.buttons[0]:
-                dx = event.pos[0] - drag[0]
-                dy = event.pos[1] - drag[1]
-                drag = event.pos
-                orbit.drag(dx, dy)
+            elif event.type == pygame.MOUSEMOTION and drag is not None:
+                dx = event.pos[0] - drag[1][0]
+                dy = event.pos[1] - drag[1][1]
+                shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                mode = "pan" if drag[0] == "pan" or shifted or event.buttons[1] or event.buttons[2] else "orbit"
+                drag = (mode, event.pos)
+                if mode == "pan":
+                    orbit.pan_pixels(dx, dy)
+                elif event.buttons[0]:
+                    orbit.drag(dx, dy)
             elif event.type == pygame.MOUSEWHEEL:
                 orbit.zoom(event.y)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (4, 5):
@@ -1041,8 +1083,30 @@ def run_viewer(port: int = VIEW_PORT) -> int:
             packet = fresh
         dt = clock.tick(30) / 1000.0
         orbit.tick(dt, drag is not None)
-        paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto)
+        paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y)
         pygame.display.flip()
+
+
+def _keys(orbit: Orbit, event) -> None:
+    """Camera keys for this window only. Trainer hotkeys live in the other process."""
+    import pygame
+
+    key = event.key
+    repeat = bool(getattr(event, "repeat", False))
+    if key == pygame.K_a and not repeat:
+        orbit.toggle()
+        return
+    step = PAN_KEY
+    if key in (pygame.K_LEFT, pygame.K_a):
+        orbit.nudge(-step, 0.0)
+    elif key in (pygame.K_RIGHT, pygame.K_d):
+        orbit.nudge(step, 0.0)
+    elif key in (pygame.K_UP, pygame.K_w, pygame.K_PAGEUP):
+        orbit.nudge(0.0, step)
+    elif key in (pygame.K_DOWN, pygame.K_s, pygame.K_PAGEDOWN):
+        orbit.nudge(0.0, -step)
+    elif key in (pygame.K_HOME, pygame.K_r) and not repeat:
+        orbit.reset()
 
 
 def main(argv: list | None = None) -> int:
