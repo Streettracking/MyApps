@@ -1442,6 +1442,57 @@ class FooterClearanceTests(unittest.TestCase):
         finally:
             pygame.quit()
 
+    def test_last_footer_line_stays_inside_the_window(self):
+        """The keys line, descent included, stays inside 1920×1017, 1440×900, and scale 0.75."""
+        import pygame
+
+        from sim.recognize_train import SIM_KEYS
+        from sim.train_monitor import MonitorView, TrainMonitor, fit_window
+        from sim.ui_theme import apply_theme
+
+        pygame.init()
+        mon = TrainMonitor("footer-line")
+        view = MonitorView(
+            title="тренировка узнавания   go2_1",
+            learner="mb",
+            udp_status="симулятор. В автономии ведёт мозг, иначе стрелки или сценарий.",
+            last_command="сценарий",
+            keys_hint=SIM_KEYS,
+            focused=True,
+        )
+        try:
+            for theme in ("light", "dark"):
+                apply_theme(theme)
+                mon._bg = None
+                mon._win_bg = None
+                for ww, wh in ((1920, 1017), (1440, 900), (1200, 900)):
+                    mon._on_resize(ww, wh)
+                    mon.scroll_x = 0
+                    mon.scroll_y = 0
+                    mon.draw(view)
+                    scale = fit_window(ww, wh)[0]
+                    if ww <= 1440:
+                        self.assertAlmostEqual(scale, 0.75, places=2)
+                    lines = list(mon._footer_lines)
+                    self.assertTrue(lines)
+                    role, font, text, y, line_h = lines[-1]
+                    self.assertEqual(role, "keys")
+                    self.assertGreaterEqual(line_h, font.get_ascent() + abs(int(font.get_descent())))
+                    self.assertGreaterEqual(line_h, font.render(text, True, (0, 0, 0)).get_height())
+                    footer_y = int(mon.layout["footer_y"])
+                    logical = pygame.Rect(16, footer_y + int(y), max(1, font.size(text)[0]), int(line_h))
+                    box = self._window_box(mon, logical, ww, wh)
+                    self.assertGreaterEqual(box.x, 0, (theme, ww, wh, box))
+                    self.assertGreaterEqual(box.y, 0, (theme, ww, wh, box))
+                    self.assertLessEqual(box.right, ww, (theme, ww, wh, box, text))
+                    self.assertLessEqual(box.bottom, wh, (theme, ww, wh, box))
+                    track = mon.scroll_geometry((ww, wh))["track_x"]
+                    if track is not None:
+                        self.assertLessEqual(box.bottom, track.y, (theme, ww, wh, box, track))
+        finally:
+            apply_theme("light")
+            pygame.quit()
+
     def _window_box(self, mon, rect, ww, wh, scroll=(0, 0)):
         import pygame
 
@@ -1515,6 +1566,54 @@ class CardButtonTests(unittest.TestCase):
             self.assertLess(mon.estop_bar_rect.w, 8)
             self.assertTrue(find_leaf(mon.dock, "controls").visible)
             self.assertFalse(find_leaf(mon.dock, "controls").collapsed)
+        finally:
+            pygame.quit()
+
+    def test_key_badges_keep_six_pixels_clear_of_the_caption(self):
+        import pygame
+
+        from sim.train_monitor import MonitorView, TrainMonitor, fit_window
+
+        pygame.init()
+        mon = TrainMonitor("badge-gap")
+        view = MonitorView(learner="mb", learning_on=True, autonomy_on=False, steer="bilateral")
+        keyed = (
+            ("learn_rect", ("СТОП ОБУЧЕНИЯ", "СТАРТ ОБУЧЕНИЯ"), "P", True),
+            ("auto_rect", ("СТОП АВТО", "СТАРТ АВТО"), "A", True),
+            ("take_rect", ("ПЕРЕХВАТ",), "M", True),
+            ("steer_rect", ("БИЛАТЕРАЛЬНО", "СЕКТОРЫ"), "K", False),
+            ("treat_rect", ("ЛАКОМСТВО",), "T", True),
+            ("stand_up_rect", ("ВСТАТЬ",), "+", False),
+            ("stand_down_rect", ("ЛЕЧЬ",), "-", False),
+            ("lidar_reset_rect", ("СБРОС ЛИДАРА",), "C", False),
+        )
+        try:
+            for ww, wh in ((1920, 1080), (1440, 900)):
+                mon._on_resize(ww, wh)
+                mon.draw(view)
+                scale = fit_window(ww, wh)[0]
+                controls = mon._content_of("controls")
+                robot = mon._content_of("robot")
+                for name, labels, key, lamp in keyed:
+                    rect = getattr(mon, name)
+                    host = controls if name in ("learn_rect", "auto_rect", "take_rect", "steer_rect", "treat_rect") else robot
+                    self.assertTrue(host.contains(rect), (name, rect, host))
+                    self.assertGreaterEqual(rect.w, mon._keyed_button_width(labels, key, lamp), name)
+                    left = 32 if lamp else 12
+                    longest = max(labels, key=lambda text: mon.font_sm.size(text)[0])
+                    text_right = rect.x + left + mon.font_sm.size(longest)[0]
+                    badge_left = rect.right - 6 - mon._key_badge_width(key)
+                    gap = (badge_left - text_right) * scale
+                    self.assertGreaterEqual(gap, 6.0 - 1e-6, (name, ww, gap, rect.w))
+                order = ("learn_rect", "auto_rect", "take_rect", "steer_rect", "treat_rect", "estop_rect")
+                for left_name, right_name in zip(order, order[1:]):
+                    left_rect = getattr(mon, left_name)
+                    right_rect = getattr(mon, right_name)
+                    self.assertLessEqual(left_rect.right, right_rect.x, (left_name, right_name, ww))
+                label_w = mon.font_sm.size("E-STOP")[0]
+                badge_left = mon.estop_rect.right - 6 - mon._key_badge_width("E")
+                estop_gap = (badge_left - (mon.estop_rect.centerx + label_w / 2.0)) * scale
+                self.assertGreaterEqual(estop_gap, 6.0 - 1e-6, (ww, estop_gap, mon.estop_rect.w))
         finally:
             pygame.quit()
 
@@ -1732,6 +1831,43 @@ class DockReflowTests(unittest.TestCase):
         self.assertIn("controls", loaded["blocks"])
         self.assertGreater(loaded["blocks"]["controls"][3], 26)
         self.assertNotIn("journal", loaded["blocks"])
+
+    def test_button_cards_hug_their_rows_and_give_the_rest_to_the_brain(self):
+        from sim.dock_layout import CONTROLS_H, SPLIT, default_tree, find_leaf, layout_dock
+
+        tree = default_tree()
+        tree.locked = True
+        tree.ratio = 0.90
+        area = (12, 32, 1896, 1500)
+        tall = layout_dock(tree, *area)
+        self._assert_tiled(tall, area)
+        self.assertEqual(tall["blocks"]["controls"][3], CONTROLS_H)
+        self.assertEqual(tall["blocks"]["robot"][3], CONTROLS_H)
+        self.assertEqual(tall["blocks"]["controls"][1], tall["blocks"]["robot"][1])
+        self.assertEqual(
+            tall["blocks"]["journal"][1] + tall["blocks"]["journal"][3] + SPLIT,
+            tall["blocks"]["controls"][1],
+        )
+        self.assertAlmostEqual(tree.ratio, 0.90, places=3)
+
+        short = layout_dock(default_tree(), 12, 32, 1896, 1000)
+        self.assertEqual(short["blocks"]["controls"][3], CONTROLS_H)
+        self.assertEqual(short["blocks"]["robot"][3], CONTROLS_H)
+        self.assertGreater(tall["blocks"]["brain"][3], short["blocks"]["brain"][3])
+        self.assertGreater(tall["blocks"]["journal"][3], short["blocks"]["journal"][3])
+
+        find_leaf(tree, "journal").visible = False
+        hidden = layout_dock(tree, *area)
+        self._assert_tiled(hidden, area)
+        self.assertNotIn("journal", hidden["blocks"])
+        self.assertGreater(hidden["blocks"]["brain"][3], tall["blocks"]["brain"][3])
+        self.assertEqual(hidden["blocks"]["controls"][3], CONTROLS_H)
+        self.assertEqual(hidden["blocks"]["robot"][3], CONTROLS_H)
+        self.assertEqual(
+            hidden["blocks"]["brain"][1] + hidden["blocks"]["brain"][3] + SPLIT,
+            hidden["blocks"]["controls"][1],
+        )
+        self.assertAlmostEqual(tree.ratio, 0.90, places=3)
 
         live = default_tree()
         leaf = find_leaf(live, "controls")

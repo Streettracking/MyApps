@@ -79,6 +79,28 @@ def _lidar_picture():
     return lidar
 
 
+_GRAPH_TAGS = {"plot", "drift-plot", "dan-axis"}
+
+
+def _assert_text_clear_of_graphs(test, rows, require_graphs: bool = False) -> None:
+    graphs = [(rect, tag) for rect, tag in rows if tag in _GRAPH_TAGS]
+    texts = [(rect, tag) for rect, tag in rows if tag not in _GRAPH_TAGS and tag != "kc-bars"]
+    if require_graphs:
+        test.assertTrue(graphs, [tag for _rect, tag in rows])
+        test.assertIn("plot-label", [tag for _rect, tag in rows])
+    for text, text_tag in texts:
+        for graph, graph_tag in graphs:
+            test.assertFalse(
+                text.colliderect(graph),
+                "%s %s hits %s %s" % (text_tag, text, graph_tag, graph),
+            )
+    labels = [rect for rect, tag in rows if tag == "plot-label"]
+    plots = [rect for rect, tag in rows if tag == "plot"]
+    test.assertEqual(len(labels), len(plots))
+    for label, plot in zip(labels, plots):
+        test.assertLessEqual(label.bottom, plot.y, (label, plot))
+
+
 def _assert_packed(test, rows, panel) -> None:
     import pygame
 
@@ -180,6 +202,67 @@ class BrainPanelTests(unittest.TestCase):
             content = mon._content_of("brain")
             panel = pygame.Rect(content.x + 4, content.y + 4, content.w - 8, content.h - 8)
             _assert_packed(self, rows, panel)
+        finally:
+            apply_theme("light")
+            pygame.quit()
+
+    def test_plot_captions_stay_above_the_graphs_at_every_block_size(self):
+        """Text rects miss the curves, the drift lines, and the DAN scale."""
+        import pygame
+
+        from sim.dock_layout import find_leaf
+        from sim.train_monitor import TrainMonitor
+        from sim.ui_theme import apply_theme
+
+        pygame.init()
+        mon = TrainMonitor("plot-clearance")
+        view = _populated_view()
+        quiet = _populated_view()
+        quiet.dan_events = []
+        try:
+            apply_theme("dark")
+            mon._bg = None
+            mon._win_bg = None
+            for ww, wh in ((1920, 1017), (1920, 1400), (1440, 900)):
+                mon.dock = __import__("sim.dock_layout", fromlist=["default_tree"]).default_tree()
+                mon._on_resize(ww, wh)
+                mon.draw(view)
+                content = mon._content_of("brain")
+                panel = pygame.Rect(content.x + 4, content.y + 4, content.w - 8, content.h - 8)
+                _assert_packed(self, mon._brain_rows, panel)
+                _assert_text_clear_of_graphs(self, mon._brain_rows, require_graphs=False)
+
+                find_leaf(mon.dock, "journal").visible = False
+                mon._apply_layout(mon.screen.get_height())
+                mon.draw(quiet)
+                content = mon._content_of("brain")
+                self.assertIsNone(mon._content_of("journal"))
+                self.assertGreater(content.h, 400, (ww, wh, content))
+                panel = pygame.Rect(content.x + 4, content.y + 4, content.w - 8, content.h - 8)
+                tags = [tag for _rect, tag in mon._brain_rows]
+                self.assertIn("dan-hint", tags)
+                _assert_packed(self, mon._brain_rows, panel)
+                _assert_text_clear_of_graphs(self, mon._brain_rows, require_graphs=True)
+
+            sizes = (
+                (220, 220),
+                (280, 360),
+                (360, 480),
+                (480, 640),
+                (640, 150),
+                (720, 900),
+                (900, 1200),
+                (1400, 1600),
+            )
+            for width, height in sizes:
+                surface = pygame.Surface((width, height))
+                box = pygame.Rect(0, 0, width, height)
+                for sample in (view, quiet):
+                    mon._fixed_rows = []
+                    mon._brain_rows = []
+                    mon._draw_mb(surface, sample, box)
+                    _assert_packed(self, mon._brain_rows, box)
+                    _assert_text_clear_of_graphs(self, mon._brain_rows, require_graphs=height >= 480)
         finally:
             apply_theme("light")
             pygame.quit()

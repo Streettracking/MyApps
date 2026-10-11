@@ -9,8 +9,13 @@ from __future__ import annotations
 
 HEADER = 26
 SPLIT = 6
-CONTROLS_H = 96
-ROBOT_H = 96
+# Both bottom cards share one row, as tall as the E-STOP button plus the
+# header and the bottom inset. Their titles stay on one line. A tall window
+# gives the extra height to the journal and the brain panel.
+CONTROLS_BUTTON_H = 60
+CARD_PAD_BOTTOM = 8
+CONTROLS_H = HEADER + CONTROLS_BUTTON_H + CARD_PAD_BOTTOM
+ROBOT_H = CONTROLS_H
 MIN_BLOCK = 48
 # Tall enough for the fresh-lidar button and the fly table (муха L/R, Δ, z,
 # вектор) at the 13px font floor. Measured against the 1080 canvas: a taller
@@ -233,6 +238,43 @@ def _min_height(node, width: int) -> int:
     return _min_height(node.a, width) + SPLIT + _min_height(node.b, width)
 
 
+def _content_cap(node, width: int) -> int | None:
+    """Tallest this node should grow while its sibling can take the surplus.
+
+    Button cards hug their rows. A row of them is as tall as the taller card.
+    Anything else may grow, so the extra height of a tall window reaches the
+    journal and the brain panel.
+    """
+    if isinstance(node, Leaf):
+        if not node.visible:
+            return 0
+        if node.collapsed:
+            return HEADER
+        if node.block == "controls":
+            return CONTROLS_H
+        if node.block == "robot":
+            return ROBOT_H
+        return None
+    if not _takes_space(node.a) and not _takes_space(node.b):
+        return 0
+    if not _takes_space(node.a):
+        return _content_cap(node.b, width)
+    if not _takes_space(node.b):
+        return _content_cap(node.a, width)
+    if node.orient == "h":
+        half = max(1, int(width) // 2)
+        cap_a = _content_cap(node.a, half)
+        cap_b = _content_cap(node.b, half)
+        if cap_a is None or cap_b is None:
+            return None
+        return max(cap_a, cap_b)
+    cap_a = _content_cap(node.a, width)
+    cap_b = _content_cap(node.b, width)
+    if cap_a is None or cap_b is None:
+        return None
+    return cap_a + SPLIT + cap_b
+
+
 def _clamp_share(top: int, avail: int, min_a: int, min_b: int) -> int:
     """Keep both sides above their minimum. Scale the minimums when both cannot fit."""
     avail = max(0, int(avail))
@@ -418,7 +460,9 @@ def layout_dock(node, x: int, y: int, w: int, h: int) -> dict:
     An unlocked camera keeps a 16:9 preference while its sibling stays above
     a readable minimum. When that preference no longer fits, the saved ratio
     scales both sides and the minimum still wins. A locked split always
-    scales by its ratio, then the same minimums. Hidden leaves take no space:
+    scales by its ratio, then the same minimums. A button card stops at the
+    height of its row; the pixels above that cap stay with the sibling, and
+    the saved ratio is not rewritten. Hidden leaves take no space:
     the sibling subtree keeps its own ratio, so the blocks that remain grow
     in proportion to the share they already had. A collapsed leaf is only
     the header tall. The band it gives up goes to the neighbors above it.
@@ -507,6 +551,13 @@ def layout_dock(node, x: int, y: int, w: int, h: int) -> dict:
                 top = int(pref)
             else:
                 top = int(round(avail * int(pref) / float(int(pref) + int(other))))
+        if collapsed_a is None and collapsed_b is None:
+            cap_b = _content_cap(current.b, rw)
+            cap_a = _content_cap(current.a, rw)
+            if cap_b is not None and cap_a is None and avail - top > cap_b:
+                top = avail - cap_b
+            elif cap_a is not None and cap_b is None and top > cap_a:
+                top = cap_a
         if collapsed_a is None or collapsed_b is None:
             top = _clamp_share(top, avail, _min_height(current.a, rw), _min_height(current.b, rw))
         place(current.a, rx, ry, rw, top)

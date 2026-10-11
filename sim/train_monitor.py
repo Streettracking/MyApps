@@ -30,6 +30,7 @@ from .ui_guard import (
 from .dock_layout import (
     BLOCK_TITLES,
     BLOCKS,
+    CONTROLS_BUTTON_H,
     HEADER as DOCK_HEADER,
     LIDAR_MIN_H,
     SPLIT as DOCK_SPLIT,
@@ -577,29 +578,64 @@ def _surf_from_rgb(rgb: np.ndarray):
 _surf_from_rgb.hold = None
 
 
+def _text_line_h(font, sample: str = "учить р") -> int:
+    """Full line box: font metrics and the rendered ink, including descent."""
+    ink = 0
+    for text in ("учить р", sample):
+        if text:
+            ink = max(ink, int(font.render(text, True, LABEL).get_height()))
+    metrics = int(font.get_ascent()) + abs(int(font.get_descent()))
+    return max(int(font.get_height()), int(font.get_linesize()), metrics, ink, 1)
+
+
 def _plot(screen, rect, series, y0, y1, color, font, label):
+    """Caption above the series. Lines, the frame, and the scale stay under it."""
     import pygame
 
     require_main_thread()
-    pygame.draw.rect(screen, INSET, rect, border_radius=12)
-    pygame.draw.rect(screen, LINE, rect, 1, border_radius=12)
-    if y1 <= y0:
-        y1 = y0 + 1.0
-    pts = []
-    for i, (x, y) in enumerate(series):
-        if len(series) == 1:
-            u = 0.5
+    label_rect = None
+    graph = pygame.Rect(rect)
+    if label:
+        label_h = _text_line_h(font, label)
+        gap = 4
+        label_rect = pygame.Rect(rect.x, rect.y, rect.w, min(label_h, rect.h))
+        below = rect.h - label_rect.h - gap
+        if below >= 8:
+            graph = pygame.Rect(rect.x, label_rect.bottom + gap, rect.w, below)
         else:
-            u = i / (len(series) - 1)
-        px = rect.x + 8 + int(u * (rect.w - 16))
-        v = (float(y) - y0) / (y1 - y0)
-        py = rect.bottom - 8 - int(np.clip(v, 0.0, 1.0) * (rect.h - 20))
-        pts.append((px, py))
-    if len(pts) >= 2:
-        pygame.draw.lines(screen, color, False, pts, 2)
-    elif pts:
-        pygame.draw.circle(screen, color, pts[0], 3)
-    screen.blit(font.render(label, True, PEACH), (rect.x + 10, rect.y + 6))
+            graph = pygame.Rect(rect.x, label_rect.bottom, rect.w, max(0, rect.bottom - label_rect.bottom))
+        screen.blit(font.render(label, True, PEACH), (label_rect.x + 10, label_rect.y))
+    if graph.w < 8 or graph.h < 8:
+        return label_rect, graph
+    prev = screen.get_clip()
+    clip = graph if prev is None else graph.clip(prev)
+    if clip.w <= 0 or clip.h <= 0:
+        return label_rect, graph
+    screen.set_clip(clip)
+    try:
+        radius = min(12, graph.w // 2, graph.h // 2)
+        pygame.draw.rect(screen, INSET, graph, border_radius=radius)
+        pygame.draw.rect(screen, LINE, graph, 1, border_radius=radius)
+        if y1 <= y0:
+            y1 = y0 + 1.0
+        span = max(1, graph.h - 16)
+        pts = []
+        for i, (_x, y) in enumerate(series):
+            if len(series) == 1:
+                u = 0.5
+            else:
+                u = i / (len(series) - 1)
+            px = graph.x + 8 + int(u * max(0, graph.w - 16))
+            v = (float(y) - y0) / (y1 - y0)
+            py = graph.bottom - 8 - int(np.clip(v, 0.0, 1.0) * span)
+            pts.append((px, py))
+        if len(pts) >= 2:
+            pygame.draw.lines(screen, color, False, pts, 2)
+        elif pts:
+            pygame.draw.circle(screen, color, pts[0], 3)
+    finally:
+        screen.set_clip(prev)
+    return label_rect, graph
 
 
 def _bars(screen, font, origin, values, width, title, color):
@@ -852,17 +888,16 @@ class TrainMonitor:
         self.controls_rect = controls
 
         def row(items, x, y, row_h, limit):
+            """Place buttons at their content width. The caption-to-key gap is not scaled."""
             gap_b = 8
-            total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
-            avail = max(1, limit - x)
-            scale = min(1.0, avail / float(total))
             out = {}
             cursor = x
             for name, ww in items:
-                rw = max(48, int(ww * scale))
-                if cursor + rw > limit:
-                    rw = max(32, limit - cursor)
-                out[name] = pygame.Rect(cursor, y, max(1, rw), row_h)
+                rw = max(1, int(ww))
+                if cursor >= limit:
+                    out[name] = self._zero()
+                    continue
+                out[name] = pygame.Rect(cursor, y, rw, row_h)
                 cursor += rw + gap_b
             return out
 
@@ -874,22 +909,27 @@ class TrainMonitor:
                 inner = pygame.Rect(*got)
         if inner is not None and inner.h >= 24:
             row_h = min(44, inner.h)
-            estop_h = min(inner.h, max(row_h + 16, 60))
-            estop_w = min(260, max(160, inner.w // 4))
+            estop_h = min(inner.h, max(row_h + 16, CONTROLS_BUTTON_H))
+            items = [
+                ("learn", self._keyed_button_width(("СТОП ОБУЧЕНИЯ", "СТАРТ ОБУЧЕНИЯ"), "P", True)),
+                ("auto", self._keyed_button_width(("СТОП АВТО", "СТАРТ АВТО"), "A", True)),
+                ("take", self._keyed_button_width(("ПЕРЕХВАТ",), "M", True)),
+                ("steer", self._keyed_button_width(("БИЛАТЕРАЛЬНО", "СЕКТОРЫ"), "K", False)),
+                ("treat", self._keyed_button_width(("ЛАКОМСТВО",), "T", True)),
+            ]
+            gap_b = 8
+            total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
+            estop_floor = self._estop_min_width()
+            preferred = min(260, max(estop_floor, inner.w // 4))
+            spare = inner.w - gap_b - total
+            if spare >= preferred:
+                estop_w = preferred
+            elif spare >= estop_floor:
+                estop_w = spare
+            else:
+                estop_w = estop_floor
             estop_rect = pygame.Rect(inner.right - estop_w, inner.y, estop_w, estop_h)
-            placed_row = row(
-                [
-                    ("learn", 220),
-                    ("auto", 190),
-                    ("take", 180),
-                    ("steer", 210),
-                    ("treat", 190),
-                ],
-                inner.x,
-                inner.y,
-                row_h,
-                estop_rect.x - 8,
-            )
+            placed_row = row(items, inner.x, inner.y, row_h, estop_rect.x - gap_b)
             placed_row["estop"] = estop_rect
         else:
             placed_row = {name: self._zero() for name in ("learn", "auto", "take", "steer", "treat", "estop")}
@@ -1262,11 +1302,11 @@ class TrainMonitor:
     def _sync_canvas(self, ww: int, wh: int) -> None:
         import pygame
 
-        scale, logical_w, fit_h, _cw, _ch = fit_window(ww, wh)
+        scale, logical_w, fit_h, content_w, _ch = fit_window(ww, wh)
         self._ensure_fonts(scale)
         self._client_size = (int(ww), int(wh))
         wrap_w = max(80, min(WIN_W, int(round(ww / max(scale, 1e-6)))) - 32)
-        footer_h, lines = self._measure_footer(wrap_w)
+        footer_h, lines = self._measure_footer(wrap_w, scale, content_w > int(ww))
         self._footer_h = footer_h
         self._footer_lines = lines
         use_h = self._canvas_height(fit_h, scale, wh, footer_h)
@@ -1941,7 +1981,8 @@ class TrainMonitor:
         lines = getattr(self, "_footer_lines", None) or []
         if not lines:
             _h, lines = self._measure_footer(WIN_W - 32)
-        for role, font, text, y in lines:
+        for item in lines:
+            role, font, text, y = item[:4]
             if not text:
                 continue
             color = VALUE if role == "command" else LABEL
@@ -2072,8 +2113,15 @@ class TrainMonitor:
         line = tab_phrase(status, 78) + "  " + tab_phrase(focus, 42)
         return line, command, keys
 
-    def _measure_footer(self, width: int) -> tuple:
-        """Status, command, and wrapped keys. Height is reserved before the dock is placed."""
+    def _measure_footer(self, width: int, scale: float = 1.0, hscroll: bool = False) -> tuple:
+        """Status, command, and wrapped keys. Height is reserved before the dock is placed.
+
+        Each line keeps its full box, descent included, and a bottom margin that
+        stays inside the client. A horizontal scrollbar covers the last pixels
+        of the window, so that margin also clears the bar.
+        """
+        import math
+
         from .tabnum import load_font
 
         mono = load_font(14)
@@ -2086,14 +2134,17 @@ class TrainMonitor:
         )
         pad = 6
         gap = 4
+        screen_pad = 8 + (SCROLL_BAR if hscroll else 0)
+        bottom = max(pad, int(math.ceil(screen_pad / max(float(scale), 1e-6))))
         y = pad
         placed = []
         roles = ("status", "command", "keys")
         for role, (font, lines) in zip(roles, groups):
             for line in lines:
-                placed.append((role, font, line, y))
-                y += font.get_height() + gap
-        height = max(FOOTER_H, y - gap + pad)
+                line_h = _text_line_h(font, line or "учить р")
+                placed.append((role, font, line, y, line_h))
+                y += line_h + gap
+        height = max(FOOTER_H, y - gap + bottom)
         return height, placed
 
     def _place_header(self) -> None:
@@ -2574,35 +2625,68 @@ class TrainMonitor:
         button_h = 28
         self.lidar_fresh_rect = pygame.Rect(column.x, column.y, min(fresh_w, max(0, column.w)), button_h)
 
+    def _ui_scale(self) -> float:
+        size = getattr(self, "_client_size", None)
+        if size and int(size[0]) >= 64 and int(size[1]) >= 64:
+            return float(fit_window(int(size[0]), int(size[1]))[0])
+        return 1.0
+
+    def _badge_gap(self) -> int:
+        """Logical pixels that stay at least 6px on screen between a caption and its key."""
+        import math
+
+        scale = max(self._ui_scale(), 1e-6)
+        return max(6, int(math.ceil(6.0 / scale)))
+
+    def _key_badge_width(self, key: str) -> int:
+        from .tabnum import load_font
+
+        glyph_w = load_font(13).size(str(key))[0]
+        return max(16, glyph_w + 8)
+
+    def _keyed_button_width(self, labels, key: str, lamp: bool) -> int:
+        """Width that keeps the key plaque 6px clear of the longer caption."""
+        if self.font_sm is None:
+            return 180
+        label_w = max(self.font_sm.size(text)[0] for text in labels)
+        left = 32 if lamp else 12
+        if not key:
+            return left + label_w + 12
+        return left + label_w + self._badge_gap() + self._key_badge_width(key) + 6
+
+    def _estop_min_width(self) -> int:
+        """E-STOP stays at least 160 wide, and its centered caption clears the key."""
+        if self.font_sm is None:
+            return 160
+        label = self.font_sm.size("E-STOP")[0]
+        badge = self._key_badge_width("E")
+        gap = self._badge_gap()
+        return max(160, label + 2 * badge + 12 + 2 * gap)
+
     def _place_robot_row(self, inner) -> None:
         """Stand, lie, recovery, and lidar reset share one row of this card."""
         import pygame
 
         specs = (
-            ("stand_up", "ВСТАТЬ", True),
-            ("stand_down", "ЛЕЧЬ", True),
-            ("recovery", "ПОДЪЁМ", False),
-            ("lidar_reset", "СБРОС ЛИДАРА", True),
+            ("stand_up", ("ВСТАТЬ",), "+", False),
+            ("stand_down", ("ЛЕЧЬ",), "-", False),
+            ("recovery", ("ПОДЪЁМ",), "", False),
+            ("lidar_reset", ("СБРОС ЛИДАРА",), "C", False),
         )
         gap = 8
-        widths = []
-        for _name, text, keyed in specs:
-            pad = 48 if keyed else 28
-            widths.append(self.font_sm.size(text)[0] + pad)
-        total = sum(widths) + gap * (len(widths) - 1)
-        scale = min(1.0, inner.w / float(max(total, 1)))
-        row_h = min(40, inner.h)
+        widths = [self._keyed_button_width(labels, key, lamp) for _name, labels, key, lamp in specs]
+        # The card is the E-STOP row. These buttons use that content height,
+        # so the face under the row is not left empty.
+        row_h = max(1, min(inner.h, CONTROLS_BUTTON_H))
         y = inner.y
         x = inner.x
         rects = {}
-        for (name, _text, _keyed), width in zip(specs, widths):
-            rw = max(36, int(round(width * scale)))
+        for (name, _labels, _key, _lamp), width in zip(specs, widths):
+            rw = max(1, int(width))
             if x >= inner.right:
                 rects[name] = self._zero()
                 continue
-            if x + rw > inner.right:
-                rw = inner.right - x
-            rects[name] = pygame.Rect(x, y, max(1, rw), row_h)
+            rects[name] = pygame.Rect(x, y, rw, row_h)
             x += rw + gap
         self.stand_up_rect = rects["stand_up"]
         self.stand_down_rect = rects["stand_down"]
@@ -3709,10 +3793,15 @@ class TrainMonitor:
             plot_w = (col_w - 8) // 2
             left = pygame.Rect(rx, y, plot_w, plot_h)
             right = pygame.Rect(rx + plot_w + 8, y, col_w - plot_w - 8, plot_h)
-            self._note_brain_row(left, "plot")
-            self._note_brain_row(right, "plot")
-            _plot(screen, left, view.peer_curve, 0.0, 1.0, GREEN, sm, "собака в кадре")
-            _plot(screen, right, view.other_curve, 0.0, 1.0, AMBER, sm, "нет собаки")
+            for plot_rect, series, color, caption in (
+                (left, view.peer_curve, GREEN, "собака в кадре"),
+                (right, view.other_curve, AMBER, "нет собаки"),
+            ):
+                label_rect, graph_rect = _plot(screen, plot_rect, series, 0.0, 1.0, color, sm, caption)
+                if label_rect is not None and label_rect.w > 0 and label_rect.h > 0:
+                    self._note_brain_row(label_rect, "plot-label")
+                if graph_rect.w > 0 and graph_rect.h > 0:
+                    self._note_brain_row(graph_rect, "plot")
             y += plot_h + 6
         drift_line = format_drift(view.drift)
 
@@ -3730,8 +3819,9 @@ class TrainMonitor:
             if drift_hi <= 0:
                 drift_hi = 1.0
             drift_rect = pygame.Rect(rx, y, col_w, drift_plot_h)
-            self._note_brain_row(drift_rect, "drift-plot")
-            _plot(screen, drift_rect, view.drift_curve, 0.0, drift_hi, INK_DIM, sm, "")
+            _label_rect, graph_rect = _plot(screen, drift_rect, view.drift_curve, 0.0, drift_hi, INK_DIM, sm, "")
+            if graph_rect.h > 0:
+                self._note_brain_row(graph_rect, "drift-plot")
             y += drift_plot_h + 4
         y = self._dan_timeline(screen, view, panel, y)
         y = self._kc_row(screen, view, panel, y)
@@ -3868,33 +3958,37 @@ class TrainMonitor:
             t1 = view.t
             t0 = t1 - 30.0
             span_label = format_span(t1, True)
+        hint = "каждое лакомство появится здесь — собака в кадре, клавиша T"
+        shown_events = [(t, kind) for t, kind in view.dan_events if t0 <= float(t) <= t1]
+        if not shown_events:
+            def hint_row() -> None:
+                screen.blit(self.font_sm.render(hint, True, INK_DIM), (panel.x + 8, y))
+
+            nxt = self._paint_line(screen, panel, y, "dan-hint", hint_row)
+            if nxt is None:
+                return y
+            y = nxt
         axis_h = 28
         if y + axis_h <= panel.bottom:
             axis = pygame.Rect(panel.x + 8, y, max(1, panel.w - 16), axis_h)
             self._note_brain_row(axis, "dan-axis")
             prev = screen.get_clip()
             clip = axis if prev is None else axis.clip(prev)
-            screen.set_clip(clip)
-            try:
-                shown = 0
-                pygame.draw.line(screen, LINE, (axis.x, axis.centery), (axis.right, axis.centery), 1)
-                for t, kind in view.dan_events:
-                    if t < t0 or t > t1:
-                        continue
-                    u = (float(t) - t0) / max(t1 - t0, 1e-6)
-                    x = axis.x + int(u * max(axis.w - 1, 1))
-                    if kind == "PAM":
-                        pygame.draw.line(screen, GREEN, (x, axis.y + 2), (x, axis.centery - 1), 3)
-                    elif kind == "PPL1":
-                        pygame.draw.line(screen, RED, (x, axis.centery + 1), (x, axis.bottom - 2), 3)
-                    else:
-                        pygame.draw.line(screen, INK_DIM, (x, axis.y + 4), (x, axis.bottom - 4), 1)
-                    shown += 1
-                if shown == 0:
-                    hint = "каждое лакомство появится здесь — собака в кадре, клавиша T"
-                    screen.blit(self.font_sm.render(hint, True, INK_DIM), (axis.x, axis.y + 2))
-            finally:
-                screen.set_clip(prev)
+            if clip.w > 0 and clip.h > 0:
+                screen.set_clip(clip)
+                try:
+                    pygame.draw.line(screen, LINE, (axis.x, axis.centery), (axis.right, axis.centery), 1)
+                    for t, kind in shown_events:
+                        u = (float(t) - t0) / max(t1 - t0, 1e-6)
+                        x = axis.x + int(u * max(axis.w - 1, 1))
+                        if kind == "PAM":
+                            pygame.draw.line(screen, GREEN, (x, axis.y + 2), (x, axis.centery - 1), 3)
+                        elif kind == "PPL1":
+                            pygame.draw.line(screen, RED, (x, axis.centery + 1), (x, axis.bottom - 2), 3)
+                        else:
+                            pygame.draw.line(screen, INK_DIM, (x, axis.y + 4), (x, axis.bottom - 4), 1)
+                finally:
+                    screen.set_clip(prev)
             y += axis_h
         from .tabnum import cell_px
 
