@@ -186,25 +186,20 @@ def _draw_pin_tip(surface, rect) -> None:
     surface.blit(text, (box.x + pad_x, box.y + pad_y))
 
 
-def draw_clip(surface, rect, pinned: bool, hover: bool = False):
-    """Paperclip on ``rect``. Peach when pinned, gray otherwise.
+def draw_pin_button(surface, pinned: bool, hover: bool = False):
+    """Paperclip in the top-right. Peach when pinned, gray otherwise.
 
     The icon is lines and arcs only. ``hover`` adds the «поверх окон» tip
-    beside the button, not on it. The 3D window and the trainer bar share this.
+    beside the button, not on it.
     """
     from .sdl_thread import require_main_thread
 
     require_main_thread()
 
+    rect = pygame_rect(*pin_button_rect(surface.get_size()))
     color = PIN_ON if pinned else PIN_OFF
     plate = (48, 34, 30) if pinned else (32, 33, 36)
     _draw_clip(surface, rect, color, plate)
     if hover:
         _draw_pin_tip(surface, rect)
     return rect
-
-
-def draw_pin_button(surface, pinned: bool, hover: bool = False):
-    """Paperclip in the top-right of a separate pygame window."""
-    rect = pygame_rect(*pin_button_rect(surface.get_size()))
-    return draw_clip(surface, rect, pinned, hover)
