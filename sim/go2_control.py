@@ -36,12 +36,18 @@ def windows_creationflags() -> int:
 
 
 def server_creationflags() -> int:
+    """Own process group and no console. ``DETACHED_PROCESS`` is not included.
+
+    Next to ``CREATE_NO_WINDOW`` that flag is ignored. A PyInstaller onefile
+    bootloader then starts quiet, and its child opens a visible console.
+    """
     hidden = getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)
-    return windows_creationflags() | int(hidden)
+    group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _CREATE_NEW_PROCESS_GROUP)
+    return int(group) | int(hidden)
 
 
 def panel_creationflags() -> int:
-    """Same detach flags as the server, and no console. The GUI window stays."""
+    """Detached group and no console. The GUI window stays."""
     hidden = getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)
     return windows_creationflags() | int(hidden)
 
@@ -53,10 +59,29 @@ def panel_detach_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+def server_startupinfo():
+    """Hide a console at creation. ``wShowWindow`` 0 is ``SW_HIDE``."""
+    cls = getattr(subprocess, "STARTUPINFO", None)
+
+    class _ShowWindow:
+        def __init__(self):
+            self.dwFlags = 0
+            self.wShowWindow = 0
+
+    info = (cls or _ShowWindow)()
+    use_show = int(getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001))
+    info.dwFlags |= use_show
+    info.wShowWindow = 0
+    return info
+
+
 def server_detach_kwargs() -> dict:
-    """The console server gets no window. Its own ``logs`` folder is the log."""
+    """Own process group, hidden console. Closing the trainer does not stop it."""
     if os.name == "nt":
-        return {"creationflags": server_creationflags()}
+        return {
+            "creationflags": server_creationflags(),
+            "startupinfo": server_startupinfo(),
+        }
     return {"start_new_session": True}
 
 

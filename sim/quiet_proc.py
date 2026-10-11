@@ -9,8 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-# Same bits the command server already uses. Present so a Linux test can see them.
-_DETACHED_PROCESS = 0x00000008
+# Present so a Linux test can still see the Windows bits.
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000
 
@@ -32,13 +31,18 @@ def open_log(name: str):
 
 
 def creationflags() -> int:
-    """No console, detached from the trainer's group. Zero off Windows."""
+    """No console, own process group. Zero off Windows.
+
+    The detached-process flag is not combined with ``CREATE_NO_WINDOW``: that
+    pair is ignored, and a console onefile then opens a window for its child.
+    ``pythonw`` and the 3D window still get ``CREATE_NO_WINDOW`` and no extra
+    console.
+    """
     if os.name != "nt":
         return 0
     no_window = getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)
-    detached = getattr(subprocess, "DETACHED_PROCESS", _DETACHED_PROCESS)
     group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _CREATE_NEW_PROCESS_GROUP)
-    return int(no_window) | int(detached) | int(group)
+    return int(no_window) | int(group)
 
 
 def popen_quiet(argv, log_name: str, cwd=None):

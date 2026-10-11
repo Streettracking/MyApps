@@ -105,6 +105,7 @@ class Go2ControlTests(unittest.TestCase):
             resolve_exe,
             resolve_server,
             server_creationflags,
+            server_startupinfo,
             windows_creationflags,
         )
 
@@ -133,9 +134,21 @@ class Go2ControlTests(unittest.TestCase):
         self.assertEqual(flags & 0x00000008, 0x00000008)
         self.assertEqual(flags & 0x00000200, 0x00000200)
         self.assertEqual(flags & 0x08000000, 0)
-        self.assertEqual(hidden & 0x00000008, 0x00000008)
+        self.assertEqual(hidden & 0x00000008, 0)
         self.assertEqual(hidden & 0x00000200, 0x00000200)
         self.assertEqual(hidden & 0x08000000, 0x08000000)
+        info = server_startupinfo()
+        self.assertEqual(int(info.dwFlags) & 0x00000001, 0x00000001)
+        self.assertEqual(int(info.wShowWindow), 0)
+        if os.name == "nt":
+            from sim.go2_control import server_detach_kwargs
+
+            launched = server_detach_kwargs()
+            self.assertEqual(launched["creationflags"] & 0x00000008, 0)
+            self.assertEqual(launched["creationflags"] & 0x00000200, 0x00000200)
+            self.assertEqual(launched["creationflags"] & 0x08000000, 0x08000000)
+            self.assertEqual(int(launched["startupinfo"].dwFlags) & 0x00000001, 0x00000001)
+            self.assertEqual(int(launched["startupinfo"].wShowWindow), 0)
         panel_flags = panel_creationflags()
         self.assertEqual(panel_flags & 0x00000008, 0x00000008)
         self.assertEqual(panel_flags & 0x00000200, 0x00000200)
@@ -155,6 +168,30 @@ class Go2ControlTests(unittest.TestCase):
         self.assertEqual(entry.count('["--go2-control-exe", args.go2_control_exe]'), 2)
         self.assertNotIn("--theme", source)
         self.assertNotIn("panel_argv", source)
+        self.assertIn("STARTF_USESHOWWINDOW", source)
+        self.assertNotIn("JobObject", source)
+        self.assertNotIn("CREATE_BREAKAWAY_FROM_JOB", source)
+
+    def test_quiet_proc_omits_detached_process(self):
+        import sim.quiet_proc as quiet
+
+        saved = os.name
+        try:
+            os.name = "nt"
+            flags = quiet.creationflags()
+        finally:
+            os.name = saved
+        self.assertEqual(flags & 0x00000008, 0)
+        self.assertEqual(flags & 0x00000200, 0x00000200)
+        self.assertEqual(flags & 0x08000000, 0x08000000)
+        if saved != "nt":
+            self.assertEqual(quiet.creationflags(), 0)
+        source = Path(quiet.__file__).read_text(encoding="utf-8")
+        self.assertIn("CREATE_NO_WINDOW", source)
+        self.assertIn("CREATE_NEW_PROCESS_GROUP", source)
+        self.assertNotIn("DETACHED_PROCESS", source)
+        self.assertNotIn("startupinfo", source)
+        self.assertNotIn("wShowWindow", source)
 
     def test_window_json_field_overrides_the_launcher_folder(self):
         from sim.go2_control import configured_exe, configured_server, remember_exe, remember_paths
