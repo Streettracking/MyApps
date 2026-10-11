@@ -365,7 +365,23 @@ class BrainPanelTests(unittest.TestCase):
                         pass
                     ensure_stdio.handle = None
             bat = Path(__file__).resolve().parents[1].joinpath("rebuild_exe.bat").read_text(encoding="utf-8")
-            self.assertIn("--noconsole", bat)
+            self.assertIn("--windowed", bat)
+            self.assertIn("/XD logs", bat)
+            self.assertIn("кадры", bat)
+            self.assertIn("launchers\\*.vbs", bat)
+            self.assertIn("install_shortcuts.vbs", bat)
+            self.assertIn("FlyWire-Go2\\tools\\yolo_teacher", bat)
+            self.assertIn("serve.py", bat)
+            self.assertIn("start_teacher.vbs", bat)
+            self.assertIn("start_teacher.cmd", bat)
+            sim_lines = [
+                line
+                for line in bat.splitlines()
+                if "FlyWireGo2Sim" in line and line.strip().startswith("pyinstaller")
+            ]
+            self.assertEqual(len(sim_lines), 1)
+            self.assertNotIn("--windowed", sim_lines[0])
+            self.assertNotIn("--noconsole", sim_lines[0])
         finally:
             faulthandler.disable()
             handle = install_crash_log.handle

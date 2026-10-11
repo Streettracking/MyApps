@@ -7,5 +7,7 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 folder = fso.GetParentFolderName(WScript.ScriptFullName)
 exe = folder & "\DogRecognizeTrainer.exe"
 If Not fso.FileExists(exe) Then exe = folder & "\recognize_trainer.exe"
+' Same folder and args as DogRecognizeTrainer_onboard.cmd.
+sh.CurrentDirectory = folder
 cmd = "cmd.exe /c " & Chr(34) & Chr(34) & exe & Chr(34) & " --onboard 192.168.35.213" & Chr(34)
 sh.Run cmd, 0, False

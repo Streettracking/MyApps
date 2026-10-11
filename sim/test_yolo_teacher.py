@@ -897,7 +897,19 @@ class QuietLaunchTests(unittest.TestCase):
             self.assertIn("DogRecognizeTrainer.exe", cmd)
             self.assertIn("pause", cmd)
             self.assertIn("sh.Run cmd, 0, False", vbs)
+            self.assertIn("sh.CurrentDirectory = folder", vbs)
             self.assertIn("wscript", vbs.lower())
+            if name == "DogRecognizeTrainer_sim":
+                self.assertIn("--sim --state logs\\mb_train_state_sim.npz", vbs)
+                self.assertIn("--sim --state logs\\mb_train_state_sim.npz", cmd)
+            elif name == "DogRecognizeTrainer_onboard":
+                self.assertIn("--onboard 192.168.35.213", vbs)
+                self.assertIn("--onboard 192.168.35.213", cmd)
+                self.assertNotIn("mb_train_state_sim", vbs)
+            else:
+                self.assertNotIn("--sim", vbs)
+                self.assertNotIn("--onboard", vbs)
+                self.assertNotIn("mb_train_state_sim", vbs)
             self.assertIn((name + ".vbs").encode("utf-16-le"), lnk)
             self.assertIn(b"wscript.exe", lnk)
         teacher_cmd = (root / "tools" / "yolo_teacher" / "start_teacher.cmd").read_text(encoding="utf-8")

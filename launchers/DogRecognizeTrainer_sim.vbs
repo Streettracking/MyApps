@@ -7,5 +7,7 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 folder = fso.GetParentFolderName(WScript.ScriptFullName)
 exe = folder & "\DogRecognizeTrainer.exe"
 If Not fso.FileExists(exe) Then exe = folder & "\recognize_trainer.exe"
-cmd = "cmd.exe /c " & Chr(34) & Chr(34) & exe & Chr(34) & " --sim" & Chr(34)
+' Same folder and args as DogRecognizeTrainer_sim.cmd. Sim must not write the robot npz.
+sh.CurrentDirectory = folder
+cmd = "cmd.exe /c " & Chr(34) & Chr(34) & exe & Chr(34) & " --sim --state logs\mb_train_state_sim.npz" & Chr(34)
 sh.Run cmd, 0, False

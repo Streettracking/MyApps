@@ -7,5 +7,7 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 folder = fso.GetParentFolderName(WScript.ScriptFullName)
 exe = folder & "\DogRecognizeTrainer.exe"
 If Not fso.FileExists(exe) Then exe = folder & "\recognize_trainer.exe"
+' Same folder as DogRecognizeTrainer_robot.cmd. Default state is logs\mb_train_state.npz.
+sh.CurrentDirectory = folder
 cmd = "cmd.exe /c " & Chr(34) & Chr(34) & exe & Chr(34) & Chr(34)
 sh.Run cmd, 0, False

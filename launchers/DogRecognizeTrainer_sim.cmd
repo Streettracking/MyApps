@@ -9,5 +9,5 @@ if not exist "%EXE%" (
   pause
   exit /b 1
 )
-"%EXE%" --sim %*
+"%EXE%" --sim --state logs\mb_train_state_sim.npz %*
 pause
