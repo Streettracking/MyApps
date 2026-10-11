@@ -516,7 +516,7 @@ def _bars(screen, font, origin, values, width, title, color):
     for i, value in enumerate(vals[:n]):
         h = int(58 * max(float(value) / vmax, 0.0))
         rx = x + i * (cell + gap)
-        pygame.draw.rect(screen, (236, 234, 230), pygame.Rect(rx, y, cell, 58), border_radius=3)
+        pygame.draw.rect(screen, BG_TOP, pygame.Rect(rx, y, cell, 58), border_radius=3)
         pygame.draw.rect(screen, color, pygame.Rect(rx, base - h, cell, max(h, 1)), border_radius=3)
         lab = labels[i] if i < len(labels) else str(i)
         screen.blit(font.render(lab, True, LABEL), (rx, base + 2))

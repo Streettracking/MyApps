@@ -653,5 +653,161 @@ class TrainerInkTests(unittest.TestCase):
             pygame.quit()
 
 
+def _white_plate(frame, block: int = 28, frac: float = 0.92) -> bool:
+    """True when a solid near-white rectangle is sitting on the frame.
+
+    Glyphs of near-white text are thinner than ``block`` and do not count.
+    """
+    white = frame.min(axis=2) >= 245
+    height, width = white.shape[1], white.shape[0]
+    step = block // 2
+    for y in range(0, max(1, height - block), step):
+        row = white[:, y : y + block]
+        for x in range(0, max(1, width - block), step):
+            if float(row[x : x + block].mean()) >= frac:
+                return True
+    return False
+
+
+class ThemeSchemeTests(unittest.TestCase):
+    def test_scheme_and_blocks_follow_the_theme(self):
+        import pygame
+        import numpy as np
+
+        from sim.learn_flash import LearnFlash, MbLayout, _LABEL, _LINE, _PAPER, _VALUE
+        from sim.train_monitor import CARD, INK_DIM, INSET, LABEL, LINE, VALUE, MonitorView, TrainMonitor
+        from sim.ui_theme import apply_theme
+
+        self.assertGreater(_contrast((248, 248, 248), (40, 42, 46)), 7.0)
+        self.assertGreater(_contrast((255, 255, 255), (40, 42, 46)), 7.0)
+        self.assertGreater(_contrast((198, 200, 204), (40, 42, 46)), 4.5)
+        pygame.init()
+        try:
+            mon = TrainMonitor("scheme")
+            mon._on_resize(1920, 1080)
+            layout = MbLayout(
+                kc_x=np.array([0.18, 0.42, 0.66], np.float32),
+                kc_y=np.array([0.35, 0.55, 0.75], np.float32),
+                mbon_x=np.array([0.94, 0.94], np.float32),
+                mbon_y=np.array([0.28, 0.72], np.float32),
+                mbon_label=["MBON Л", "MBON П"],
+                mbon_approach=np.array([True, False]),
+                kc_root=np.array([101, 202, 303]),
+                lobe_name=("γ", "αβ", "α′β′"),
+                lobe_x=(0.18, 0.42, 0.66),
+                n_pam=40,
+                n_ppl1=12,
+            )
+            camera = np.zeros((90, 160, 3), dtype=np.uint8)
+            camera[:] = (18, 20, 24)
+            lidar = np.zeros((64, 64, 3), dtype=np.uint8)
+            idle = MonitorView(
+                learner="mb",
+                learning_on=True,
+                focused=True,
+                camera=camera,
+                lidar=lidar,
+                lidar_mode="лидар",
+                log_lines=["схема обучения открыта"],
+                keys_hint="G вспышка  A авто  J мозг",
+                udp_status="симулятор",
+                last_command="StopMove",
+                mb_layout=layout,
+                peer_curve=[(0.0, 0.2), (1.0, 0.7), (2.0, 0.4)],
+                other_curve=[(0.0, 0.1), (1.0, 0.3), (2.0, 0.2)],
+                drift_curve=[(0.0, 0.0), (1.0, 0.4)],
+                dan_events=[(0.4, "PAM"), (1.2, "PPL1")],
+                kc_bins=np.linspace(0.1, 1.0, 48),
+                kc_on=12,
+                kc_n=2000,
+                teacher_counts="учитель: PAM_L 1  PAM_R 0  PPL1_L 0  PPL1_R 1",
+                n_pam=1,
+                n_ppl1=1,
+                t=4.0,
+            )
+            out = __import__("pathlib").Path("/opt/cursor/artifacts")
+            out.mkdir(parents=True, exist_ok=True)
+
+            def paper_at():
+                body = mon._content_of("brain")
+                self.assertIsNotNone(body)
+                rect = pygame.Rect(body.x + 8, body.y + 78, body.w - 16, max(80, body.h - 96))
+                graph = pygame.Rect(rect.x + 8, rect.y + 58, rect.w - 210, rect.h - 146)
+                return int(graph.centerx), int(graph.centery)
+
+            mon.flash_open = True
+            mon.menu_open = True
+            mon._set_theme("light")
+            mon.draw(idle)
+            frame = pygame.surfarray.array3d(mon.screen)
+            px, py = paper_at()
+            light_paper = tuple(int(c) for c in frame[px, py])
+            self.assertGreater(min(light_paper), 240)
+            pygame.image.save(mon.screen, str(out / "trainer_scheme_light.png"))
+
+            mon._set_theme("dark")
+            self.assertGreater(_contrast(tuple(LABEL), tuple(CARD)), 7.0)
+            self.assertGreater(_contrast(tuple(VALUE), tuple(CARD)), 7.0)
+            self.assertGreater(_contrast(tuple(LABEL), tuple(INSET)), 7.0)
+            self.assertGreater(_contrast(tuple(INK_DIM), tuple(CARD)), 4.5)
+            self.assertEqual(tuple(_PAPER), tuple(INSET))
+            self.assertEqual(tuple(_LINE), tuple(LINE))
+            self.assertLess(max(tuple(_PAPER)), 80)
+            self.assertGreater(min(tuple(_LABEL)), 240)
+            self.assertGreater(min(tuple(_VALUE)), 250)
+            mon.draw(idle)
+            frame = pygame.surfarray.array3d(mon.screen)
+            dark_paper = tuple(int(c) for c in frame[px, py])
+            self.assertLess(max(dark_paper), 90)
+            self.assertFalse(_white_plate(frame))
+            pygame.image.save(mon.screen, str(out / "trainer_scheme_dark.png"))
+
+            mon.flash_open = False
+            mon.draw(idle)
+            self.assertFalse(_white_plate(pygame.surfarray.array3d(mon.screen)))
+
+            pulse = LearnFlash(
+                t=4.0,
+                kind="PAM",
+                kc_on=np.array([0, 1], np.int32),
+                pre=np.array([0], np.int32),
+                post=np.array([0], np.int32),
+                dw=np.array([0.4], np.float32),
+                toward=np.array([True]),
+                n_syn=1,
+                sum_abs=0.4,
+                before=0.1,
+                after=0.8,
+                mbon_before=np.array([0.1, 0.0], np.float32),
+                mbon_after=np.array([1.4, -0.2], np.float32),
+                strong_pre=0,
+                strong_post=0,
+            )
+            other = LearnFlash(
+                t=4.0,
+                kind="PPL1",
+                kc_on=np.array([2], np.int32),
+                pre=np.array([2], np.int32),
+                post=np.array([1], np.int32),
+                dw=np.array([-0.3], np.float32),
+                toward=np.array([False]),
+                n_syn=1,
+                sum_abs=0.3,
+                before=-0.2,
+                after=-0.6,
+                mbon_before=np.array([0.0, 0.2], np.float32),
+                mbon_after=np.array([0.1, -0.8], np.float32),
+                strong_pre=2,
+                strong_post=1,
+            )
+            mon.flash_open = True
+            shown = MonitorView(**{**idle.__dict__, "learn_flash": pulse, "learn_flash_r": other})
+            mon.draw(shown)
+            self.assertFalse(_white_plate(pygame.surfarray.array3d(mon.screen)))
+        finally:
+            apply_theme("light")
+            pygame.quit()
+
+
 if __name__ == "__main__":
     unittest.main()

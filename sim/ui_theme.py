@@ -26,9 +26,10 @@ DARK = {
     "bg_bot": (22, 23, 26),
     "card": (40, 42, 46),
     "line": (70, 72, 78),
-    "label": (230, 230, 230),
-    "value": (245, 245, 245),
-    "ink_dim": (176, 176, 176),
+    # Main ink is near white on the card (≥ 7:1). Secondary is light gray.
+    "label": (248, 248, 248),
+    "value": (255, 255, 255),
+    "ink_dim": (198, 200, 204),
     "scroll_track": (58, 58, 60),
     "scroll_thumb": (132, 132, 134),
     "menu": (36, 37, 40),

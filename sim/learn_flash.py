@@ -13,15 +13,16 @@ from dataclasses import dataclass
 import numpy as np
 
 from .mb_runtime import ACTIONS, MBForward, MushroomBodyRuntime
+from .ui_theme import INSET as _PAPER
 from .ui_theme import LABEL as _LABEL
+from .ui_theme import LINE as _LINE
 from .ui_theme import VALUE as _VALUE
 
 FADE_S = 1.6
 _REST_ALPHA = 0.20
 
-# Same light chrome as the trainer. Semantic green and red stay pastel.
-_PAPER = (255, 255, 255)
-_LINE = (226, 224, 220)
+# Paper and rules follow the theme. Light inset is white, dark inset is a dark card.
+# Semantic green, red, and peach stay pastel in both themes.
 _PEACH = (201, 120, 91)
 _GREEN = (141, 181, 150)
 _RED = (217, 136, 128)
@@ -388,7 +389,7 @@ def _graph(screen, font, graph, layout: MbLayout, flash: LearnFlash | None, alph
         if i in changed_kc:
             pygame.draw.circle(overlay, (*_GREEN, dot_a), (p[0] - graph.x, p[1] - graph.y), 3)
         else:
-            pygame.draw.circle(overlay, (176, 174, 170, max(40, dot_a // 2)), (p[0] - graph.x, p[1] - graph.y), 2)
+            pygame.draw.circle(overlay, (*_RING, max(40, dot_a // 2)), (p[0] - graph.x, p[1] - graph.y), 2)
     if flash.n_syn:
         delta = flash.mbon_after - flash.mbon_before
         for post in np.unique(flash.post):
