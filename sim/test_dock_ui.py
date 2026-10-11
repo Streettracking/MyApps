@@ -165,6 +165,9 @@ class TrainerDockTests(unittest.TestCase):
             clicked = mon.pump()
             self.assertFalse(clicked.brain_toggle)
             self.assertFalse(find_leaf(mon.dock, "journal").visible)
+            self.assertTrue(mon.menu_open)
+            themes = [action for _rect, action in mon._menu_hits if action[0] == "theme"]
+            self.assertEqual(themes, [("theme",)])
             find_leaf(mon.dock, "journal").visible = True
 
             mon._set_theme("dark")
@@ -187,12 +190,155 @@ class TrainerDockTests(unittest.TestCase):
             wx, wy = window_from_logical(reset, 1920, 1080)
             pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(wx, wy), button=1))
             mon.pump()
+            self.assertFalse(mon.menu_open)
             self.assertLess(mon.cam_rect.y, mon.lid_rect.y)
             self.assertEqual(theme_name(), "dark")
             mon._set_theme("light")
             self.assertEqual(theme_name(), "light")
         finally:
             pygame.quit()
+
+    def test_view_menu_checks_stay_open_and_the_theme_toggle_saves(self):
+        import json
+
+        import pygame
+        import numpy as np
+
+        from sim.dock_layout import find_leaf
+        from sim.train_monitor import MonitorView, TrainMonitor, window_from_logical
+        from sim.ui_theme import theme_name
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("menu")
+            mon._on_resize(1920, 1080)
+            view = MonitorView(
+                title="recognition training",
+                learner="mb",
+                learning_on=True,
+                camera=np.zeros((90, 160, 3), dtype=np.uint8),
+                lidar=np.zeros((64, 64, 3), dtype=np.uint8),
+                log_lines=["строка журнала"],
+                keys_hint="A авто  J мозг",
+            )
+            find_leaf(mon.dock, "journal").visible = False
+            mon._apply_layout(mon.screen.get_height())
+            mon.menu_open = True
+            mon._set_theme("light")
+            mon.draw(view)
+            self._assert_menu_checks(mon, on_theme="light")
+            self._save_menu(mon, "/opt/cursor/artifacts/view_menu_light.png")
+
+            journal = self._click_menu(mon, ("toggle", "journal"))
+            self.assertFalse(journal.quit)
+            self.assertTrue(mon.menu_open)
+            self.assertTrue(find_leaf(mon.dock, "journal").visible)
+            mon.draw(view)
+            self._assert_menu_checks(mon, on_theme="light")
+
+            themed = self._click_menu(mon, ("theme",))
+            self.assertFalse(themed.quit)
+            self.assertTrue(mon.menu_open)
+            self.assertEqual(theme_name(), "dark")
+            saved = json.loads(__import__("pathlib").Path(self._path).read_text(encoding="utf-8"))
+            self.assertEqual(saved["theme"], "dark")
+            mon.draw(view)
+            self._assert_menu_checks(mon, on_theme="dark")
+            self._save_menu(mon, "/opt/cursor/artifacts/view_menu_dark.png")
+
+            outside = mon.cam_rect.center
+            self.assertIsNone(mon._menu_at(outside))
+            self.assertFalse(mon._menu_panel.collidepoint(outside))
+            self._click_at(mon, outside)
+            self.assertFalse(mon.menu_open)
+
+            mon.menu_open = True
+            mon.draw(view)
+            self._click_at(mon, mon.view_rect.center)
+            self.assertFalse(mon.menu_open)
+
+            mon.menu_open = True
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE))
+            escaped = mon.pump()
+            self.assertFalse(escaped.quit)
+            self.assertFalse(mon.menu_open)
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE))
+            quit_key = mon.pump()
+            self.assertTrue(quit_key.quit)
+
+            mon.menu_open = True
+            mon.draw(view)
+            self._click_menu(mon, ("reset",))
+            self.assertFalse(mon.menu_open)
+            self.assertTrue(find_leaf(mon.dock, "journal").visible)
+            self.assertLess(mon.cam_rect.y, mon.lid_rect.y)
+        finally:
+            pygame.quit()
+
+    def _click_at(self, mon, logical) -> None:
+        import pygame
+
+        from sim.train_monitor import window_from_logical
+
+        wx, wy = window_from_logical(logical, 1920, 1080)
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(wx), int(wy)), button=1))
+        return mon.pump()
+
+    def _click_menu(self, mon, action):
+        rect = next(hit for hit, item in mon._menu_hits if item == action)
+        return self._click_at(mon, rect.center)
+
+    def _menu_box(self, rect):
+        import pygame
+
+        return pygame.Rect(rect.x + 8, rect.centery - 7, 14, 14)
+
+    def _assert_menu_checks(self, mon, on_theme: str) -> None:
+        import pygame
+
+        from sim.dock_layout import find_leaf
+        from sim.ui_theme import theme_name
+
+        self.assertEqual(theme_name(), on_theme)
+        frame = pygame.surfarray.array3d(mon.screen)
+        box_x = None
+        toggles = [(rect, action) for rect, action in mon._menu_hits if action[0] in ("toggle", "theme")]
+        self.assertEqual(len([action for _r, action in toggles if action[0] == "theme"]), 1)
+        self.assertNotIn(("theme", "light"), [action for _r, action in mon._menu_hits])
+        self.assertNotIn(("theme", "dark"), [action for _r, action in mon._menu_hits])
+        for rect, action in toggles:
+            box = self._menu_box(rect)
+            if box_x is None:
+                box_x = box.x
+            self.assertEqual(box.x, box_x)
+            interior = frame[box.x + 3 : box.x + 11, box.y + 3 : box.y + 11]
+            if action[0] == "theme":
+                on = on_theme == "dark"
+            else:
+                on = bool(find_leaf(mon.dock, action[1]).visible)
+            if on:
+                self.assertGreater(int(interior.max()) - int(interior.min()), 80)
+            else:
+                self.assertLess(int(interior.max()) - int(interior.min()), 8)
+        reset = next(rect for rect, action in mon._menu_hits if action[0] == "reset")
+        stroke = frame[box_x, toggles[0][0].centery]
+        bare = frame[box_x, reset.centery]
+        if on_theme == "light":
+            self.assertLess(int(stroke.max()), 90)
+            self.assertGreater(int(bare.min()), 180)
+        else:
+            self.assertGreater(int(stroke.min()), 200)
+            self.assertLess(int(bare.max()), 120)
+
+    def _save_menu(self, mon, path: str) -> None:
+        import pygame
+
+        panel = mon._menu_panel
+        crop = pygame.Rect(panel.x - 6, mon.view_rect.y - 4, panel.w + 28, panel.bottom - mon.view_rect.y + 18)
+        crop = crop.clamp(mon.screen.get_rect())
+        shot = pygame.Surface((crop.w, crop.h))
+        shot.blit(mon.screen, (0, 0), area=crop)
+        pygame.image.save(pygame.transform.scale(shot, (crop.w * 2, crop.h * 2)), path)
 
 
 class ResizeGuardTests(unittest.TestCase):

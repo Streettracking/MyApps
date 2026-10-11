@@ -565,6 +565,7 @@ class TrainMonitor:
         self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
         self.menu_open = False
         self._menu_hits: list = []
+        self._menu_panel = None
         self._chrome: list = []
         self._split_drag = None
         self._split_dirty = False
@@ -1095,9 +1096,9 @@ class TrainMonitor:
                 self._save_ui()
         elif kind == "reset":
             self._reset_layout()
+            self.menu_open = False
         elif kind == "theme":
-            self._set_theme(action[1])
-        self.menu_open = False
+            self._set_theme("light" if theme_name() == "dark" else "dark")
 
     def _drag_splitter(self, win_pos) -> None:
         if not self._split_drag:
@@ -1148,6 +1149,9 @@ class TrainMonitor:
             action = self._menu_at(pos)
             if action is not None:
                 self._run_menu(action)
+                return
+            panel = self._menu_panel
+            if panel is not None and panel.collidepoint(pos):
                 return
             self.menu_open = False
         kind, arg = self._chrome_at(pos)
@@ -1261,7 +1265,10 @@ class TrainMonitor:
                 inp.quit = True
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    inp.quit = True
+                    if self.menu_open:
+                        self.menu_open = False
+                    else:
+                        inp.quit = True
                 elif event.key == pygame.K_p:
                     inp.pause_learn = True
                 elif event.key == pygame.K_r:
@@ -1416,6 +1423,7 @@ class TrainMonitor:
         self._brain_rows = []
         self._chrome = []
         self._menu_hits = []
+        self._menu_panel = None
         self.cam_inner = None
         self.lid_inner = None
         self.show_stand = bool(view.onboard)
@@ -1521,38 +1529,51 @@ class TrainMonitor:
                 mid = rect.centerx
                 pygame.draw.line(screen, INK_DIM, (mid, rect.centery - 18), (mid, rect.centery + 18), 2)
 
+    def _menu_box(self, screen, x: int, centery: int, on: bool) -> None:
+        """One checkbox. The same x keeps every square in a single column."""
+        import pygame
+
+        box = pygame.Rect(int(x), int(centery) - 7, 14, 14)
+        pygame.draw.rect(screen, INSET, box)
+        pygame.draw.rect(screen, LABEL, box, 1)
+        if not on:
+            return
+        pygame.draw.lines(
+            screen,
+            LABEL,
+            False,
+            [(box.x + 3, box.y + 7), (box.x + 6, box.y + 10), (box.x + 11, box.y + 4)],
+            2,
+        )
+
     def _draw_menu(self, screen) -> None:
         import pygame
 
         rows = [(("toggle", name), BLOCK_TITLES[name], "check", name) for name in BLOCKS]
         rows.append((("reset",), "Сброс раскладки", "button", None))
-        rows.append((("theme", "light"), "Светлая тема", "radio", "light"))
-        rows.append((("theme", "dark"), "Тёмная тема", "radio", "dark"))
-        width = 240
+        rows.append((("theme",), "Тёмная тема", "theme", None))
         row_h = 28
+        text_w = max(self.font_sm.size(label)[0] for _action, label, _kind, _arg in rows)
+        width = max(220, 12 + 14 + 10 + text_w + 16)
         x = self.view_rect.x
         y = self.view_rect.bottom + 4
         panel = pygame.Rect(x, y, width, row_h * len(rows) + 8)
+        self._menu_panel = panel
+        pygame.draw.rect(screen, MENU, panel, border_radius=10)
         self._card(screen, panel, radius=10)
         self._menu_hits = []
         cursor = panel.y + 4
+        box_x = panel.x + 12
+        label_x = box_x + 14 + 10
         for action, label, kind, arg in rows:
             row = pygame.Rect(panel.x + 4, cursor, panel.w - 8, row_h)
             self._menu_hits.append((row, action))
             if kind == "check":
                 leaf = self._leaf(arg)
-                mark = "✓" if leaf is not None and leaf.visible else ""
-            elif kind == "radio":
-                mark = "✓" if theme_name() == arg else ""
-            else:
-                mark = ""
-            box = pygame.Rect(row.x + 6, row.centery - 7, 14, 14)
-            pygame.draw.rect(screen, INSET, box, border_radius=2)
-            pygame.draw.rect(screen, LINE, box, 1, border_radius=2)
-            if mark:
-                tick = self.font_tiny.render(mark, True, PEACH)
-                screen.blit(tick, (box.x + 2, box.y - 1))
-            screen.blit(self.font_sm.render(label, True, LABEL), (row.x + 28, row.centery - 8))
+                self._menu_box(screen, box_x, row.centery, leaf is not None and leaf.visible)
+            elif kind == "theme":
+                self._menu_box(screen, box_x, row.centery, theme_name() == "dark")
+            screen.blit(self.font_sm.render(label, True, LABEL), (label_x, row.centery - 8))
             cursor += row_h
 
     def _draw_camera_block(self, screen, view: MonitorView, content) -> None:
