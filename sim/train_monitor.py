@@ -106,6 +106,8 @@ RED = (217, 136, 128)  # #D98880 PPL1 and errors
 TEACHER = (46, 154, 206)  # #2E9ACE teacher watch, same in both themes
 TEACHER_SOFT = (156, 208, 230)  # #9CD0E6
 ESTOP = (184, 40, 36)
+ESTOP_LABEL = (255, 246, 244)
+ESTOP_EDGE = (255, 228, 224)
 AMBER = (214, 154, 52)  # #D69A34 warning
 AMBER_SOFT = (240, 206, 140)  # #F0CE8C
 RING = (176, 174, 170)
@@ -406,7 +408,8 @@ def monitor_layout(w: int, h: int) -> dict:
     header = 48
     footer = 56
     controls_h = 44
-    controls_y = h - footer - controls_h - 10
+    estop_h = 64
+    controls_y = h - footer - estop_h - 10
     top = header + 8
     bottom = controls_y - 10
     span = max(200, bottom - top)
@@ -448,6 +451,8 @@ def monitor_layout(w: int, h: int) -> dict:
     header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
     header_x = w - 16 - header_total
     buttons = place(header_items, header_x, 8, 32, w - 16)
+    estop_w = 240
+    estop = (w - m - estop_w, controls_y, estop_w, estop_h)
     buttons.update(
         place(
             [
@@ -456,14 +461,14 @@ def monitor_layout(w: int, h: int) -> dict:
                 ("take", 180),
                 ("steer", 210),
                 ("treat", 190),
-                ("estop", 150),
             ],
             m,
-            controls_y,
+            controls_y + (estop_h - controls_h),
             controls_h,
-            w - m,
+            estop[0] - 8,
         )
     )
+    buttons["estop"] = estop
     buttons.update(
         {
             "cam": cam,
@@ -770,6 +775,10 @@ class TrainMonitor:
             if got is not None:
                 inner = pygame.Rect(*got)
         if inner is not None and inner.h >= 24:
+            row_h = min(44, inner.h)
+            estop_h = min(inner.h, max(row_h + 16, 60))
+            estop_w = min(260, max(160, inner.w // 4))
+            estop_rect = pygame.Rect(inner.right - estop_w, inner.bottom - estop_h, estop_w, estop_h)
             placed_row = row(
                 [
                     ("learn", 220),
@@ -777,13 +786,13 @@ class TrainMonitor:
                     ("take", 180),
                     ("steer", 210),
                     ("treat", 190),
-                    ("estop", 150),
                 ],
                 inner.x,
-                inner.y,
-                min(40, inner.h),
-                inner.right,
+                inner.bottom - row_h,
+                row_h,
+                estop_rect.x - 8,
             )
+            placed_row["estop"] = estop_rect
         else:
             placed_row = {name: self._zero() for name in ("learn", "auto", "take", "steer", "treat", "estop")}
         self.learn_rect = placed_row["learn"]
@@ -2163,9 +2172,10 @@ class TrainMonitor:
             screen,
             self.estop_rect,
             "E-STOP",
-            ESTOP,
+            None,
             self.estop_rect.collidepoint(self._mouse()),
-            label_color=ESTOP,
+            label_color=ESTOP_LABEL,
+            fill=ESTOP,
         )
 
     def _keep_glyphs(self, glyphs) -> None:
@@ -2444,14 +2454,20 @@ class TrainMonitor:
         disc.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
         screen.blit(disc, (x - radius, y - radius))
 
-    def _button(self, screen, rect, text: str, lamp, hot: bool, label_color=None) -> None:
+    def _button(self, screen, rect, text: str, lamp, hot: bool, label_color=None, fill=None) -> None:
         import pygame
 
         if rect.w < 8 or rect.h < 8:
             return
-        self._card(screen, rect, radius=min(16, max(1, rect.h // 2)))
-        if hot:
-            pygame.draw.rect(screen, PEACH, rect, 1, border_radius=min(16, rect.h // 2))
+        radius = min(16, max(1, rect.h // 2))
+        if fill is not None:
+            pygame.draw.rect(screen, fill, rect, border_radius=radius)
+            if hot:
+                pygame.draw.rect(screen, ESTOP_EDGE, rect, 2, border_radius=radius)
+        else:
+            self._card(screen, rect, radius=radius)
+            if hot:
+                pygame.draw.rect(screen, PEACH, rect, 1, border_radius=radius)
         x = rect.x + 12
         if lamp is not None:
             self._lamp(screen, (rect.x + 18, rect.centery), lamp, 6)
@@ -2459,6 +2475,9 @@ class TrainMonitor:
         if not text:
             return
         label = self.font_sm.render(text, True, label_color or VALUE)
+        if fill is not None:
+            screen.blit(label, (rect.centerx - label.get_width() // 2, rect.centery - label.get_height() // 2))
+            return
         screen.blit(label, (x, rect.centery - label.get_height() // 2))
 
     def _link_color(self, view: MonitorView):

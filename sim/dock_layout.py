@@ -9,7 +9,7 @@ from __future__ import annotations
 
 HEADER = 26
 SPLIT = 6
-CONTROLS_H = 74
+CONTROLS_H = 96
 MIN_BLOCK = 48
 
 BLOCKS = ("camera", "lidar", "brain", "journal", "controls")

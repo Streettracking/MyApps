@@ -385,6 +385,9 @@ class LayoutTests(unittest.TestCase):
             self.assertLess(box["cam"][1] + box["cam"][3], box["lid"][1] + 2)
             self.assertLess(box["estop"][0], w)
             self.assertGreater(box["estop"][0], box["treat"][0])
+            self.assertEqual(box["estop"][0] + box["estop"][2], w - 16)
+            self.assertGreater(box["estop"][2], box["treat"][2])
+            self.assertGreater(box["estop"][3], box["learn"][3])
 
 
 class SimGuiTests(unittest.TestCase):
