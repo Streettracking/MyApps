@@ -591,6 +591,7 @@ class TrainMonitor:
         self._minimized = False
         self.brain_open = False
         self.go2_open = False
+        self.go2_server_open = False
         self.go2_missing = False
         self.fullscreen = bool(fullscreen) or bool(self._persist and self._settings.get("fullscreen"))
         if self._persist and not self.fullscreen:
@@ -688,7 +689,7 @@ class TrainMonitor:
                 cursor += rw + gap_b
             return out
 
-        go2_w = self.font_sm.size("УПРАВЛЕНИЕ")[0] + 52
+        go2_w = self.font_sm.size("УПРАВЛЕНИЕ")[0] + 60
         header_items = [("go2", go2_w), ("brain", 168), ("teacher", 280), ("record", 250)]
         header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
         header_x = WIN_W - 16 - header_total
@@ -2312,15 +2313,21 @@ class TrainMonitor:
 
     def _go2_button(self, screen) -> None:
         missing = bool(getattr(self, "go2_missing", False))
-        lamp = PEACH if self.go2_open and not missing else LAMP_OFF
         self._button(
             screen,
             self.go2_rect,
-            "УПРАВЛЕНИЕ",
-            lamp,
+            "",
+            None,
             self.go2_rect.collidepoint(self._mouse()) and not missing,
-            label_color=INK_DIM if missing else None,
         )
+        if self.go2_rect.w < 8 or self.go2_rect.h < 8:
+            return
+        server_on = bool(getattr(self, "go2_server_open", False))
+        panel_on = bool(self.go2_open) and not missing
+        self._lamp(screen, (self.go2_rect.x + 16, self.go2_rect.centery), PEACH if server_on else LAMP_OFF, 5)
+        self._lamp(screen, (self.go2_rect.x + 32, self.go2_rect.centery), PEACH if panel_on else LAMP_OFF, 5)
+        label = self.font_sm.render("УПРАВЛЕНИЕ", True, INK_DIM if missing else VALUE)
+        screen.blit(label, (self.go2_rect.x + 44, self.go2_rect.centery - label.get_height() // 2))
 
     def _brain_button(self, screen, view: MonitorView) -> None:
         if view.learner != "mb":

@@ -310,6 +310,7 @@ class LiveSession:
         self.onboard = bool(onboard)
         self.bridge_open = False
         self._bridge_warned = False
+        self._server_down_logged = False
         self.remote: dict = {}
         self.remote_flash = None
         self.remote_flash_r = None
@@ -686,6 +687,30 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
     return link.last_command or _phase_name(cmd.phase, session.pilot.steer, session.pilot.search_sign)
 
 
+def _note_robot_server(session: LiveSession, link: Go2CommandLink, state: dict, now: float) -> None:
+    """Say once when the robot window's UDP port has nobody listening.
+
+    Onboard mode uses port 8090 and does not call this. Sim does not either.
+    """
+    if now - state.get("server_note", 0.0) < 1.0:
+        return
+    state["server_note"] = now
+    from .go2_control import robot_server_message
+    from .onboard_link import udp_bridge_listening
+
+    listening = bool(udp_bridge_listening(link.host, int(link.port)))
+    text, told = robot_server_message(
+        listening,
+        bool(getattr(session, "_server_down_logged", False)),
+        link.host,
+        int(link.port),
+    )
+    session.bridge_open = listening
+    session._server_down_logged = told
+    if text:
+        session._log(text)
+
+
 def _note_bridge(session: LiveSession, now: float, state: dict) -> None:
     if now - state.get("bridge", 0.0) < 1.0:
         return
@@ -1006,6 +1031,7 @@ def run_live_gui(
                 _drive_onboard(session, onboard, inp, tele, now)
                 command_name = str(session.remote.get("phase_ru") or _phase_name(str(session.remote.get("phase") or "—"), session.pilot.steer, session.pilot.search_sign))
             elif link is not None:
+                _note_robot_server(session, link, tele, now)
                 command_name = _drive_udp(session, link, inp, tele, now, frames_ok)
             teach = session.teach_pulse.poll(
                 session.now(),

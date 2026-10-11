@@ -142,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         forwarded.extend(["--teacher-url", args.teacher_url, "--teacher-conf", str(args.teacher_conf), "--teacher-rate", str(args.teacher_rate)])
         if args.go2_control_exe:
             forwarded.extend(["--go2-control-exe", args.go2_control_exe])
+        if args.go2_server_exe:
+            forwarded.extend(["--go2-server-exe", args.go2_server_exe])
         return recognize_train.main(forwarded)
     forwarded = [
         "--robot-ip",
@@ -184,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     forwarded.extend(["--teacher-url", args.teacher_url, "--teacher-conf", str(args.teacher_conf), "--teacher-rate", str(args.teacher_rate)])
     if args.go2_control_exe:
         forwarded.extend(["--go2-control-exe", args.go2_control_exe])
+    if args.go2_server_exe:
+        forwarded.extend(["--go2-server-exe", args.go2_server_exe])
     if args.onboard:
         forwarded.extend(["--onboard", args.onboard, "--onboard-port", str(args.onboard_port)])
     return recognize_train_live.main(forwarded)
