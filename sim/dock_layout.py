@@ -230,16 +230,187 @@ def _clamp_share(top: int, avail: int, min_a: int, min_b: int) -> int:
     return int(round(avail * min_a / float(min_a + min_b)))
 
 
+def _collapsed_height(node, width: int) -> int | None:
+    """Header-stack height when every visible leaf is collapsed.
+
+    ``None`` means the node still has an expanded block and may grow.
+    A hidden leaf contributes nothing. The saved splitter ratio is not read.
+    """
+    if isinstance(node, Leaf):
+        if not node.visible:
+            return 0
+        if node.collapsed:
+            return HEADER
+        return None
+    if not _takes_space(node.a) and not _takes_space(node.b):
+        return 0
+    if not _takes_space(node.a):
+        return _collapsed_height(node.b, width)
+    if not _takes_space(node.b):
+        return _collapsed_height(node.a, width)
+    if node.orient == "h":
+        half = max(1, int(width) // 2)
+        ha = _collapsed_height(node.a, half)
+        hb = _collapsed_height(node.b, half)
+        if ha is None or hb is None:
+            return None
+        return max(ha, hb)
+    ha = _collapsed_height(node.a, width)
+    hb = _collapsed_height(node.b, width)
+    if ha is None or hb is None:
+        return None
+    return ha + SPLIT + hb
+
+
+def _subtract_rect(rect: tuple, cut: tuple) -> list:
+    """Rectangle ``rect`` minus ``cut``. Pieces stay inside ``rect``."""
+    x, y, w, h = rect
+    cx, cy, cw, ch = cut
+    ix0 = max(x, cx)
+    iy0 = max(y, cy)
+    ix1 = min(x + w, cx + cw)
+    iy1 = min(y + h, cy + ch)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return [rect]
+    pieces = []
+    if iy0 > y:
+        pieces.append((x, y, w, iy0 - y))
+    if iy1 < y + h:
+        pieces.append((x, iy1, w, y + h - iy1))
+    if ix0 > x:
+        pieces.append((x, iy0, ix0 - x, iy1 - iy0))
+    if ix1 < x + w:
+        pieces.append((ix1, iy0, x + w - ix1, iy1 - iy0))
+    return [piece for piece in pieces if piece[2] > 0 and piece[3] > 0]
+
+
+def _clip_splitters(splitters: list, blocks: dict) -> list:
+    """Drop the part of a grip that a block has taken over."""
+    kept = []
+    for splitter in splitters:
+        pieces = [tuple(splitter["rect"])]
+        for rect in blocks.values():
+            nxt = []
+            for piece in pieces:
+                nxt.extend(_subtract_rect(piece, rect))
+            pieces = nxt
+        for piece in pieces:
+            if piece[2] >= 2 and piece[3] >= 2:
+                kept.append({
+                    "rect": piece,
+                    "node": splitter["node"],
+                    "axis": splitter["axis"],
+                    "bounds": splitter["bounds"],
+                })
+    return kept
+
+
+def _splitter_above(splitters: list, x: int, y: int, w: int):
+    """The horizontal grip that ends where this gap begins, if there is one."""
+    found = None
+    for splitter in splitters:
+        if splitter["axis"] != "y":
+            continue
+        sx, sy, sw, sh = splitter["rect"]
+        if abs((sy + sh) - y) > SPLIT + 1:
+            continue
+        if min(sx + sw, x + w) - max(sx, x) <= 0:
+            continue
+        found = splitter
+    return found
+
+
+def _absorb_gaps(blocks: dict, gaps: list, splitters: list, root) -> None:
+    """Give the band above a collapsed card to the blocks sitting on it.
+
+    A band is absorbed only when each piece matches a whole neighbor, so a
+    block stays a rectangle. A band that would cut a neighbor in half is
+    given back to the collapsed card instead of leaving a hole.
+    """
+    for gx, gy, gw, gh in gaps:
+        if gw < 4 or gh < 4:
+            continue
+        if _give_gap_to_neighbors(blocks, splitters, root, gx, gy, gw, gh):
+            continue
+        _give_gap_back(blocks, gx, gy, gw, gh)
+
+
+def _give_gap_to_neighbors(blocks, splitters, root, gx, gy, gw, gh) -> bool:
+    owners = []
+    for name, rect in blocks.items():
+        leaf = find_leaf(root, name)
+        if leaf is None or leaf.collapsed or not leaf.visible:
+            continue
+        if leaf.block in ("controls", "robot"):
+            continue
+        x, y, w, h = rect
+        if abs((y + h + SPLIT) - gy) > 1 and abs((y + h) - gy) > 1:
+            continue
+        if x < gx or x + w > gx + gw:
+            continue
+        if w <= 0:
+            continue
+        owners.append((x, name, rect))
+    owners.sort()
+    if not owners:
+        return False
+    cursor = gx
+    chosen = []
+    for x, name, rect in owners:
+        if x != cursor:
+            return False
+        chosen.append((name, rect))
+        cursor = x + rect[2]
+    if cursor != gx + gw:
+        return False
+    planned = []
+    for name, rect in chosen:
+        x, y, w, h = rect
+        new_bottom = gy + gh - SPLIT
+        if new_bottom <= y + h:
+            return False
+        planned.append((name, x, y, w, new_bottom - y, new_bottom))
+    for name, x, y, w, h, new_bottom in planned:
+        blocks[name] = (x, y, w, h)
+        donor = _splitter_above(splitters, x, gy, w)
+        if donor is None:
+            continue
+        splitters.append({
+            "rect": (x, new_bottom, w, SPLIT),
+            "node": donor["node"],
+            "axis": "y",
+            "bounds": donor["bounds"],
+        })
+    return True
+
+
+def _give_gap_back(blocks, gx, gy, gw, gh) -> None:
+    """Stretch the collapsed card across a band no neighbor can take whole."""
+    floor = gy + gh
+    for name, rect in list(blocks.items()):
+        x, y, w, h = rect
+        if abs(y - floor) > 1:
+            continue
+        if x <= gx and x + w >= gx + gw:
+            blocks[name] = (x, gy, w, h + (y - gy))
+            return
+
+
 def layout_dock(node, x: int, y: int, w: int, h: int) -> dict:
     """Map each visible block to ``(x, y, w, h)`` and list splitter grips.
 
     An unlocked camera keeps a 16:9 preference while its sibling stays above
     a readable minimum. When that preference no longer fits, the saved ratio
     scales both sides and the minimum still wins. A locked split always
-    scales by its ratio, then the same minimums. Hidden leaves take no space.
+    scales by its ratio, then the same minimums. Hidden leaves take no space:
+    the sibling subtree keeps its own ratio, so the blocks that remain grow
+    in proportion to the share they already had. A collapsed leaf is only
+    the header tall. The band it gives up goes to the neighbors above it.
+    Splitter ratios are not rewritten, so opening the block puts it back.
     """
     blocks: dict = {}
     splitters: list = []
+    gaps: list = []
 
     def place(current, rx: int, ry: int, rw: int, rh: int) -> None:
         if rw < 4 or rh < 4:
@@ -260,14 +431,46 @@ def layout_dock(node, x: int, y: int, w: int, h: int) -> dict:
             ratio = min(0.85, max(0.15, current.ratio))
             left = int(round((rw - SPLIT) * ratio))
             left = max(MIN_BLOCK, min(left, rw - SPLIT - MIN_BLOCK))
-            place(current.a, rx, ry, left, rh)
+
+            def place_side(child, sx, sw) -> None:
+                tight = _collapsed_height(child, sw)
+                if tight is not None and HEADER // 2 <= tight < rh:
+                    gaps.append((sx, ry, sw, rh - tight))
+                    place(child, sx, ry + (rh - tight), sw, tight)
+                    return
+                place(child, sx, ry, sw, rh)
+
+            place_side(current.a, rx, left)
             grip = (rx + left, ry, SPLIT, rh)
             splitters.append({"rect": grip, "node": current, "axis": "x", "bounds": (rx, ry, rw, rh)})
-            place(current.b, rx + left + SPLIT, ry, rw - left - SPLIT, rh)
+            place_side(current.b, rx + left + SPLIT, rw - left - SPLIT)
             return
         avail = max(0, rh - SPLIT)
         ratio = min(0.9, max(0.1, current.ratio))
-        if current.locked:
+        collapsed_a = _collapsed_height(current.a, rw)
+        collapsed_b = _collapsed_height(current.b, rw)
+        if (
+            collapsed_a is not None
+            and collapsed_b is not None
+            and collapsed_a + SPLIT + collapsed_b < rh
+        ):
+            # Both sides are header stacks and the parent gave this column
+            # extra height. Park the headers at the bottom and let the band
+            # above them travel to a neighbor outside this split.
+            slack = rh - (collapsed_a + SPLIT + collapsed_b)
+            place(current.a, rx, ry + slack, rw, collapsed_a)
+            grip = (rx, ry + slack + collapsed_a, rw, SPLIT)
+            splitters.append({"rect": grip, "node": current, "axis": "y", "bounds": (rx, ry, rw, rh)})
+            place(current.b, rx, ry + slack + collapsed_a + SPLIT, rw, collapsed_b)
+            gaps.append((rx, ry, rw, slack))
+            return
+        if collapsed_a is not None and collapsed_b is not None:
+            top = int(round(avail * collapsed_a / float(max(1, collapsed_a + collapsed_b))))
+        elif collapsed_a is not None:
+            top = min(collapsed_a, avail)
+        elif collapsed_b is not None:
+            top = max(0, avail - min(collapsed_b, avail))
+        elif current.locked:
             top = int(round(avail * ratio))
         else:
             pref = _preferred_height(current.a, rw, rh)
@@ -287,13 +490,17 @@ def layout_dock(node, x: int, y: int, w: int, h: int) -> dict:
                 top = int(pref)
             else:
                 top = int(round(avail * int(pref) / float(int(pref) + int(other))))
-        top = _clamp_share(top, avail, _min_height(current.a, rw), _min_height(current.b, rw))
+        if collapsed_a is None or collapsed_b is None:
+            top = _clamp_share(top, avail, _min_height(current.a, rw), _min_height(current.b, rw))
         place(current.a, rx, ry, rw, top)
         grip = (rx, ry + top, rw, SPLIT)
         splitters.append({"rect": grip, "node": current, "axis": "y", "bounds": (rx, ry, rw, rh)})
-        place(current.b, rx, ry + top + SPLIT, rw, rh - top - SPLIT)
+        bottom_h = rh - top - SPLIT
+        place(current.b, rx, ry + top + SPLIT, rw, bottom_h)
 
     place(node, int(x), int(y), int(w), int(h))
+    _absorb_gaps(blocks, gaps, splitters, node)
+    splitters = _clip_splitters(splitters, blocks)
     return {"blocks": blocks, "splitters": splitters}
 
 

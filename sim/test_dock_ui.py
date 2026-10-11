@@ -1353,3 +1353,127 @@ class CardButtonTests(unittest.TestCase):
             self.assertGreaterEqual(len(labels), 5)
         finally:
             pygame.quit()
+
+
+class DockReflowTests(unittest.TestCase):
+    """Closing, collapsing, and reopening must tile the dock and restore shares."""
+
+    def _area(self):
+        from sim.train_monitor import FOOTER_H, MENU_H, WIN_W
+
+        return 12, MENU_H, WIN_W - 24, 1080 - MENU_H - FOOTER_H
+
+    def _place(self, tree):
+        from sim.dock_layout import layout_dock
+
+        x, y, w, h = self._area()
+        return layout_dock(tree, x, y, w, h), (x, y, w, h)
+
+    def _assert_tiled(self, laid, area):
+        blocks = laid["blocks"]
+        rects = list(blocks.values()) + [item["rect"] for item in laid["splitters"]]
+        x, y, w, h = area
+        covered = [[0] * w for _ in range(h)]
+        for rx, ry, rw, rh in rects:
+            for yy in range(max(0, ry - y), min(h, ry - y + rh)):
+                row = covered[yy]
+                x0 = max(0, rx - x)
+                x1 = min(w, rx - x + rw)
+                for xx in range(x0, x1):
+                    row[xx] += 1
+        empty = sum(cell == 0 for row in covered for cell in row)
+        self.assertEqual(empty, 0, empty)
+        names = list(blocks)
+        for i, left in enumerate(names):
+            ax, ay, aw, ah = blocks[left]
+            for right in names[i + 1 :]:
+                bx, by, bw, bh = blocks[right]
+                ix = min(ax + aw, bx + bw) - max(ax, bx)
+                iy = min(ay + ah, by + bh) - max(ay, by)
+                self.assertFalse(ix > 0 and iy > 0, (left, right))
+
+    def test_each_block_closes_collapses_and_reopens_without_holes(self):
+        from sim.dock_layout import BLOCKS, HEADER, default_tree, find_leaf
+
+        fresh = default_tree()
+        base, area = self._place(fresh)
+        self._assert_tiled(base, area)
+        saved = fresh.to_dict()
+
+        for name in BLOCKS:
+            tree = default_tree()
+            before, _area = self._place(tree)
+            self.assertEqual(before["blocks"], base["blocks"])
+            leaf = find_leaf(tree, name)
+            leaf.visible = False
+            hidden, _area = self._place(tree)
+            self.assertNotIn(name, hidden["blocks"])
+            self._assert_tiled(hidden, area)
+            self.assertEqual(tree.to_dict()["a"]["r"], saved["a"]["r"])
+            leaf.visible = True
+            opened, _area = self._place(tree)
+            self.assertEqual(opened["blocks"], base["blocks"])
+            self.assertEqual(tree.to_dict(), saved)
+
+            leaf.collapsed = True
+            folded, _area = self._place(tree)
+            self.assertIn(name, folded["blocks"])
+            self.assertEqual(folded["blocks"][name][3], HEADER, name)
+            self._assert_tiled(folded, area)
+            self.assertNotEqual(folded["blocks"][name], base["blocks"][name])
+            leaf.collapsed = False
+            restored, _area = self._place(tree)
+            self.assertEqual(restored["blocks"], base["blocks"])
+            self.assertEqual(tree.to_dict(), saved)
+
+    def test_a_closed_column_gives_its_width_to_the_neighbor(self):
+        from sim.dock_layout import HEADER, SPLIT, Leaf, Split, default_tree, find_leaf
+
+        tree = default_tree()
+        base, area = self._place(tree)
+        find_leaf(tree, "camera").visible = False
+        find_leaf(tree, "lidar").visible = False
+        laid, _area = self._place(tree)
+        self.assertNotIn("camera", laid["blocks"])
+        self.assertNotIn("lidar", laid["blocks"])
+        self._assert_tiled(laid, area)
+        self.assertEqual(laid["blocks"]["brain"][2], area[2])
+        self.assertEqual(laid["blocks"]["journal"][2], area[2])
+        self.assertEqual(laid["blocks"]["controls"][2:], base["blocks"]["controls"][2:])
+        self.assertEqual(laid["blocks"]["robot"][2:], base["blocks"]["robot"][2:])
+        find_leaf(tree, "camera").visible = True
+        find_leaf(tree, "lidar").visible = True
+        self.assertEqual(self._place(tree)[0]["blocks"], base["blocks"])
+
+        # The remaining pair keeps its saved share of the column.
+        column = Split(
+            "v",
+            0.5,
+            Leaf("camera"),
+            Split("v", 0.4, Leaf("lidar"), Leaf("journal"), locked=True),
+            locked=True,
+        )
+        find_leaf(column, "camera").visible = False
+        pair = layout_of(column)
+        span = pair["lidar"][3] + SPLIT + pair["journal"][3]
+        self.assertAlmostEqual(pair["lidar"][3] / float(span - SPLIT), 0.4, delta=0.02)
+        self.assertAlmostEqual(column.b.ratio, 0.4, places=3)
+
+        locked = default_tree()
+        locked.a.a.locked = True
+        locked.a.a.ratio = 0.5
+        open_blocks = self._place(locked)[0]["blocks"]
+        find_leaf(locked, "lidar").collapsed = True
+        folded = self._place(locked)[0]
+        self.assertEqual(folded["blocks"]["lidar"][3], HEADER)
+        self.assertGreater(folded["blocks"]["camera"][3], open_blocks["camera"][3])
+        self.assertTrue(locked.a.a.locked)
+        self.assertAlmostEqual(locked.a.a.ratio, 0.5, places=3)
+        find_leaf(locked, "lidar").collapsed = False
+        self.assertEqual(self._place(locked)[0]["blocks"], open_blocks)
+
+
+def layout_of(tree):
+    from sim.dock_layout import layout_dock
+
+    return layout_dock(tree, 0, 0, 400, 800)["blocks"]
