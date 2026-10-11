@@ -73,6 +73,7 @@ def default_settings() -> dict:
         "w": None,
         "h": None,
         "layout": None,
+        "go2_control_exe": "",
     }
 
 

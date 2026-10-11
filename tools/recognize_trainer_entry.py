@@ -36,6 +36,7 @@ import sim.raw_sense  # noqa: F401
 import sim.recognize  # noqa: F401
 import sim.recognize_train as recognize_train
 import sim.recognize_train_live as recognize_train_live
+import sim.go2_control  # noqa: F401
 import sim.mb_view3d  # noqa: F401
 import sim.train_monitor  # noqa: F401
 import sim.world  # noqa: F401
@@ -90,6 +91,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--teacher-url", default="http://127.0.0.1:8091")
     p.add_argument("--teacher-conf", type=float, default=0.5)
     p.add_argument("--teacher-rate", type=float, default=2.0)
+    from sim.go2_control import add_go2_control_arg
+
+    add_go2_control_arg(p)
     args = p.parse_args(argv)
     if args.rec_fps <= 0:
         print("--rec-fps must be positive", file=sys.stderr)
@@ -136,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
             forwarded.append("--fullscreen")
         forwarded.append("--recog-camera-only" if args.recog_camera_only else "--no-recog-camera-only")
         forwarded.extend(["--teacher-url", args.teacher_url, "--teacher-conf", str(args.teacher_conf), "--teacher-rate", str(args.teacher_rate)])
+        if args.go2_control_exe:
+            forwarded.extend(["--go2-control-exe", args.go2_control_exe])
         return recognize_train.main(forwarded)
     forwarded = [
         "--robot-ip",
@@ -176,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         forwarded.append("--fullscreen")
     forwarded.append("--recog-camera-only" if args.recog_camera_only else "--no-recog-camera-only")
     forwarded.extend(["--teacher-url", args.teacher_url, "--teacher-conf", str(args.teacher_conf), "--teacher-rate", str(args.teacher_rate)])
+    if args.go2_control_exe:
+        forwarded.extend(["--go2-control-exe", args.go2_control_exe])
     if args.onboard:
         forwarded.extend(["--onboard", args.onboard, "--onboard-port", str(args.onboard_port)])
     return recognize_train_live.main(forwarded)

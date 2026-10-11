@@ -139,6 +139,7 @@ class MonitorInput:
     teacher_toggle: bool = False
     boxes_toggle: bool = False
     brain_toggle: bool = False
+    go2_control: bool = False
     fullscreen_toggle: bool = False
     record_toggle: bool = False
     doggibot: bool = False
@@ -589,6 +590,8 @@ class TrainMonitor:
         self._window_size = None
         self._minimized = False
         self.brain_open = False
+        self.go2_open = False
+        self.go2_missing = False
         self.fullscreen = bool(fullscreen) or bool(self._persist and self._settings.get("fullscreen"))
         if self._persist and not self.fullscreen:
             saved_w = self._settings.get("w")
@@ -685,17 +688,19 @@ class TrainMonitor:
                 cursor += rw + gap_b
             return out
 
-        header_items = [("brain", 168), ("teacher", 280), ("record", 250)]
+        go2_w = self.font_sm.size("УПРАВЛЕНИЕ")[0] + 52
+        header_items = [("go2", go2_w), ("brain", 168), ("teacher", 280), ("record", 250)]
         header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
         header_x = WIN_W - 16 - header_total
         buttons = row(header_items, header_x, 4, 24, WIN_W - 16)
+        self.go2_rect = buttons["go2"]
         self.brain_rect = buttons["brain"]
         self.teacher_rect = buttons["teacher"]
         self.record_rect = buttons["record"]
         self.view_rect = pygame.Rect(8, 4, 52, 24)
         dog_w = self.font_sm.size("DoggiBOT")[0] + 28
         self.doggibot_rect = pygame.Rect(self.view_rect.right + 8, 4, dog_w, 24)
-        self.help_bar_rect = pygame.Rect(self.brain_rect.x - 36, 4, 28, 24)
+        self.help_bar_rect = pygame.Rect(self.go2_rect.x - 36, 4, 28, 24)
 
         leaf = self._dock_leaves.get("controls")
         inner = None
@@ -1243,6 +1248,8 @@ class TrainMonitor:
             self._set_theme("light" if theme_name() == "dark" else "dark")
         elif kind == "doggibot":
             self.menu_open = False
+        elif kind == "go2":
+            self.menu_open = False
 
     def _drag_splitter(self, win_pos) -> None:
         if not self._split_drag:
@@ -1301,6 +1308,8 @@ class TrainMonitor:
                 self._run_menu(action)
                 if action[0] == "doggibot":
                     inp.doggibot = True
+                elif action[0] == "go2":
+                    inp.go2_control = True
                 return
             panel = self._menu_panel
             if panel is not None and panel.collidepoint(pos):
@@ -1350,6 +1359,8 @@ class TrainMonitor:
             inp.record_toggle = True
         elif self.teacher_rect.collidepoint(pos):
             inp.teacher_toggle = True
+        elif self.go2_rect.collidepoint(pos):
+            inp.go2_control = True
         elif self.brain_rect.collidepoint(pos):
             inp.brain_toggle = True
         elif self.show_stand and self.stand_up_rect.collidepoint(pos):
@@ -1622,6 +1633,7 @@ class TrainMonitor:
         title_x = self.doggibot_rect.right + 12
         screen.blit(title, (title_x, 6))
         self._link_lamp(screen, view, title_x + title.get_width() + 18)
+        self._go2_button(screen)
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
         self._record_button(screen, view)
@@ -1725,6 +1737,7 @@ class TrainMonitor:
         rows.append((("reset",), "Сброс раскладки", "button", None))
         rows.append((("theme",), "Тёмная тема", "theme", None))
         rows.append((("doggibot",), "DoggiBOT", "button", None))
+        rows.append((("go2",), "УПРАВЛЕНИЕ", "button", None))
         row_h = 28
         text_w = max(self.font_sm.size(label)[0] for _action, label, _kind, _arg in rows)
         width = max(220, 12 + 14 + 10 + text_w + 16)
@@ -2296,6 +2309,18 @@ class TrainMonitor:
                 None,
                 self.steer_rect.collidepoint(mouse),
             )
+
+    def _go2_button(self, screen) -> None:
+        missing = bool(getattr(self, "go2_missing", False))
+        lamp = PEACH if self.go2_open and not missing else LAMP_OFF
+        self._button(
+            screen,
+            self.go2_rect,
+            "УПРАВЛЕНИЕ",
+            lamp,
+            self.go2_rect.collidepoint(self._mouse()) and not missing,
+            label_color=INK_DIM if missing else None,
+        )
 
     def _brain_button(self, screen, view: MonitorView) -> None:
         if view.learner != "mb":

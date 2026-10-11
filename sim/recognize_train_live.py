@@ -1062,9 +1062,11 @@ def run_live_gui(
             view.record_idle = rec_on and not labelled
             if rec_on and labelled and camera is not None and camera_jpeg and rec.due():
                 _offer_live_frame(session, rec, marks, camera, camera_jpeg, onboard)
+            from .go2_control import drive_go2
             from .mb_view3d import drive_brain
 
             drive_brain(session, inp, session.now(), mon)
+            drive_go2(session, inp, mon)
             mon.draw(view)
             if snap is not None:
                 from .doggibot_snap import commit
@@ -1432,6 +1434,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--teacher-url", default="http://127.0.0.1:8091", help="YOLO service on this laptop.")
     p.add_argument("--teacher-conf", type=float, default=0.5, help="Box confidence for a hemisphere hit.")
     p.add_argument("--teacher-rate", type=float, default=2.0, help="Max DAN pulses per second on each hemisphere.")
+    from .go2_control import add_go2_control_arg
+
+    add_go2_control_arg(p)
     args = p.parse_args(argv)
     if args.rec_fps <= 0:
         print("--rec-fps must be positive", file=sys.stderr)
@@ -1467,6 +1472,9 @@ def main(argv: list[str] | None = None) -> int:
     session.teacher_url = str(args.teacher_url)
     session.teacher_conf = float(args.teacher_conf)
     session.teacher_rate = float(args.teacher_rate)
+    from .go2_control import apply_go2_control_arg
+
+    apply_go2_control_arg(session, args)
     if args.load or Path(args.state).is_file():
         try_load_live(session)
     if args.headless:

@@ -848,9 +848,11 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         view.record_idle = rec_on and not labelled
         if rec_on and labelled and view.camera is not None and rec.due():
             _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z)
+        from .go2_control import drive_go2
         from .mb_view3d import drive_brain
 
         drive_brain(session, inp, float(session.world.t), mon)
+        drive_go2(session, inp, mon)
         _gui_stress(mon, session)
         mon.draw(view)
         if snap is not None:
@@ -1300,6 +1302,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--teacher-url", default="http://127.0.0.1:8091")
     p.add_argument("--teacher-conf", type=float, default=0.5)
     p.add_argument("--teacher-rate", type=float, default=2.0)
+    from .go2_control import add_go2_control_arg
+
+    add_go2_control_arg(p)
     args = p.parse_args(argv)
     if args.rec_fps <= 0:
         print("--rec-fps must be positive", file=sys.stderr)
@@ -1336,6 +1341,9 @@ def main(argv: list[str] | None = None) -> int:
     session.teacher_url = str(args.teacher_url)
     session.teacher_conf = float(args.teacher_conf)
     session.teacher_rate = float(args.teacher_rate)
+    from .go2_control import apply_go2_control_arg
+
+    apply_go2_control_arg(session, args)
     if args.load or Path(args.state).is_file():
         try_load(session)
     if args.headless:
