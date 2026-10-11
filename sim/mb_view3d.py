@@ -74,7 +74,7 @@ DIST0 = 3.05
 # Nearly straight up or down, short of the flip at ±90°.
 PITCH_LIM = 89.0 * math.pi / 180.0
 PAN_KEY = 0.07
-VIEW_HINT = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   F каркас   T поверх"
+VIEW_HINT = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   F каркас   T поверх окон"
 
 
 def artifact_dir() -> Path:
@@ -1253,7 +1253,7 @@ def run_viewer(port: int = VIEW_PORT) -> int:
     width, height = _saved_viewer_size()
     window = pygame.display.set_mode((width, height), pygame.RESIZABLE)
     from .ui_settings import load_brain_window
-    from .window_pin import consume_pin, draw_pin_button, set_always_on_top
+    from .window_pin import consume_pin, draw_pin_button, hit_pin, set_always_on_top
 
     pinned = [bool(load_brain_window().get("pinned"))]
     if pinned[0]:
@@ -1354,7 +1354,7 @@ def run_viewer(port: int = VIEW_PORT) -> int:
             dt = clock.tick(30) / 1000.0
             orbit.tick(dt, drag is not None)
             paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y, frames=frames[0], fast=True)
-            draw_pin_button(window, pinned[0])
+            draw_pin_button(window, pinned[0], hover=hit_pin(window.get_size(), pygame.mouse.get_pos()))
             pygame.display.flip()
             if shot and not shot_done:
                 try:

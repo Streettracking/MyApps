@@ -809,6 +809,20 @@ class ThemeSchemeTests(unittest.TestCase):
             pygame.quit()
 
 
+def _ink(surface, rect, peach: bool) -> int:
+    count = 0
+    for y in range(rect.top, rect.bottom):
+        for x in range(rect.left, rect.right):
+            red, green, blue, _alpha = surface.get_at((x, y))
+            is_peach = red > 150 and red > blue + 40 and green < 190
+            is_gray = abs(red - green) < 18 and abs(green - blue) < 18 and red > 90
+            if peach and is_peach:
+                count += 1
+            elif not peach and is_gray and not is_peach:
+                count += 1
+    return count
+
+
 class WindowPinTests(unittest.TestCase):
     def test_linux_pin_is_a_noop_and_the_call_stays_off_set_mode(self):
         import os
@@ -830,7 +844,10 @@ class WindowPinTests(unittest.TestCase):
         self.assertNotIn("from_display_module", viewer)
         fly = Path(view.__file__).resolve().parent.joinpath("mb_flywire.py").read_text(encoding="utf-8")
         self.assertIn("VIEW_HINT", fly)
-        self.assertIn("T поверх", view.VIEW_HINT)
+        self.assertIn("поверх окон", view.VIEW_HINT)
+        self.assertEqual(pin.PIN_TIP, "поверх окон")
+        self.assertIn("draw.arc", src)
+        self.assertIn("aaline", src)
 
     def test_click_and_t_toggle_once_and_t_does_not_pan(self):
         import pygame
@@ -890,13 +907,30 @@ class WindowPinTests(unittest.TestCase):
             off.fill((14, 15, 18))
             hot = draw_pin_button(on, True)
             cold = draw_pin_button(off, False)
-            self.assertEqual(tuple(on.get_at(hot.center)[:3]), PIN_ON)
-            self.assertEqual(tuple(off.get_at(cold.center)[:3]), PIN_OFF)
-            self.assertNotEqual(tuple(on.get_at(hot.center)[:3]), tuple(off.get_at(cold.center)[:3]))
+            self.assertGreater(_ink(on, hot, peach=True), 40)
+            self.assertEqual(_ink(on, hot, peach=False), 0)
+            self.assertGreater(_ink(off, cold, peach=False), 40)
+            self.assertEqual(_ink(off, cold, peach=True), 0)
+            bg = (14, 15, 18)
+            for y in range(on.get_height()):
+                for x in range(on.get_width()):
+                    if hot.collidepoint(x, y):
+                        continue
+                    self.assertEqual(tuple(on.get_at((x, y))[:3]), bg)
+            hover = pygame.Surface((220, 80))
+            hover.fill(bg)
+            draw_pin_button(hover, True, hover=True)
+            outside = 0
+            for y in range(hover.get_height()):
+                for x in range(hot.left):
+                    if tuple(hover.get_at((x, y))[:3]) != bg:
+                        outside += 1
+            self.assertGreater(outside, 40)
             dest = Path("/opt/cursor/artifacts")
             dest.mkdir(parents=True, exist_ok=True)
             pygame.image.save(on, str(dest / "pin_on.png"))
             pygame.image.save(off, str(dest / "pin_off.png"))
+            pygame.image.save(hover, str(dest / "pin_hover.png"))
         finally:
             pygame.quit()
 
@@ -932,6 +966,7 @@ class WindowPinTests(unittest.TestCase):
         _title, blocks = page("bar")
         prose = "\n".join(text for _kind, text in blocks)
         self.assertIn("скрепк", prose)
+        self.assertIn("поверх окон", prose)
         self.assertIn("T в том окне", prose)
         self.assertIn("brain_window.json", prose)
         self.assertIn("персиков", prose)
