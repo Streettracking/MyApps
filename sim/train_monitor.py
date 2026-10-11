@@ -2474,10 +2474,17 @@ class TrainMonitor:
         screen.blit(pygame.transform.smoothscale(big, (rect.w, rect.h)), rect.topleft)
 
     def _menu_check_ink(self, locked: bool) -> tuple:
-        """Accent peach. The locked E-STOP row uses the muted text gray."""
+        """Accent peach. The locked E-STOP row uses the muted theme gray."""
         if locked:
-            return _scheme_rgb("ink_dim")
+            return self._menu_locked_ink()
         return tuple(int(c) for c in PEACH)
+
+    def _menu_locked_ink(self) -> tuple:
+        """Theme gray, pulled toward the menu so the row reads quieter than a label."""
+        ink = _scheme_rgb("ink_dim")
+        plate = _scheme_rgb("menu")
+        mix = 0.45
+        return tuple(int(round(ink[channel] + (plate[channel] - ink[channel]) * mix)) for channel in range(3))
 
     def _fill_menu_row(self, screen, panel, row) -> None:
         """Pale hover across the whole row, clipped to the rounded card."""
@@ -2519,8 +2526,16 @@ class TrainMonitor:
         gap = 8
         pad_l = 12
         pad_r = 12
+        note = "всегда виден"
+        note_gap = 12
+        note_w = self.font_tiny.size(note)[0]
         text_w = max(self.font_sm.size(label)[0] for _action, label, _kind, _arg in rows)
-        width = max(pad_l + mark + gap + text_w + pad_r, 220)
+        locked_w = self.font_sm.size(titles["controls"])[0]
+        width = max(
+            pad_l + mark + gap + text_w + pad_r,
+            pad_l + mark + gap + locked_w + note_gap + note_w + pad_r,
+            220,
+        )
         x = self.view_rect.x
         y = self.view_rect.bottom + 4
         panel = pygame.Rect(x, y, width, 8 + row_h * len(rows) + rule_h)
@@ -2531,6 +2546,8 @@ class TrainMonitor:
         self._menu_marks = {}
         self._menu_captions = {}
         self._menu_switch_rect = None
+        self._menu_aside = None
+        self._menu_aside_text = ""
         label_x = panel.x + pad_l + mark + gap
         self._menu_label_x = label_x
         pointer = self._mouse()
@@ -2554,10 +2571,17 @@ class TrainMonitor:
                 else:
                     caption = INK_DIM
             elif kind == "locked":
-                self._blit_menu_check(screen, slot, self._menu_check_ink(True))
-                caption = INK_DIM
+                caption = self._menu_locked_ink()
+                self._blit_menu_check(screen, slot, caption)
             glyph = self.font_sm.render(label, True, caption)
             screen.blit(glyph, (label_x, row.centery - glyph.get_height() // 2))
+            if kind == "locked":
+                badge = self.font_tiny.render(note, True, caption)
+                nx = row.right - pad_r - badge.get_width()
+                ny = row.centery - badge.get_height() // 2
+                screen.blit(badge, (nx, ny))
+                self._menu_aside = pygame.Rect(nx, ny, badge.get_width(), badge.get_height())
+                self._menu_aside_text = note
             cursor += row_h
 
         for action, label, kind, arg in blocks:

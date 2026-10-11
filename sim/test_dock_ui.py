@@ -282,10 +282,16 @@ class TrainerDockTests(unittest.TestCase):
             mon.draw(view)
             self._assert_menu_checks(mon, on_theme="light")
             self._save_menu(mon, "/opt/cursor/artifacts/view_menu_light.png")
+            self._save_menu_panel(mon, "/opt/cursor/artifacts/view_menu_locked_light.png")
             self._assert_row_hover(
                 mon, ("toggle", "brain"), shot="/opt/cursor/artifacts/view_menu_c_light.png"
             )
-            self._assert_row_hover(mon, ("locked", "controls"), skipped=True)
+            self._assert_row_hover(
+                mon,
+                ("locked", "controls"),
+                skipped=True,
+                shot="/opt/cursor/artifacts/view_menu_locked_hover_light.png",
+            )
             mon.draw(view)
 
             brain = self._click_menu(mon, ("toggle", "brain"), at="right")
@@ -316,6 +322,13 @@ class TrainerDockTests(unittest.TestCase):
             mon.draw(view)
             self._assert_menu_checks(mon, on_theme="dark")
             self._save_menu(mon, "/opt/cursor/artifacts/view_menu_dark.png")
+            self._save_menu_panel(mon, "/opt/cursor/artifacts/view_menu_locked_dark.png")
+            self._assert_row_hover(
+                mon,
+                ("locked", "controls"),
+                skipped=True,
+                shot="/opt/cursor/artifacts/view_menu_locked_hover_dark.png",
+            )
             find_leaf(mon.dock, "brain").visible = False
             mon._apply_layout(mon.screen.get_height())
             mon.draw(view)
@@ -521,6 +534,53 @@ class TrainerDockTests(unittest.TestCase):
         above = frame[rule.centerx, rule.y - 4]
         line = frame[rule.centerx, rule.y]
         self.assertGreaterEqual(abs(int(line[0]) - int(above[0])), 8)
+        self._assert_locked_row_quiet(mon, frame)
+
+    def _glyph_core(self, frame, rect):
+        import numpy as np
+
+        patch = frame[rect.x : rect.right, rect.y : rect.bottom].astype(int)
+        lum = patch.mean(axis=2)
+        dist = np.abs(lum - float(np.median(lum)))
+        mask = dist > 28
+        self.assertGreater(int(mask.sum()), 8, int(mask.sum()))
+        strength = dist[mask]
+        core = patch[mask][strength >= np.quantile(strength, 0.7)]
+        return tuple(int(round(channel)) for channel in np.median(core, axis=0))
+
+    def _assert_locked_row_quiet(self, mon, frame) -> None:
+        import pygame
+
+        from sim.ui_theme import theme_name
+
+        self.assertEqual(mon._menu_aside_text, "всегда виден")
+        row = next(rect for rect, action in mon._menu_hits if action == ("locked", "controls"))
+        aside = mon._menu_aside
+        self.assertIsNotNone(aside)
+        self.assertTrue(row.contains(aside), (aside, row))
+        self.assertEqual(aside.right, row.right - 12)
+        label_w = mon.font_sm.size("Кнопки (E-STOP)")[0]
+        label_h = mon.font_sm.get_height()
+        label_rect = pygame.Rect(mon._menu_label_x, row.centery - label_h // 2, label_w, label_h)
+        self.assertGreaterEqual(aside.x, label_rect.right + 8)
+        self.assertFalse(label_rect.colliderect(aside))
+        locked = self._glyph_core(frame, label_rect)
+        cam = next(rect for rect, action in mon._menu_hits if action == ("toggle", "camera"))
+        cam_rect = pygame.Rect(
+            mon._menu_label_x,
+            cam.centery - label_h // 2,
+            mon.font_sm.size("Камера")[0],
+            label_h,
+        )
+        active = self._glyph_core(frame, cam_rect)
+        self.assertLess(max(locked) - min(locked), 16, locked)
+        if theme_name() == "light":
+            self.assertGreater(sum(locked), sum(active) + 50, (locked, active))
+        else:
+            self.assertLess(sum(locked), sum(active) - 50, (locked, active))
+        note = self._glyph_core(frame, aside)
+        self.assertLess(max(note) - min(note), 16, note)
+        self.assertLess(abs(sum(note) - sum(locked)), 48, (note, locked))
 
     def _save_menu_panel(self, mon, path: str) -> None:
         import pygame
