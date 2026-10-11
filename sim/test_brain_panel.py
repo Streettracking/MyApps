@@ -17,7 +17,7 @@ def _populated_view():
 
     from sim.hemifield import format_fly_line
     from sim.pilot import format_eyes_line, format_range_line
-    from sim.tabnum import format_counts, format_skips
+    from sim.tabnum import format_counts, format_lidar_caption, format_skips
     from sim.train_monitor import MonitorView
 
     curve = [(float(i), 0.2 + 0.05 * (i % 5)) for i in range(12)]
@@ -28,7 +28,7 @@ def _populated_view():
         learner="mb",
         learning_on=True,
         camera=np.zeros((90, 160, 3), dtype=np.uint8),
-        lidar=np.zeros((64, 64, 3), dtype=np.uint8),
+        lidar=_lidar_picture(),
         eyes_line=format_eyes_line(12, -4, True, False),
         recog_line="узнавание: только камера",
         pilot_mode="РУЧНОЕ",
@@ -60,11 +60,23 @@ def _populated_view():
         kc_bins=np.linspace(0.1, 1.0, 48),
         teacher_counts=format_counts(9, 4, 2, 1),
         teacher_skips=format_skips(3, "—"),
+        lidar_mode=format_lidar_caption(True, 1.5),
+        lidar_fresh_on=True,
         fly_line=format_fly_line(-72, 66, -139, -1.0, "bilateral"),
         range_line=format_range_line(2.07, 1.4, 0, 8, {"window": 8, "votes": 0}),
         log_lines=["журнал"],
         keys_hint="A авто  J мозг",
     )
+
+
+def _lidar_picture():
+    import numpy as np
+
+    lidar = np.zeros((64, 64, 3), dtype=np.uint8)
+    yy, xx = np.ogrid[:64, :64]
+    ring = np.abs(np.hypot(xx - 31.5, yy - 31.5) - 22) < 1.6
+    lidar[ring] = (210, 214, 218)
+    return lidar
 
 
 def _assert_packed(test, rows, panel) -> None:
@@ -236,6 +248,21 @@ class BrainPanelTests(unittest.TestCase):
                     mon._apply_layout(mon.screen.get_height())
                     mon.draw(view)
                     assert_glyphs("%s %dx%d" % (theme, ww, wh))
+                    if (ww, wh) == (1920, 1017) and mon.lid_inner is not None:
+                        self.assertEqual(mon.lid_inner.w, mon.lid_inner.h)
+                        self.assertLessEqual(mon.lid_inner.right, mon.lidar_column_rect.x)
+                        labels = []
+                        for rect, group in mon._glyph_rects:
+                            if group != "lidar" or not mon.lidar_column_rect.collidepoint(rect.x + 1, rect.y + 1):
+                                continue
+                            self.assertFalse(rect.colliderect(mon.lid_inner), rect)
+                            labels.append(rect)
+                        self.assertGreaterEqual(len(labels), 8)
+                        scr = mon.screen
+                        pygame.image.save(
+                            scr.subsurface(mon.lid_rect.clip(scr.get_rect())),
+                            str(out / ("trainer_lidar_%s_1920x1017.png" % theme)),
+                        )
                     shown = mon.present_into((ww, wh))
                     pygame.image.save(shown, str(out / ("trainer_text_%s_%dx%d.png" % (theme, ww, wh))))
                 mon.dock = narrow_tree()

@@ -538,7 +538,7 @@ class FlashTests(unittest.TestCase):
         self.assertLess(_filled(frame, banner, (141, 181, 150), radius=6), 6)
         pygame.quit()
 
-    def test_teacher_lamp_is_amber_when_yolo_sees_that_eye(self):
+    def test_teacher_lamp_is_blue_when_yolo_sees_that_eye(self):
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
         import pygame
@@ -566,8 +566,11 @@ class FlashTests(unittest.TestCase):
         )
         mon.draw(MonitorView(teacher_boxes=[DetBox(0.78, 0.2, 0.94, 0.8, 0.88)], **shared))
         frame = pygame.surfarray.array3d(mon.screen)
-        self.assertGreater(_filled(frame, mon.eye_lamps["Л"]["teacher"], (201, 120, 91)), 8)
-        self.assertLess(_filled(frame, mon.eye_lamps["П"]["teacher"], (201, 120, 91)), 8)
+        from sim.train_monitor import TEACHER
+
+        self.assertGreater(_filled(frame, mon.eye_lamps["Л"]["teacher"], TEACHER), 8)
+        self.assertLess(_filled(frame, mon.eye_lamps["П"]["teacher"], TEACHER), 8)
+        self.assertLess(_filled(frame, mon.eye_lamps["Л"]["teacher"], (201, 120, 91)), 8)
         self.assertGreater(_ring(frame, mon.eye_lamps["П"]["teacher"]), 8)
         mon.draw(MonitorView(teacher_boxes=[DetBox(0.45, 0.2, 0.55, 0.8, 0.4)], **shared))
         frame = pygame.surfarray.array3d(mon.screen)
@@ -582,7 +585,8 @@ class FlashTests(unittest.TestCase):
         )
         frame = pygame.surfarray.array3d(mon.screen)
         self.assertGreater(_filled(frame, mon.eye_lamps["Л"]["teacher"], (217, 136, 128)), 12)
-        self.assertGreater(_filled(frame, mon.eye_lamps["П"]["teacher"], (201, 120, 91)), 8)
+        self.assertGreater(_filled(frame, mon.eye_lamps["П"]["teacher"], TEACHER), 8)
+        self.assertLess(_filled(frame, mon.eye_lamps["П"]["teacher"], (201, 120, 91)), 8)
         self.assertGreater(_filled(frame, mon.eye_lamps["Л"]["recog"], (141, 181, 150)), 12)
         mon.draw(
             MonitorView(
@@ -596,6 +600,23 @@ class FlashTests(unittest.TestCase):
         out.mkdir(parents=True, exist_ok=True)
         pygame.image.save(mon.present_into((1024, 768)), str(out / "trainer_window_4x3.png"))
         pygame.image.save(mon.present_into((1600, 900)), str(out / "trainer_window_16x9.png"))
+        watching = dict(shared)
+        watching["yolo_state"] = "смотрит"
+        mon.draw(MonitorView(teacher_boxes=[DetBox(0.78, 0.2, 0.94, 0.8, 0.88)], **watching))
+        frame = pygame.surfarray.array3d(mon.screen)
+        lamp = (mon.teacher_rect.x + 18, mon.teacher_rect.centery)
+        self.assertGreater(_filled(frame, lamp, TEACHER), 8)
+        self.assertLess(_filled(frame, lamp, (201, 120, 91)), 8)
+        self.assertGreater(_filled(frame, mon.eye_lamps["Л"]["teacher"], TEACHER), 8)
+        mon.draw(MonitorView(**shared))
+        frame = pygame.surfarray.array3d(mon.screen)
+        self.assertGreater(_filled(frame, lamp, (201, 120, 91)), 8)
+        self.assertLess(_filled(frame, lamp, TEACHER), 8)
+        from sim.ui_help import page
+
+        for name in ("camera", "bar"):
+            prose = "\n".join(line for _kind, line in page(name)[1]).lower()
+            self.assertIn("сине-голуб", prose)
         shown = pygame.surfarray.array3d(mon.present_into((1024, 768)))
         blue = (shown[:, :, 2] > 180) & (shown[:, :, 0] < 50) & (shown[:, :, 1] < 90)
         xs, ys = np.where(blue)
@@ -625,6 +646,30 @@ class FixedColumnTests(unittest.TestCase):
             format_eyes_line(None, None, False, True),
             format_eyes_line(-168, 84, False, False),
         ]
+        from sim.tabnum import lidar_metric_rows
+
+        sample = lidar_metric_rows(
+            format_fly_line(12, 3, 9, 0.2, "bilateral"),
+            format_range_line(1.5, 3.0, 2, 2, {"window": 8, "votes": 3}),
+        )
+        labels = [row[0] for row in sample]
+        self.assertEqual(
+            labels,
+            ["муха L", "муха R", "Δ", "z", "вектор", "билатерально", "дальн", "вперёд", "сектор"],
+        )
+        self.assertEqual(sample[0][1], "+12")
+        self.assertEqual(sample[5][1], "")
+        self.assertEqual(sample[6][2], "м")
+        self.assertEqual(sample[8][2], "3/8")
+        self.assertTrue(sample[4][1].startswith("+") or sample[4][1].startswith("-"))
+        self.assertEqual(sample[4][2], "°")
+        sectors = lidar_metric_rows(
+            format_fly_line(1, 1, 0, 0.0, "sectors"),
+            format_range_line(None, None, None, None, None),
+        )
+        self.assertEqual(sectors[5][0], "секторы")
+        self.assertEqual(sectors[4][1], "-")
+
         flies = [
             format_fly_line(12, 3, 9, 0.2, "bilateral"),
             format_fly_line(-84, 168, -252, -1.0, "sectors"),

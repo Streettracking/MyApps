@@ -60,7 +60,6 @@ from .ui_theme import (
 )
 from .tabnum import (
     EYES_STATUS,
-    FLY_STATUS,
     MODE_W,
     RAW_STATUS,
     SKIP_STATUS,
@@ -96,13 +95,15 @@ SCROLL_BAR = 8
 MENU_H = 32
 FOOTER_H = 56
 
-# Light warm chrome is the default. Peach, green, and red stay semantic.
+# Light warm chrome is the default. Peach, green, red, and teacher blue stay semantic.
 CARD_ALPHA = 217  # ~0.85
 INK = VALUE
 PEACH = (201, 120, 91)  # #C9785B
 PEACH_SOFT = (227, 164, 135)  # #E3A487
 GREEN = (141, 181, 150)  # #8DB596 узнаю / PAM
 RED = (217, 136, 128)  # #D98880 PPL1
+TEACHER = (46, 154, 206)  # #2E9ACE teacher watch, same in both themes
+TEACHER_SOFT = (156, 208, 230)  # #9CD0E6
 ESTOP = (184, 40, 36)
 AMBER = PEACH
 RING = (176, 174, 170)
@@ -740,13 +741,10 @@ class TrainMonitor:
             if got is not None:
                 lid_inner = pygame.Rect(*got)
         if lid_inner is not None:
-            bx = max(lid_inner.x, lid_inner.right - 250)
-            self.lidar_reset_rect = pygame.Rect(bx, lid_inner.y, min(210, lid_inner.w), 28)
-            self.lidar_fresh_rect = pygame.Rect(bx, lid_inner.y + 34, min(230, lid_inner.w), 28)
-            self.stand_up_rect = pygame.Rect(bx, lid_inner.y + 72, 140, 28)
-            self.stand_down_rect = pygame.Rect(bx + 148, lid_inner.y + 72, 110, 28)
-            self.recovery_rect = pygame.Rect(bx, lid_inner.y + 106, 160, 28)
+            self._place_lidar_column(lid_inner)
         else:
+            self.lidar_plot_rect = self._zero()
+            self.lidar_column_rect = self._zero()
             self.lidar_reset_rect = self._zero()
             self.lidar_fresh_rect = self._zero()
             self.stand_up_rect = self._zero()
@@ -1775,14 +1773,69 @@ class TrainMonitor:
         else:
             self._camera_halves(screen, cam_inner, view)
 
+    def _fresh_button_width(self) -> int:
+        from .tabnum import SLOT_GAP, cell_px
+
+        return (
+            32
+            + self.font_sm.size("свежий лидар")[0]
+            + SLOT_GAP
+            + 5 * cell_px(14)
+            + SLOT_GAP
+            + self.font_sm.size("с")[0]
+            + SLOT_GAP
+            + self.font_sm.size("V")[0]
+            + 14
+        )
+
+    def _lidar_table_width(self) -> int:
+        from .tabnum import cell_px
+
+        labels = ("муха L", "муха R", "Δ", "z", "вектор", "билатерально", "секторы", "дальн", "вперёд", "сектор")
+        label_w = max(self.font_sm.size(name)[0] for name in labels)
+        return label_w + 12 + 9 * cell_px(14) + 10 + self.font_sm.size("8/8 подход")[0]
+
+    def _place_lidar_column(self, lid_inner) -> None:
+        """Square picture on the left. Buttons and the metric table stay on the right."""
+        import pygame
+
+        reset_w = self.font_sm.size("СБРОС ЛИДАРА  C")[0] + 28
+        fresh_w = self._fresh_button_width()
+        table_w = self._lidar_table_width()
+        gap = 8
+        column_w = min(max(table_w, reset_w + 8 + fresh_w, 160), max(0, lid_inner.w - gap))
+        plot_side = min(lid_inner.h, max(0, lid_inner.w - gap - column_w))
+        if plot_side < 48 and lid_inner.w > 96 and lid_inner.h >= 48:
+            plot_side = min(lid_inner.h, max(48, lid_inner.w // 3))
+            column_w = max(0, lid_inner.w - gap - plot_side)
+        col_x = lid_inner.right - column_w
+        if lid_inner.x + plot_side + gap > col_x:
+            plot_side = max(0, col_x - gap - lid_inner.x)
+        plot = pygame.Rect(lid_inner.x, lid_inner.y, plot_side, plot_side)
+        column = pygame.Rect(col_x, lid_inner.y, max(0, lid_inner.right - col_x), lid_inner.h)
+        self.lidar_plot_rect = plot
+        self.lidar_column_rect = column
+        button_h = 28
+        if reset_w + 8 + fresh_w <= column.w and column.w > 0:
+            self.lidar_reset_rect = pygame.Rect(column.x, column.y, reset_w, button_h)
+            fresh_x = column.x + reset_w + 8
+            self.lidar_fresh_rect = pygame.Rect(fresh_x, column.y, min(fresh_w, column.right - fresh_x), button_h)
+            controls_bottom = column.y + button_h
+        else:
+            self.lidar_reset_rect = pygame.Rect(column.x, column.y, column.w, button_h)
+            self.lidar_fresh_rect = pygame.Rect(column.x, column.y + button_h + 6, column.w, button_h)
+            controls_bottom = self.lidar_fresh_rect.bottom
+        self.stand_up_rect = pygame.Rect(column.x, controls_bottom + 6, min(140, column.w), button_h)
+        down_x = column.x + 148
+        self.stand_down_rect = pygame.Rect(down_x, controls_bottom + 6, max(0, min(110, column.right - down_x)), button_h)
+        self.recovery_rect = pygame.Rect(column.x, controls_bottom + 40, min(160, column.w), button_h)
+
     def _draw_lidar_block(self, screen, view: MonitorView, content) -> None:
         import pygame
 
-        image_rect = content
-        if content.w > 520:
-            image_rect = pygame.Rect(content.x, content.y, content.w - 250, content.h)
+        plot = getattr(self, "lidar_plot_rect", None) or content
         lid_msg = "" if view.lidar is not None else view.lidar_hold
-        inner = self._frame(screen, image_rect, view.lidar, "", lid_msg, chrome=False)
+        inner = self._frame(screen, plot, view.lidar, "", lid_msg, chrome=False)
         self.lid_inner = inner
         if inner is not None and view.marks:
             self._draw_marks(screen, inner, view.marks)
@@ -1790,39 +1843,78 @@ class TrainMonitor:
         self._lidar_fresh_button(screen, view)
         if self.show_stand or view.onboard:
             self._stand_buttons(screen)
-        note_x = self.lidar_fresh_rect.x
-        note_y = (self.recovery_rect.bottom + 8) if view.onboard else (self.lidar_fresh_rect.bottom + 8)
-        if view.lidar_warning:
-            screen.blit(self.font_sm.render(view.lidar_warning[:42], True, PEACH), (note_x, note_y))
-            note_y += 18
-        readout_x = content.x + 4
-        readout_limit = content.right - 4
-        readout_bottom = content.bottom - 2
-        if view.fly_line:
-            nxt = self._paint_wrapped(
-                screen,
-                view.fly_line,
-                readout_x,
-                note_y,
-                readout_bottom,
-                "муха L {7}  R {7}  Δ {7}  z {7}  [14]",
-                VALUE,
-                status_samples=FLY_STATUS,
-                limit=readout_limit,
-            )
-            if nxt is not None:
-                note_y = nxt
-        if view.range_line:
-            self._paint_wrapped(
-                screen,
-                view.range_line,
-                readout_x,
-                note_y,
-                readout_bottom,
-                "дальн {7} м  вперёд {7} м  сектор {4}→{4}  {12}",
-                VALUE,
-                limit=readout_limit,
-            )
+        column = getattr(self, "lidar_column_rect", None)
+        if column is None or column.w < 8:
+            return
+        top = max(self.lidar_reset_rect.bottom, self.lidar_fresh_rect.bottom) + 6
+        if self.show_stand or view.onboard:
+            top = self.recovery_rect.bottom + 6
+        if view.lidar_warning and top + 18 <= content.bottom:
+            warn = self.font_sm.render(view.lidar_warning[:42], True, PEACH)
+            if column.x + warn.get_width() <= content.right:
+                screen.blit(warn, (column.x, top))
+                top += warn.get_height() + 4
+        self._lidar_table(screen, view, column, top, content.bottom)
+
+    def _lidar_table(self, screen, view: MonitorView, column, top: int, bottom: int) -> None:
+        """Label, monospace number, unit. A row that does not fit is omitted whole."""
+        import pygame
+
+        from .tabnum import cell_px, lidar_metric_rows
+
+        rows = lidar_metric_rows(view.fly_line, view.range_line)
+        if not rows or top >= bottom:
+            return
+        labels = [label for label, _number, _unit in rows]
+        label_w = max(self.font_sm.size(label)[0] for label in labels)
+        num_chars = 9
+        cell = cell_px(14)
+        num_w = num_chars * cell
+        gap_n = 12
+        gap_u = 10
+        num_x = column.x + label_w + gap_n
+        unit_x = num_x + num_w + gap_u
+        widest = 0
+        for _label, _number, unit in rows:
+            unit_w = self.font_sm.size(unit)[0] if unit else 0
+            widest = max(widest, (unit_x + unit_w) - column.x)
+        if widest > column.w or unit_x > column.right:
+            return
+        from .tabnum import load_font
+
+        step = max(self.font_sm.get_height(), load_font(14).get_height())
+        room = int(bottom) - int(top)
+        fit = room // step if step else 0
+        if fit <= 0:
+            return
+        shown = rows[:fit]
+        if len(shown) == len(rows) and room >= step * len(rows):
+            step = min(30, room // len(rows))
+        previous = screen.get_clip()
+        clip = pygame.Rect(column.x, top, column.w, max(0, int(bottom) - int(top)))
+        screen.set_clip(clip if previous is None else clip.clip(previous))
+        try:
+            y = int(top)
+            for label, number, unit in shown:
+                if y + self.font_sm.get_height() > bottom:
+                    break
+                self._plain_glyph(screen, label, column.x, y, LABEL)
+                if number:
+                    self._cells(screen, number.rjust(num_chars), num_x, y, VALUE)
+                if unit:
+                    self._plain_glyph(screen, unit, unit_x, y, LABEL)
+                y += step
+        finally:
+            screen.set_clip(previous)
+
+    def _plain_glyph(self, screen, text: str, x: int, y: int, color) -> None:
+        import pygame
+
+        if not text:
+            return
+        glyph = self.font_sm.render(text, True, color)
+        screen.blit(glyph, (int(x), int(y)))
+        self._keep_glyphs([pygame.Rect(int(x), int(y), glyph.get_width(), glyph.get_height())])
 
     def _brain_sig(self, view: MonitorView, content) -> tuple:
         return (
@@ -2188,6 +2280,8 @@ class TrainMonitor:
             return
         if color == PEACH:
             top, bottom = PEACH_SOFT, PEACH
+        elif color == TEACHER:
+            top, bottom = TEACHER_SOFT, TEACHER
         elif color == GREEN:
             top, bottom = (196, 220, 198), GREEN
         elif color == RED:
@@ -2349,7 +2443,7 @@ class TrainMonitor:
         if state == "учит":
             lamp, label = PEACH, "учит  Y"
         elif state == "смотрит":
-            lamp, label = PEACH, "смотрит  Y"
+            lamp, label = TEACHER, "смотрит  Y"
         elif state == "учитель не запущен":
             lamp, label = PEACH, "учитель не запущен"
         else:
@@ -2558,7 +2652,7 @@ class TrainMonitor:
         if flash == "ppl1":
             return RED
         if sees:
-            return PEACH
+            return TEACHER
         return LAMP_OFF
 
     def _teacher_caption(self, flash: str, sees: bool) -> str:
@@ -2574,7 +2668,7 @@ class TrainMonitor:
         """Recognition lamp and a teacher lamp on the preview.
 
         Image left is П, image right is Л. The teacher lamp sits beside
-        «узнаю»: green flash is PAM, red is PPL1, amber is a dog in that
+        «узнаю»: green flash is PAM, red is PPL1, blue is a dog in that
         eye's field, an empty ring is no dog.
         """
         import pygame

@@ -434,6 +434,61 @@ def format_fly_line(r_l, r_r, diff, z, name: str) -> str:
     )
 
 
+def lidar_metric_rows(fly_line: str, range_line: str) -> list:
+    """Rows for the lidar column: ``(label, number, unit)``.
+
+    Numbers are the stripped fixed fields. An empty fly or range line drops
+    its rows. ``вектор`` is the smoothed sector's bearing in degrees.
+    """
+    import re
+
+    rows = []
+    fly = re.match(
+        r"^муха L\s+(\S+)\s+R\s+(\S+)\s+Δ\s+(\S+)\s+z\s+(\S+)\s+(\S+)\s*$",
+        str(fly_line or "").strip(),
+    )
+    rng = re.match(
+        r"^дальн\s+(\S+)\s+м\s+вперёд\s+(\S+)\s+м\s+сектор\s+(\S+)→\s*(\S+)(?:\s+(.*))?$",
+        str(range_line or "").strip(),
+    )
+    if fly:
+        rows.append(("муха L", fly.group(1), ""))
+        rows.append(("муха R", fly.group(2), ""))
+        rows.append(("Δ", fly.group(3), ""))
+        rows.append(("z", fly.group(4), ""))
+        raw = rng.group(3) if rng else "-"
+        smooth = rng.group(4) if rng else "-"
+        rows.append(("вектор", _sector_bearing(raw, smooth), "°"))
+        rows.append((fly.group(5), "", ""))
+    if rng:
+        gate = (rng.group(5) or "").strip()
+        rows.append(("дальн", rng.group(1), "м"))
+        rows.append(("вперёд", rng.group(2), "м"))
+        rows.append(("сектор", "%s→%s" % (rng.group(3), rng.group(4)), gate))
+    return rows
+
+
+def _sector_bearing(raw: str, smooth: str) -> str:
+    """Signed degrees of a sector center. Positive is left. A bad index is a dash."""
+    import math
+
+    from .map_marks import bin_angle
+    from .raw_sense import N_AZ
+
+    for token in (smooth, raw):
+        text = str(token or "").strip()
+        if text in ("", "-"):
+            continue
+        try:
+            index = int(text)
+        except ValueError:
+            continue
+        if 0 <= index < int(N_AZ):
+            deg = float(bin_angle(index)) * 180.0 / math.pi
+            return signed(deg, NUM_W, 1).strip()
+    return signed(None).strip()
+
+
 def format_range_line(dist, forward, sector, sector_smooth, gate: str) -> str:
     return "дальн %s м  вперёд %s м  сектор %s→%s  %s" % (
         signed(dist, NUM_W, 2),
