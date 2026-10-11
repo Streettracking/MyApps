@@ -109,7 +109,18 @@ def cell_px(size: int = 14) -> int:
     return int(load_font(size).size("0")[0])
 
 
-def blit_cells(screen, text: str, x: int, y: int, color, size: int = 14, rows=None) -> int:
+def _ink_span(text: str):
+    """``(start, count)`` of the non-space run, or ``None`` when the field is blank."""
+    if not text or text.strip() == "":
+        return None
+    start = len(text) - len(text.lstrip(" "))
+    count = len(text.rstrip(" ")) - start
+    if count <= 0:
+        return None
+    return start, count
+
+
+def blit_cells(screen, text: str, x: int, y: int, color, size: int = 14, rows=None, glyphs=None) -> int:
     """Draw ``text`` so each character occupies one cell. Spaces stay empty."""
     import pygame
 
@@ -126,6 +137,11 @@ def blit_cells(screen, text: str, x: int, y: int, color, size: int = 14, rows=No
         screen.blit(box, (origin + i * cell, int(y)))
     if rows is not None:
         rows.append((origin, int(y), text, int(size), cell, height))
+    if glyphs is not None:
+        span = _ink_span(text)
+        if span is not None:
+            start, count = span
+            glyphs.append(pygame.Rect(origin + start * cell, int(y), count * cell, height))
     return origin + cell * len(text)
 
 
@@ -151,7 +167,7 @@ def _status_field(ui_font, text: str, samples) -> int:
     return max(widths) if widths else 0
 
 
-def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=None, anchors=None, limit=None) -> int:
+def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=None, anchors=None, limit=None, glyphs=None) -> int:
     """Draw a readout as separate slots. Each slot's x is fixed for fixed slot text.
 
     ``("ui", text)`` is a label in the interface font. Its width is the width of
@@ -180,6 +196,8 @@ def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=Non
             if anchors is not None:
                 anchors.append((kind, cursor, yy))
             screen.blit(glyph, (cursor, yy))
+            if glyphs is not None and width > 0:
+                glyphs.append(pygame.Rect(cursor, yy, width, int(glyph.get_height())))
             cursor += width + SLOT_GAP
             continue
         if kind in ("num", "mono"):
@@ -189,7 +207,7 @@ def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=Non
                 break
             if anchors is not None:
                 anchors.append((kind, cursor, yy))
-            blit_cells(screen, text, cursor, yy, value_color, size=14, rows=rows)
+            blit_cells(screen, text, cursor, yy, value_color, size=14, rows=rows, glyphs=glyphs)
             cursor += width + SLOT_GAP
             continue
         if kind == "status":
@@ -206,6 +224,10 @@ def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=Non
             clip = pygame.Surface((max(field, 1), max(glyph.get_height(), 1)), pygame.SRCALPHA)
             clip.blit(glyph, (0, 0))
             screen.blit(clip, (cursor, yy))
+            if glyphs is not None and text:
+                ink = min(int(glyph.get_width()), int(field))
+                if ink > 0:
+                    glyphs.append(pygame.Rect(cursor, yy, ink, int(glyph.get_height())))
             cursor += field + SLOT_GAP
             continue
         raise ValueError(kind)
@@ -254,28 +276,148 @@ def paint_mixed(
     anchors=None,
     status_samples=None,
     limit=None,
+    glyphs=None,
 ) -> int:
     """Paint one formatted readout. A mismatch falls back to a single mono run."""
     try:
-        pieces = list(_pieces(line, pattern))
+        slots = slots_of(line, pattern, status_samples, split_words=False)
     except (ValueError, IndexError):
         if anchors is not None:
             anchors.append(("fallback", int(x), int(y)))
-        return blit_cells(screen, line, x, y, value_color, size=14, rows=rows)
+        return blit_cells(screen, line, x, y, value_color, size=14, rows=rows, glyphs=glyphs)
+    return paint_slots(
+        screen,
+        x,
+        y,
+        slots,
+        ui_font,
+        value_color,
+        label_color,
+        rows=rows,
+        anchors=anchors,
+        limit=limit,
+        glyphs=glyphs,
+    )
+
+
+def slots_of(line: str, pattern: str, status_samples=None, split_words: bool = False):
+    """Slots for one formatted line. Words of a label become their own columns."""
+    pieces = list(_pieces(line, pattern))
     slots = []
     last = len(pieces) - 1
     for index, (kind, text) in enumerate(pieces):
         if kind == "ui":
-            slots.append(("ui", text))
+            words = text.split() if split_words else [text]
+            for word in words:
+                if word:
+                    slots.append(("ui", word))
         elif kind == "num":
             slots.append(("num", text))
         elif status_samples is not None and index == last:
-            slots.append(("status", text.rstrip(), status_samples))
+            shown = text.rstrip()
+            if shown:
+                slots.append(("status", shown, status_samples))
         else:
             slots.append(("mono", text))
-    return paint_slots(
-        screen, x, y, slots, ui_font, value_color, label_color, rows=rows, anchors=anchors, limit=limit
-    )
+    return slots
+
+
+def slot_width(slot, ui_font) -> int:
+    """Width of one column. A number's width is the whole signed field, not its ink."""
+    kind = slot[0]
+    if kind == "ui":
+        return int(ui_font.size(slot[1])[0])
+    if kind in ("num", "mono"):
+        return cell_px(14) * max(len(slot[1]), 1)
+    if kind == "status":
+        samples = slot[2] if len(slot) > 2 else ()
+        field = _status_field(ui_font, "", samples)
+        if field <= 0:
+            field = _status_field(ui_font, slot[1], ())
+        return int(field)
+    raise ValueError(kind)
+
+
+def wrap_slots(slots, width: int, ui_font):
+    """Pack columns into rows that fit ``width``.
+
+    ``None`` means some column is wider than the row, so the line must be
+    hidden rather than cut through a number.
+    """
+    width = int(width)
+    if width < 1:
+        return None
+    rows = []
+    row = []
+    used = 0
+    for slot in slots:
+        w = slot_width(slot, ui_font)
+        extra = 0 if not row else SLOT_GAP
+        if row and used + extra + w > width:
+            rows.append(row)
+            row = []
+            used = 0
+            extra = 0
+        if w > width:
+            return None
+        row.append(slot)
+        used += extra + w
+    if row:
+        rows.append(row)
+    return rows
+
+
+def paint_wrapped(
+    screen,
+    x,
+    y,
+    bottom,
+    row_h,
+    line: str,
+    pattern: str,
+    ui_font,
+    value_color,
+    label_color,
+    rows=None,
+    anchors=None,
+    glyphs=None,
+    status_samples=None,
+    limit=None,
+):
+    """Draw a readout in fixed columns, wrapping whole columns onto the next row.
+
+    Returns the y under the last row, or ``None`` when the line is hidden.
+    A hidden line is not drawn at all: no column is sliced by the edge.
+    """
+    try:
+        slots = slots_of(line, pattern, status_samples, split_words=True)
+    except (ValueError, IndexError):
+        return None
+    edge = None if limit is None else int(limit)
+    width = 10**9 if edge is None else edge - int(x)
+    wrapped = wrap_slots(slots, width, ui_font)
+    if not wrapped:
+        return None
+    step = int(row_h)
+    if int(y) + step * len(wrapped) > int(bottom):
+        return None
+    cursor_y = int(y)
+    for row_slots in wrapped:
+        paint_slots(
+            screen,
+            x,
+            cursor_y,
+            row_slots,
+            ui_font,
+            value_color,
+            label_color,
+            rows=rows,
+            anchors=anchors,
+            limit=edge,
+            glyphs=glyphs,
+        )
+        cursor_y += step
+    return cursor_y
 
 
 def format_eyes_line(r_l, r_r, text: str) -> str:

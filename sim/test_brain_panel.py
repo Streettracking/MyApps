@@ -15,7 +15,8 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 def _populated_view():
     import numpy as np
 
-    from sim.pilot import format_eyes_line
+    from sim.hemifield import format_fly_line
+    from sim.pilot import format_eyes_line, format_range_line
     from sim.tabnum import format_counts, format_skips
     from sim.train_monitor import MonitorView
 
@@ -59,6 +60,8 @@ def _populated_view():
         kc_bins=np.linspace(0.1, 1.0, 48),
         teacher_counts=format_counts(9, 4, 2, 1),
         teacher_skips=format_skips(3, "—"),
+        fly_line=format_fly_line(-72, 66, -139, -1.0, "bilateral"),
+        range_line=format_range_line(2.07, 1.4, 0, 8, {"window": 8, "votes": 0}),
         log_lines=["журнал"],
         keys_hint="A авто  J мозг",
     )
@@ -165,6 +168,92 @@ class BrainPanelTests(unittest.TestCase):
             content = mon._content_of("brain")
             panel = pygame.Rect(content.x + 4, content.y + 4, content.w - 8, content.h - 8)
             _assert_packed(self, rows, panel)
+        finally:
+            apply_theme("light")
+            pygame.quit()
+
+    def test_readout_glyphs_stay_inside_their_block(self):
+        """Labels and numbers do not cover each other or leave the block."""
+        import pygame
+
+        from sim.dock_layout import Leaf, Split
+        from sim.train_monitor import TrainMonitor
+        from sim.ui_theme import apply_theme
+
+        pygame.init()
+        mon = TrainMonitor("glyphs")
+        view = _populated_view()
+        out = __import__("pathlib").Path("/opt/cursor/artifacts")
+        out.mkdir(parents=True, exist_ok=True)
+
+        def blocks():
+            found = {}
+            for name in ("camera", "lidar", "brain", "journal", "controls"):
+                rect = mon._content_of(name)
+                if rect is not None:
+                    found[name] = pygame.Rect(rect)
+            return found
+
+        def assert_glyphs(where: str) -> None:
+            owned = blocks()
+            rects = []
+            for rect, group in mon._glyph_rects:
+                self.assertGreater(rect.w, 0, where)
+                self.assertGreater(rect.h, 0, where)
+                if group not in owned:
+                    continue
+                host = owned[group]
+                self.assertTrue(host.contains(rect), "%s %s %s outside %s" % (where, group, rect, host))
+                rects.append((rect, group))
+            for i, (left, left_group) in enumerate(rects):
+                for right, right_group in rects[i + 1 :]:
+                    self.assertFalse(
+                        left.colliderect(right),
+                        "%s %s %s overlaps %s %s" % (where, left_group, left, right_group, right),
+                    )
+
+        def narrow_tree():
+            return Split(
+                "v",
+                0.88,
+                Split(
+                    "h",
+                    0.22,
+                    Split("v", 0.38, Leaf("camera"), Leaf("lidar")),
+                    Split("h", 0.30, Leaf("brain"), Leaf("journal")),
+                ),
+                Leaf("controls"),
+            )
+
+        try:
+            for theme in ("light", "dark"):
+                apply_theme(theme)
+                mon._bg = None
+                mon._win_bg = None
+                mon.dock = __import__("sim.dock_layout", fromlist=["default_tree"]).default_tree()
+                for ww, wh in ((1920, 1017), (1440, 900)):
+                    mon._on_resize(ww, wh)
+                    mon._apply_layout(mon.screen.get_height())
+                    mon.draw(view)
+                    assert_glyphs("%s %dx%d" % (theme, ww, wh))
+                    shown = mon.present_into((ww, wh))
+                    pygame.image.save(shown, str(out / ("trainer_text_%s_%dx%d.png" % (theme, ww, wh))))
+                mon.dock = narrow_tree()
+                mon._on_resize(1920, 1017)
+                mon._apply_layout(mon.screen.get_height())
+                mon.draw(view)
+                assert_glyphs("%s narrow" % theme)
+                lid = mon._content_of("lidar")
+                brain = mon._content_of("brain")
+                self.assertLess(lid.w, 460, lid)
+                self.assertLess(brain.w, 460, brain)
+                pygame.image.save(
+                    mon.present_into((1920, 1017)),
+                    str(out / ("trainer_text_%s_narrow.png" % theme)),
+                )
+                scr = mon.screen
+                pygame.image.save(scr.subsurface(mon.lid_rect.clip(scr.get_rect())), str(out / ("trainer_lidar_%s_narrow.png" % theme)))
+                pygame.image.save(scr.subsurface(mon.panel_rect.clip(scr.get_rect())), str(out / ("trainer_brain_%s_narrow.png" % theme)))
         finally:
             apply_theme("light")
             pygame.quit()

@@ -84,6 +84,7 @@ from .tabnum import (
     format_session_counts,
     format_span,
     paint_mixed,
+    paint_wrapped,
     skips_are_quiet,
 )
 
@@ -1436,6 +1437,8 @@ class TrainMonitor:
         self._fill_bg(screen)
         self._fixed_rows = []
         self._anchors = []
+        self._glyph_rects = []
+        self._glyph_group = ""
         self._brain_rows = []
         self._chrome = []
         self._menu_hits = []
@@ -1503,15 +1506,15 @@ class TrainMonitor:
             if content is None:
                 continue
             if name == "camera":
-                self._draw_camera_block(screen, view, content)
+                self._draw_clipped(screen, content, "camera", lambda: self._draw_camera_block(screen, view, content))
             elif name == "lidar":
-                self._draw_lidar_block(screen, view, content)
+                self._draw_clipped(screen, content, "lidar", lambda: self._draw_lidar_block(screen, view, content))
             elif name == "brain":
-                self._draw_brain_block(screen, view, content)
+                self._draw_clipped(screen, content, "brain", lambda: self._draw_brain_block(screen, view, content))
             elif name == "journal":
-                self._draw_journal_block(screen, view, content)
+                self._draw_clipped(screen, content, "journal", lambda: self._draw_journal_block(screen, view, content))
             elif name == "controls":
-                self._draw_controls_block(screen, view)
+                self._draw_clipped(screen, content, "controls", lambda: self._draw_controls_block(screen, view))
 
     def _draw_block_chrome(self, screen, rect, title: str, name: str, collapsed: bool) -> None:
         import pygame
@@ -1630,25 +1633,33 @@ class TrainMonitor:
         if view.lidar_warning:
             screen.blit(self.font_sm.render(view.lidar_warning[:42], True, PEACH), (note_x, note_y))
             note_y += 18
+        readout_x = content.x + 4
+        readout_limit = content.right - 4
+        readout_bottom = content.bottom - 2
         if view.fly_line:
-            self._mixed(
+            nxt = self._paint_wrapped(
                 screen,
                 view.fly_line,
-                note_x,
+                readout_x,
                 note_y,
+                readout_bottom,
                 "муха L {7}  R {7}  Δ {7}  z {7}  [14]",
                 VALUE,
                 status_samples=FLY_STATUS,
+                limit=readout_limit,
             )
-            note_y += 20
+            if nxt is not None:
+                note_y = nxt
         if view.range_line:
-            self._mixed(
+            self._paint_wrapped(
                 screen,
                 view.range_line,
-                note_x,
+                readout_x,
                 note_y,
+                readout_bottom,
                 "дальн {7} м  вперёд {7} м  сектор {4}→{4}  {12}",
                 VALUE,
+                limit=readout_limit,
             )
 
     def _brain_sig(self, view: MonitorView, content) -> tuple:
@@ -1688,7 +1699,8 @@ class TrainMonitor:
             screen.blit(self._brain_panel_cache[2], content.topleft)
             return
         previous = screen.get_clip()
-        screen.set_clip(body)
+        clip = body if previous is None else body.clip(previous)
+        screen.set_clip(clip)
         try:
             self._draw_brain_body(screen, view, body)
         finally:
@@ -1759,13 +1771,41 @@ class TrainMonitor:
             label_color=ESTOP,
         )
 
+    def _keep_glyphs(self, glyphs) -> None:
+        group = getattr(self, "_glyph_group", "") or ""
+        store = getattr(self, "_glyph_rects", None)
+        if store is None:
+            self._glyph_rects = []
+            store = self._glyph_rects
+        for rect in glyphs:
+            store.append((rect, group))
+
+    def _draw_clipped(self, screen, rect, group: str, paint) -> None:
+        """Draw one block inside its content. Nothing from the block leaves that rect."""
+        previous = screen.get_clip()
+        clip = rect if previous is None else rect.clip(previous)
+        if clip.width <= 0 or clip.height <= 0:
+            return
+        saved = getattr(self, "_glyph_group", "")
+        self._glyph_group = group
+        screen.set_clip(clip)
+        try:
+            paint()
+        finally:
+            screen.set_clip(previous)
+            self._glyph_group = saved
+
     def _cells(self, screen, text: str, x: int, y: int, color, size: int = 14) -> int:
         from .tabnum import blit_cells
 
-        return blit_cells(screen, text, x, y, color, size=size, rows=self._fixed_rows)
+        glyphs = []
+        end = blit_cells(screen, text, x, y, color, size=size, rows=self._fixed_rows, glyphs=glyphs)
+        self._keep_glyphs(glyphs)
+        return end
 
     def _mixed(self, screen, line: str, x: int, y: int, pattern: str, value_color, label_color=None, status_samples=None, limit=None) -> int:
-        return paint_mixed(
+        glyphs = []
+        end = paint_mixed(
             screen,
             x,
             y,
@@ -1778,7 +1818,92 @@ class TrainMonitor:
             anchors=self._anchors,
             status_samples=status_samples,
             limit=limit,
+            glyphs=glyphs,
         )
+        self._keep_glyphs(glyphs)
+        return end
+
+    def _paint_wrapped(
+        self,
+        screen,
+        line: str,
+        x: int,
+        y: int,
+        bottom: int,
+        pattern: str,
+        value_color,
+        label_color=None,
+        status_samples=None,
+        limit=None,
+    ):
+        """Column grid. The whole line wraps or stays hidden; a number is never sliced."""
+        glyphs = []
+        nxt = paint_wrapped(
+            screen,
+            x,
+            y,
+            bottom,
+            self._brain_row_h(),
+            line,
+            pattern,
+            self.font_sm,
+            value_color,
+            LABEL if label_color is None else label_color,
+            rows=self._fixed_rows,
+            anchors=self._anchors,
+            glyphs=glyphs,
+            status_samples=status_samples,
+            limit=limit,
+        )
+        if nxt is None:
+            return None
+        self._keep_glyphs(glyphs)
+        return nxt
+
+    def _paint_readout(self, screen, panel, y: int, tag: str, line: str, pattern: str, value_color, label_color=None, status_samples=None) -> int:
+        """One brain readout. Every wrapped row is its own band, or the line is skipped."""
+        from .tabnum import slots_of, wrap_slots
+
+        row_h = self._brain_row_h()
+        limit = panel.right - 4
+        try:
+            slots = slots_of(line, pattern, status_samples, split_words=True)
+            wrapped = wrap_slots(slots, limit - panel.x, self.font_sm)
+        except (ValueError, IndexError):
+            wrapped = None
+        if not wrapped or y + row_h * len(wrapped) > panel.bottom:
+            return y
+        cursor = y
+        for index, row_slots in enumerate(wrapped):
+            row_tag = tag if len(wrapped) == 1 else "%s-%d" % (tag, index)
+
+            def paint(row_slots=row_slots, yy=cursor) -> None:
+                self._paint_slot_row(screen, row_slots, panel.x, yy, limit, value_color, label_color)
+
+            nxt = self._paint_line(screen, panel, cursor, row_tag, paint)
+            if nxt is None:
+                return y
+            cursor = nxt
+        return cursor
+
+    def _paint_slot_row(self, screen, slots, x: int, y: int, limit, value_color, label_color) -> None:
+        from .tabnum import paint_slots
+
+        glyphs = []
+        paint_slots(
+            screen,
+            x,
+            y,
+            slots,
+            self.font_sm,
+            value_color,
+            LABEL if label_color is None else label_color,
+            rows=self._fixed_rows,
+            anchors=self._anchors,
+            limit=limit,
+            glyphs=glyphs,
+        )
+        self._keep_glyphs(glyphs)
 
     def _brain_row_h(self) -> int:
         from .tabnum import load_font
@@ -2070,6 +2195,7 @@ class TrainMonitor:
                 "[3] {6}",
                 color,
                 label_color=color,
+                limit=inner.right - 2,
             )
 
     def _stand_buttons(self, screen) -> None:
@@ -2474,45 +2600,29 @@ class TrainMonitor:
         y = self._dan_timeline(screen, view, panel, y)
         y = self._kc_row(screen, view, panel, y)
         if view.teacher_counts:
-            counts = view.teacher_counts
-
-            def counts_row() -> None:
-                self._mixed(
-                    screen,
-                    counts,
-                    rx,
-                    y,
-                    "учитель: PAM_L {7}  PAM_R {7}  PPL1_L {7}  PPL1_R {7}",
-                    VALUE,
-                    limit=limit,
-                )
-
-            nxt = self._paint_line(screen, panel, y, "teacher", counts_row)
-            if nxt is None:
-                return y
-            y = nxt
+            y = self._paint_readout(
+                screen,
+                panel,
+                y,
+                "teacher",
+                view.teacher_counts,
+                "учитель: PAM_L {7}  PAM_R {7}  PPL1_L {7}  PPL1_R {7}",
+                VALUE,
+            )
         if view.teacher_skips:
             quiet = skips_are_quiet(view.teacher_skips)
             tone = LABEL if quiet else AMBER
-            skips = view.teacher_skips
-
-            def skips_row() -> None:
-                self._mixed(
-                    screen,
-                    skips,
-                    rx,
-                    y,
-                    "ложных узнаваний без наказания: {7}  [36]",
-                    tone,
-                    label_color=tone,
-                    status_samples=SKIP_STATUS,
-                    limit=limit,
-                )
-
-            nxt = self._paint_line(screen, panel, y, "skips", skips_row)
-            if nxt is None:
-                return y
-            y = nxt
+            y = self._paint_readout(
+                screen,
+                panel,
+                y,
+                "skips",
+                view.teacher_skips,
+                "ложных узнаваний без наказания: {7}  [36]",
+                tone,
+                label_color=tone,
+                status_samples=SKIP_STATUS,
+            )
         return y
 
     def _progress_line(self, screen, line: str, x: int, y: int, limit=None) -> None:
