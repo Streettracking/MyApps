@@ -42,6 +42,60 @@ class DockGeometryTests(unittest.TestCase):
         self.assertTrue(swap_blocks(tree, "camera", "brain"))
         self.assertEqual(find_leaf(tree, "camera").block, "camera")
 
+    def test_saved_dock_gains_a_robot_card_beside_controls(self):
+        import pygame
+
+        from sim.dock_layout import tree_from_dict
+        from sim.train_monitor import MonitorView, TrainMonitor
+
+        old = {
+            "t": "split",
+            "o": "v",
+            "r": 0.9,
+            "a": {
+                "t": "split",
+                "o": "h",
+                "r": 0.4,
+                "locked": True,
+                "a": {
+                    "t": "split",
+                    "o": "v",
+                    "r": 0.72,
+                    "a": {"t": "leaf", "id": "camera", "visible": True},
+                    "b": {"t": "leaf", "id": "lidar", "visible": True},
+                },
+                "b": {
+                    "t": "split",
+                    "o": "v",
+                    "r": 0.52,
+                    "a": {"t": "leaf", "id": "brain", "visible": True},
+                    "b": {"t": "leaf", "id": "journal", "visible": True},
+                },
+            },
+            "b": {"t": "leaf", "id": "controls", "visible": True},
+        }
+        tree = tree_from_dict(old)
+        self.assertTrue(tree.a.locked)
+        self.assertAlmostEqual(tree.a.ratio, 0.4, places=3)
+        self.assertEqual(tree.b.a.block, "controls")
+        self.assertEqual(tree.b.b.block, "robot")
+        pygame.init()
+        mon = TrainMonitor("robot-card")
+        try:
+            mon._on_resize(1920, 1080)
+            mon.draw(MonitorView(learner="mb", onboard="192.168.35.213"))
+            row = (mon.stand_up_rect, mon.stand_down_rect, mon.recovery_rect, mon.lidar_reset_rect)
+            self.assertGreater(min(rect.w for rect in row), 8)
+            self.assertEqual({rect.y for rect in row}, {row[0].y})
+            content = mon._content_of("robot")
+            self.assertIsNotNone(content)
+            host = pygame.Rect(content)
+            for rect in row:
+                self.assertTrue(host.contains(rect), rect)
+            self.assertFalse(mon.lidar_column_rect.contains(mon.lidar_reset_rect))
+        finally:
+            pygame.quit()
+
     def test_settings_roundtrip_stays_outside_the_npz(self):
         from sim.dock_layout import default_tree, tree_from_dict
         from sim.ui_settings import load_settings, save_settings, settings_path
@@ -365,7 +419,7 @@ class HelpPopoverTests(unittest.TestCase):
     def test_pages_name_the_readouts(self):
         from sim.ui_help import PAGES, page
 
-        self.assertEqual(PAGES, ("camera", "lidar", "brain", "journal", "controls", "bar"))
+        self.assertEqual(PAGES, ("camera", "lidar", "brain", "journal", "controls", "robot", "bar"))
         chunks = []
         for name in PAGES:
             title, blocks = page(name)
@@ -434,7 +488,7 @@ class HelpPopoverTests(unittest.TestCase):
             )
             mon.draw(view)
             infos = {arg: rect for rect, kind, arg in mon._chrome if kind == "info"}
-            self.assertEqual(set(infos), {"camera", "lidar", "brain", "journal", "controls"})
+            self.assertEqual(set(infos), {"camera", "lidar", "brain", "journal", "controls", "robot"})
             for name, rect in infos.items():
                 collapse = next(hit for hit, kind, arg in mon._chrome if kind == "collapse" and arg == name)
                 close = next(hit for hit, kind, arg in mon._chrome if kind == "close" and arg == name)

@@ -428,7 +428,9 @@ def monitor_layout(w: int, h: int) -> dict:
     estop_h = 64
     controls_y = h - footer - estop_h - 10
     top = header + 8
-    bottom = controls_y - 10
+    robot_h = 44
+    robot_y = controls_y - 10 - robot_h
+    bottom = robot_y - 10
     span = max(200, bottom - top)
     right_min = 480
     cam_w = int(w * 0.62)
@@ -493,12 +495,23 @@ def monitor_layout(w: int, h: int) -> dict:
             "panel": panel,
             "controls_y": controls_y,
             "footer_y": h - footer,
-            "lidar_reset": (lid[0] + lid[2] + 12, lid[1], 200, 32),
-            "lidar_fresh": (lid[0] + lid[2] + 12, lid[1] + 40, 240, 32),
-            "stand_up": (lid[0] + lid[2] + 12, lid[1] + 84, 140, 32),
-            "stand_down": (lid[0] + lid[2] + 160, lid[1] + 84, 120, 32),
-            "recovery": (lid[0] + lid[2] + 12, lid[1] + 124, 160, 32),
+            "lidar_fresh": (lid[0] + lid[2] + 12, lid[1], 240, 32),
+            "robot": (m, robot_y, w - 2 * m, robot_h),
         }
+    )
+    buttons.update(
+        place(
+            [
+                ("stand_up", 140),
+                ("stand_down", 120),
+                ("recovery", 160),
+                ("lidar_reset", 200),
+            ],
+            m + 8,
+            robot_y + 4,
+            max(24, robot_h - 8),
+            w - m - 8,
+        )
     )
     return buttons
 
@@ -815,6 +828,22 @@ class TrainMonitor:
         self.treat_rect = placed_row["treat"]
         self.estop_rect = placed_row["estop"]
 
+        robot = block("robot")
+        self.robot_rect = robot
+        robot_leaf = self._dock_leaves.get("robot")
+        robot_inner = None
+        if robot.w > 8 and robot_leaf is not None and robot_leaf.visible and not robot_leaf.collapsed:
+            got = dock_content((robot.x, robot.y, robot.w, robot.h), False)
+            if got is not None:
+                robot_inner = pygame.Rect(*got)
+        if robot_inner is not None and robot_inner.w >= 40 and robot_inner.h >= 20:
+            self._place_robot_row(robot_inner)
+        else:
+            self.stand_up_rect = self._zero()
+            self.stand_down_rect = self._zero()
+            self.recovery_rect = self._zero()
+            self.lidar_reset_rect = self._zero()
+
         lid_leaf = self._dock_leaves.get("lidar")
         lid_inner = None
         if self.lid_rect.w > 8 and lid_leaf is not None and lid_leaf.visible and not lid_leaf.collapsed:
@@ -826,11 +855,7 @@ class TrainMonitor:
         else:
             self.lidar_plot_rect = self._zero()
             self.lidar_column_rect = self._zero()
-            self.lidar_reset_rect = self._zero()
             self.lidar_fresh_rect = self._zero()
-            self.stand_up_rect = self._zero()
-            self.stand_down_rect = self._zero()
-            self.recovery_rect = self._zero()
         self.layout = {
             "footer_y": footer_y,
             "controls_y": controls.y,
@@ -1846,6 +1871,8 @@ class TrainMonitor:
                 self._draw_clipped(screen, content, "journal", lambda: self._draw_journal_block(screen, view, content))
             elif name == "controls":
                 self._draw_clipped(screen, content, "controls", lambda: self._draw_controls_block(screen, view))
+            elif name == "robot":
+                self._draw_clipped(screen, content, "robot", lambda: self._draw_robot_block(screen))
 
     def _draw_block_chrome(self, screen, rect, title: str, name: str, collapsed: bool) -> None:
         import pygame
@@ -1980,11 +2007,10 @@ class TrainMonitor:
         """Square picture on the left. Buttons and the metric table stay on the right."""
         import pygame
 
-        reset_w = self.font_sm.size("СБРОС ЛИДАРА  C")[0] + 28
         fresh_w = self._fresh_button_width()
         table_w = self._lidar_table_width()
         gap = 8
-        column_w = min(max(table_w, reset_w + 8 + fresh_w, 160), max(0, lid_inner.w - gap))
+        column_w = min(max(table_w, fresh_w, 160), max(0, lid_inner.w - gap))
         plot_side = min(lid_inner.h, max(0, lid_inner.w - gap - column_w))
         if plot_side < 48 and lid_inner.w > 96 and lid_inner.h >= 48:
             plot_side = min(lid_inner.h, max(48, lid_inner.w // 3))
@@ -1997,19 +2023,42 @@ class TrainMonitor:
         self.lidar_plot_rect = plot
         self.lidar_column_rect = column
         button_h = 28
-        if reset_w + 8 + fresh_w <= column.w and column.w > 0:
-            self.lidar_reset_rect = pygame.Rect(column.x, column.y, reset_w, button_h)
-            fresh_x = column.x + reset_w + 8
-            self.lidar_fresh_rect = pygame.Rect(fresh_x, column.y, min(fresh_w, column.right - fresh_x), button_h)
-            controls_bottom = column.y + button_h
-        else:
-            self.lidar_reset_rect = pygame.Rect(column.x, column.y, column.w, button_h)
-            self.lidar_fresh_rect = pygame.Rect(column.x, column.y + button_h + 6, column.w, button_h)
-            controls_bottom = self.lidar_fresh_rect.bottom
-        self.stand_up_rect = pygame.Rect(column.x, controls_bottom + 6, min(140, column.w), button_h)
-        down_x = column.x + 148
-        self.stand_down_rect = pygame.Rect(down_x, controls_bottom + 6, max(0, min(110, column.right - down_x)), button_h)
-        self.recovery_rect = pygame.Rect(column.x, controls_bottom + 40, min(160, column.w), button_h)
+        self.lidar_fresh_rect = pygame.Rect(column.x, column.y, min(fresh_w, max(0, column.w)), button_h)
+
+    def _place_robot_row(self, inner) -> None:
+        """Stand, lie, recovery, and lidar reset share one row of this card."""
+        import pygame
+
+        specs = (
+            ("stand_up", "ВСТАТЬ", True),
+            ("stand_down", "ЛЕЧЬ", True),
+            ("recovery", "ПОДЪЁМ", False),
+            ("lidar_reset", "СБРОС ЛИДАРА", True),
+        )
+        gap = 8
+        widths = []
+        for _name, text, keyed in specs:
+            pad = 48 if keyed else 28
+            widths.append(self.font_sm.size(text)[0] + pad)
+        total = sum(widths) + gap * (len(widths) - 1)
+        scale = min(1.0, inner.w / float(max(total, 1)))
+        row_h = min(40, inner.h)
+        y = inner.y + max(0, (inner.h - row_h) // 2)
+        x = inner.x
+        rects = {}
+        for (name, _text, _keyed), width in zip(specs, widths):
+            rw = max(36, int(round(width * scale)))
+            if x >= inner.right:
+                rects[name] = self._zero()
+                continue
+            if x + rw > inner.right:
+                rw = inner.right - x
+            rects[name] = pygame.Rect(x, y, max(1, rw), row_h)
+            x += rw + gap
+        self.stand_up_rect = rects["stand_up"]
+        self.stand_down_rect = rects["stand_down"]
+        self.recovery_rect = rects["recovery"]
+        self.lidar_reset_rect = rects["lidar_reset"]
 
     def _draw_lidar_block(self, screen, view: MonitorView, content) -> None:
         import pygame
@@ -2020,16 +2069,11 @@ class TrainMonitor:
         self.lid_inner = inner
         if inner is not None and view.marks:
             self._draw_marks(screen, inner, view.marks)
-        self._lidar_reset_button(screen)
         self._lidar_fresh_button(screen, view)
-        if self.show_stand or view.onboard:
-            self._stand_buttons(screen)
         column = getattr(self, "lidar_column_rect", None)
         if column is None or column.w < 8:
             return
-        top = max(self.lidar_reset_rect.bottom, self.lidar_fresh_rect.bottom) + 6
-        if self.show_stand or view.onboard:
-            top = self.recovery_rect.bottom + 6
+        top = self.lidar_fresh_rect.bottom + 6
         if view.lidar_warning and top + 18 <= content.bottom:
             warn = self.font_sm.render(view.lidar_warning[:42], True, AMBER)
             if column.x + warn.get_width() <= content.right:
@@ -2728,13 +2772,12 @@ class TrainMonitor:
                 limit=inner.right - 2,
             )
 
-    def _stand_buttons(self, screen) -> None:
-        import pygame
-
+    def _draw_robot_block(self, screen) -> None:
         mouse = self._mouse()
         self._button(screen, self.stand_up_rect, "ВСТАТЬ", None, self.stand_up_rect.collidepoint(mouse), key="+")
         self._button(screen, self.stand_down_rect, "ЛЕЧЬ", None, self.stand_down_rect.collidepoint(mouse), key="-")
         self._button(screen, self.recovery_rect, "ПОДЪЁМ", None, self.recovery_rect.collidepoint(mouse))
+        self._lidar_reset_button(screen)
 
     def _record_button(self, screen, view: MonitorView) -> None:
         import pygame

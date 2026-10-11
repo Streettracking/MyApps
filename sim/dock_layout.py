@@ -10,15 +10,17 @@ from __future__ import annotations
 HEADER = 26
 SPLIT = 6
 CONTROLS_H = 96
+ROBOT_H = 96
 MIN_BLOCK = 48
 
-BLOCKS = ("camera", "lidar", "brain", "journal", "controls")
+BLOCKS = ("camera", "lidar", "brain", "journal", "controls", "robot")
 BLOCK_TITLES = {
     "camera": "камера",
     "lidar": "лидар",
     "brain": "панель мозга",
     "journal": "журнал",
     "controls": "кнопки",
+    "robot": "Робот",
 }
 
 
@@ -62,7 +64,7 @@ def default_tree() -> Split:
             Split("v", 0.72, Leaf("camera"), Leaf("lidar")),
             Split("v", 0.52, Leaf("brain"), Leaf("journal")),
         ),
-        Leaf("controls"),
+        Split("h", 0.62, Leaf("controls"), Leaf("robot")),
     )
 
 
@@ -101,9 +103,38 @@ def tree_from_dict(data) -> Split:
 
     parsed = parse(data)
     names = [leaf.block for leaf in _leaves(parsed)] if parsed is not None else []
-    if not isinstance(parsed, Split) or set(names) != set(BLOCKS) or len(names) != len(BLOCKS):
+    if not isinstance(parsed, Split) or len(names) != len(set(names)):
+        return default_tree()
+    present = set(names)
+    if not present <= set(BLOCKS):
+        return default_tree()
+    missing = [name for name in BLOCKS if name not in present]
+    # A saved dock from before the robot card keeps its splits. The new card
+    # sits beside the controls leaf. Any other hole falls back to the default.
+    if missing:
+        if missing != ["robot"] or "controls" not in present:
+            return default_tree()
+        _graft_beside_controls(parsed, "robot")
+        names = [leaf.block for leaf in _leaves(parsed)]
+        if set(names) != set(BLOCKS) or len(names) != len(BLOCKS):
+            return default_tree()
+    elif set(names) != set(BLOCKS):
         return default_tree()
     return parsed
+
+
+def _graft_beside_controls(node, block: str) -> bool:
+    """Replace the controls leaf with a row: controls, then ``block``."""
+    if isinstance(node, Leaf):
+        return False
+    for side in ("a", "b"):
+        child = getattr(node, side)
+        if isinstance(child, Leaf) and child.block == "controls":
+            setattr(node, side, Split("h", 0.62, child, Leaf(block)))
+            return True
+        if _graft_beside_controls(child, block):
+            return True
+    return False
 
 
 def _leaves(node) -> list:
@@ -138,11 +169,16 @@ def _preferred_height(node, width: int, height: int) -> int | None:
             return HEADER
         if node.block == "camera":
             return min(height, HEADER + max(80, int(round(width * 9 / 16))))
-        if node.block == "controls":
-            return min(height, CONTROLS_H)
+        if node.block in ("controls", "robot"):
+            return min(height, CONTROLS_H if node.block == "controls" else ROBOT_H)
         return None
     if node.orient == "h":
-        return None
+        # A row is as tall as its tallest child that names a height.
+        pref_a = _preferred_height(node.a, max(1, width // 2), height)
+        pref_b = _preferred_height(node.b, max(1, width // 2), height)
+        if pref_a is None or pref_b is None:
+            return None
+        return min(height, max(pref_a, pref_b))
     pref_a = _preferred_height(node.a, width, height)
     pref_b = _preferred_height(node.b, width, height)
     if pref_a is None or pref_b is None:
