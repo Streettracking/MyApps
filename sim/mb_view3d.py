@@ -12,7 +12,8 @@ hemisphere, and lays calyx, peduncle, and the α/β, α′/β′, γ lobes out f
 the cell type plus those neuropil counts. The trainer window stays light.
 
 The trainer only sends a UDP datagram to 127.0.0.1:5473. B stays the beep;
-this window is J. The view does not spin on its own.
+this window is J. The view does not spin on its own. T in this window pins
+it above the others; T in the trainer is still the treat key.
 """
 
 from __future__ import annotations
@@ -73,6 +74,7 @@ DIST0 = 3.05
 # Nearly straight up or down, short of the flip at ±90°.
 PITCH_LIM = 89.0 * math.pi / 180.0
 PAN_KEY = 0.07
+VIEW_HINT = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   F каркас   T поверх"
 
 
 def artifact_dir() -> Path:
@@ -611,7 +613,7 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     note = "Л/П полушария   серые KC   свечение — кадр   янтарь MBON   зелёный PAM   красный PPL1"
     surface.blit(small.render(note, True, _INK), (16, 34))
     surface.blit(small.render("чашечка, ножка, доли α/β α′/β′ γ", True, _INK), (16, 52))
-    hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   F каркас"
+    hint = VIEW_HINT
     if frames:
         hint += " вкл"
     tiny = pygame.font.Font(None, 15)
@@ -1212,11 +1214,19 @@ def _saved_viewer_size() -> tuple:
     return width, height
 
 
-def _remember_viewer(window) -> None:
+def _remember_viewer(window, pinned=None) -> None:
     from .ui_guard import borrowed_window, no_sdl_window, sdl_window_on_resize, throwaway_window
-    from .ui_settings import save_brain_window
+    from .ui_settings import load_brain_window, save_brain_window
 
-    box = {"x": None, "y": None, "w": max(320, int(window.get_width())), "h": max(240, int(window.get_height()))}
+    if pinned is None:
+        pinned = bool(load_brain_window().get("pinned"))
+    box = {
+        "x": None,
+        "y": None,
+        "w": max(320, int(window.get_width())),
+        "h": max(240, int(window.get_height())),
+        "pinned": bool(pinned),
+    }
     if not no_sdl_window():
         try:
             win = throwaway_window() if sdl_window_on_resize() else borrowed_window()
@@ -1242,6 +1252,12 @@ def run_viewer(port: int = VIEW_PORT) -> int:
     pygame.display.set_caption("Грибовидное тело")
     width, height = _saved_viewer_size()
     window = pygame.display.set_mode((width, height), pygame.RESIZABLE)
+    from .ui_settings import load_brain_window
+    from .window_pin import consume_pin, draw_pin_button, set_always_on_top
+
+    pinned = [bool(load_brain_window().get("pinned"))]
+    if pinned[0]:
+        set_always_on_top(True)
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 22)
     window.fill(_BG_EDGE)
@@ -1285,12 +1301,28 @@ def run_viewer(port: int = VIEW_PORT) -> int:
                 if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_j):
                     running = False
                     break
-                if event.type == pygame.KEYDOWN:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_t:
+                    handled, nxt = consume_pin(
+                        pinned[0], key=event.key, repeat=bool(getattr(event, "repeat", False))
+                    )
+                    if handled:
+                        pinned[0] = nxt
+                        set_always_on_top(pinned[0])
+                        _remember_viewer(window, pinned[0])
+                elif event.type == pygame.KEYDOWN:
                     _keys(orbit, event, frames)
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 2, 3):
-                    shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
-                    drag = ("pan" if event.button != 1 or shifted else "orbit", event.pos)
-                    orbit.idle = 0.0
+                    handled, nxt = consume_pin(
+                        pinned[0], button=event.button, pos=event.pos, size=window.get_size()
+                    )
+                    if handled:
+                        pinned[0] = nxt
+                        set_always_on_top(pinned[0])
+                        _remember_viewer(window, pinned[0])
+                    else:
+                        shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                        drag = ("pan" if event.button != 1 or shifted else "orbit", event.pos)
+                        orbit.idle = 0.0
                 elif event.type == pygame.MOUSEBUTTONUP and event.button in (1, 2, 3):
                     drag = None
                 elif event.type == pygame.MOUSEMOTION and drag is not None:
@@ -1309,9 +1341,11 @@ def run_viewer(port: int = VIEW_PORT) -> int:
                     orbit.zoom(1 if event.button == 4 else -1)
                 elif event.type == pygame.VIDEORESIZE:
                     window = pygame.display.set_mode((max(320, event.w), max(240, event.h)), pygame.RESIZABLE)
-                    _remember_viewer(window)
+                    if pinned[0]:
+                        set_always_on_top(True)
+                    _remember_viewer(window, pinned[0])
                 elif event.type == getattr(pygame, "WINDOWMOVED", -11):
-                    _remember_viewer(window)
+                    _remember_viewer(window, pinned[0])
             if not running:
                 break
             fresh = _recv_latest(sock)
@@ -1320,6 +1354,7 @@ def run_viewer(port: int = VIEW_PORT) -> int:
             dt = clock.tick(30) / 1000.0
             orbit.tick(dt, drag is not None)
             paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y, frames=frames[0], fast=True)
+            draw_pin_button(window, pinned[0])
             pygame.display.flip()
             if shot and not shot_done:
                 try:
@@ -1331,7 +1366,7 @@ def run_viewer(port: int = VIEW_PORT) -> int:
                 shot_done = True
     finally:
         try:
-            _remember_viewer(window)
+            _remember_viewer(window, pinned[0])
         except Exception:
             pass
         try:

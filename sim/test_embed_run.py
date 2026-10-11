@@ -76,7 +76,7 @@ class LayoutPruneTests(unittest.TestCase):
         try:
             save_brain_window({"x": 12, "y": 24, "w": 640, "h": 400, "embed_3d": True})
             loaded = load_brain_window()
-            self.assertEqual(loaded, {"x": 12, "y": 24, "w": 640, "h": 400})
+            self.assertEqual(loaded, {"x": 12, "y": 24, "w": 640, "h": 400, "pinned": False})
             from sim.mb_view3d import _saved_viewer_size
 
             os.environ.pop("SDL_VIDEO_WINDOW_POS", None)

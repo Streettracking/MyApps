@@ -98,8 +98,14 @@ def brain_window_path() -> Path:
     return settings_path().with_name(BRAIN_WINDOW_NAME)
 
 
+def _pinned_flag(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def load_brain_window() -> dict:
-    data = {"x": None, "y": None, "w": None, "h": None}
+    data = {"x": None, "y": None, "w": None, "h": None, "pinned": False}
     if not persist_enabled():
         return data
     try:
@@ -109,8 +115,9 @@ def load_brain_window() -> dict:
     if not isinstance(raw, dict):
         return data
     for key in data:
-        if key in raw:
-            data[key] = raw[key]
+        if key not in raw:
+            continue
+        data[key] = _pinned_flag(raw[key]) if key == "pinned" else raw[key]
     return data
 
 
@@ -118,7 +125,13 @@ def save_brain_window(geom: dict) -> None:
     if not persist_enabled():
         return
     path = brain_window_path()
-    payload = {"x": geom.get("x"), "y": geom.get("y"), "w": geom.get("w"), "h": geom.get("h")}
+    payload = {
+        "x": geom.get("x"),
+        "y": geom.get("y"),
+        "w": geom.get("w"),
+        "h": geom.get("h"),
+        "pinned": _pinned_flag(geom.get("pinned")),
+    }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

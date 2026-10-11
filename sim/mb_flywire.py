@@ -630,7 +630,7 @@ def _draw_indexed(surface, sx, sy, dep, edges, indices, color, w, h, verts=None,
 def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool, frames: bool, hint: str | None = None) -> None:
     import pygame
 
-    from .mb_view3d import _project
+    from .mb_view3d import VIEW_HINT, _project
 
     w, h = surface.get_size()
     cx, cy, fov = _camera(w, h)
@@ -643,7 +643,7 @@ def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool
     surface.blit(small.render(note, True, _INK), (16, 34))
     surface.blit(small.render("глаз Л и глаз П — зрительные доли, светятся при узнавании", True, _INK), (16, 52))
     if hint is None:
-        hint = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   F каркас"
+        hint = VIEW_HINT
         if frames:
             hint += " вкл"
     surface.blit(tiny.render(hint, True, _HINT), (12, h - 20))

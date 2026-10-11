@@ -809,5 +809,137 @@ class ThemeSchemeTests(unittest.TestCase):
             pygame.quit()
 
 
+class WindowPinTests(unittest.TestCase):
+    def test_linux_pin_is_a_noop_and_the_call_stays_off_set_mode(self):
+        import os
+        from pathlib import Path
+
+        import sim.mb_view3d as view
+        import sim.window_pin as pin
+
+        if os.name != "nt":
+            self.assertFalse(pin.set_always_on_top(True))
+            self.assertFalse(pin.set_always_on_top(False))
+        src = Path(pin.__file__).read_text(encoding="utf-8")
+        for needle in ("SetWindowPos", "HWND_TOPMOST", "HWND_NOTOPMOST", "get_wm_info"):
+            self.assertIn(needle, src)
+        self.assertNotIn("set_mode", src)
+        self.assertNotIn("from_display_module", src)
+        viewer = Path(view.__file__).read_text(encoding="utf-8")
+        self.assertIn("set_always_on_top", viewer)
+        self.assertNotIn("from_display_module", viewer)
+        fly = Path(view.__file__).resolve().parent.joinpath("mb_flywire.py").read_text(encoding="utf-8")
+        self.assertIn("VIEW_HINT", fly)
+        self.assertIn("T поверх", view.VIEW_HINT)
+
+    def test_click_and_t_toggle_once_and_t_does_not_pan(self):
+        import pygame
+
+        from sim.mb_view3d import PAN_KEY, Orbit, _keys
+        from sim.window_pin import consume_pin, pin_button_rect
+
+        size = (960, 700)
+        rect = pin_button_rect(size)
+        on_clip = (rect[0] + 4, rect[1] + 4)
+        handled, nxt = consume_pin(False, button=1, pos=on_clip, size=size)
+        self.assertTrue(handled)
+        self.assertTrue(nxt)
+        handled, nxt = consume_pin(True, button=1, pos=(40, 40), size=size)
+        self.assertFalse(handled)
+        self.assertTrue(nxt)
+        handled, nxt = consume_pin(False, button=3, pos=on_clip, size=size)
+        self.assertFalse(handled)
+        self.assertFalse(nxt)
+
+        pygame.init()
+        try:
+            handled, nxt = consume_pin(False, key=pygame.K_t, repeat=False)
+            self.assertTrue(handled)
+            self.assertTrue(nxt)
+            handled, nxt = consume_pin(True, key=pygame.K_t, repeat=True)
+            self.assertFalse(handled)
+            self.assertTrue(nxt)
+            orbit = Orbit()
+            before = (orbit.pan_x, orbit.pan_y, orbit.yaw, orbit.pitch)
+
+            class _Key:
+                def __init__(self, key, repeat=False):
+                    self.key = key
+                    self.repeat = repeat
+
+            _keys(orbit, _Key(pygame.K_t))
+            _keys(orbit, _Key(pygame.K_t, repeat=True))
+            self.assertEqual((orbit.pan_x, orbit.pan_y, orbit.yaw, orbit.pitch), before)
+            _keys(orbit, _Key(pygame.K_d))
+            self.assertAlmostEqual(orbit.pan_x, PAN_KEY)
+        finally:
+            pygame.quit()
+
+    def test_clip_is_peach_when_pinned_and_gray_when_not(self):
+        from pathlib import Path
+
+        import pygame
+
+        from sim.window_pin import PIN_OFF, PIN_ON, draw_pin_button
+
+        pygame.init()
+        try:
+            on = pygame.Surface((220, 80))
+            off = pygame.Surface((220, 80))
+            on.fill((14, 15, 18))
+            off.fill((14, 15, 18))
+            hot = draw_pin_button(on, True)
+            cold = draw_pin_button(off, False)
+            self.assertEqual(tuple(on.get_at(hot.center)[:3]), PIN_ON)
+            self.assertEqual(tuple(off.get_at(cold.center)[:3]), PIN_OFF)
+            self.assertNotEqual(tuple(on.get_at(hot.center)[:3]), tuple(off.get_at(cold.center)[:3]))
+            dest = Path("/opt/cursor/artifacts")
+            dest.mkdir(parents=True, exist_ok=True)
+            pygame.image.save(on, str(dest / "pin_on.png"))
+            pygame.image.save(off, str(dest / "pin_off.png"))
+        finally:
+            pygame.quit()
+
+    def test_pinned_roundtrip_and_the_help_names_t(self):
+        import json
+        from pathlib import Path
+
+        from sim.recognize_train import SIM_KEYS
+        from sim.ui_help import page
+        from sim.ui_settings import brain_window_path, load_brain_window, save_brain_window
+
+        root = Path("/tmp/recog_pin_window")
+        root.mkdir(parents=True, exist_ok=True)
+        previous = os.environ.get("RECOGNIZER_UI_CONFIG")
+        os.environ["RECOGNIZER_UI_CONFIG"] = str(root / "window.json")
+        try:
+            path = brain_window_path()
+            path.write_text(json.dumps({"x": 3, "y": 4, "w": 800, "h": 600}), encoding="utf-8")
+            self.assertFalse(load_brain_window()["pinned"])
+            save_brain_window({"x": 3, "y": 4, "w": 800, "h": 600, "pinned": True})
+            self.assertTrue(load_brain_window()["pinned"])
+            save_brain_window({"x": 3, "y": 4, "w": 800, "h": 600, "pinned": "false"})
+            self.assertFalse(load_brain_window()["pinned"])
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("pinned", text)
+            self.assertNotIn("embed_3d", text)
+        finally:
+            if previous is None:
+                os.environ.pop("RECOGNIZER_UI_CONFIG", None)
+            else:
+                os.environ["RECOGNIZER_UI_CONFIG"] = previous
+
+        _title, blocks = page("bar")
+        prose = "\n".join(text for _kind, text in blocks)
+        self.assertIn("скрепк", prose)
+        self.assertIn("T в том окне", prose)
+        self.assertIn("brain_window.json", prose)
+        self.assertIn("персиков", prose)
+        self.assertIn("серая", prose)
+        self.assertIn("лакомство PAM", prose)
+        self.assertIn("T/X учить", SIM_KEYS)
+        self.assertNotIn("поверх", SIM_KEYS)
+
+
 if __name__ == "__main__":
     unittest.main()
