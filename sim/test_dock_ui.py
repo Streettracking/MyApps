@@ -275,21 +275,34 @@ class TrainerDockTests(unittest.TestCase):
                 log_lines=["строка журнала"],
                 keys_hint="A авто  J мозг",
             )
-            find_leaf(mon.dock, "journal").visible = False
+            find_leaf(mon.dock, "brain").visible = False
             mon._apply_layout(mon.screen.get_height())
             mon.menu_open = True
             mon._set_theme("light")
             mon.draw(view)
             self._assert_menu_checks(mon, on_theme="light")
             self._save_menu(mon, "/opt/cursor/artifacts/view_menu_light.png")
-            self._assert_row_hover(mon, ("toggle", "lidar"))
+            self._assert_row_hover(
+                mon, ("toggle", "brain"), shot="/opt/cursor/artifacts/view_menu_c_light.png"
+            )
             self._assert_row_hover(mon, ("locked", "controls"), skipped=True)
             mon.draw(view)
 
-            journal = self._click_menu(mon, ("toggle", "journal"))
-            self.assertFalse(journal.quit)
+            brain = self._click_menu(mon, ("toggle", "brain"), at="right")
+            self.assertFalse(brain.quit)
             self.assertTrue(mon.menu_open)
-            self.assertTrue(find_leaf(mon.dock, "journal").visible)
+            self.assertTrue(find_leaf(mon.dock, "brain").visible)
+            mon.draw(view)
+            brain_off = self._click_menu(mon, ("toggle", "brain"), at="left")
+            self.assertFalse(brain_off.quit)
+            self.assertTrue(mon.menu_open)
+            self.assertFalse(find_leaf(mon.dock, "brain").visible)
+            self._click_menu(mon, ("toggle", "brain"))
+            self.assertTrue(find_leaf(mon.dock, "brain").visible)
+            locked = self._click_menu(mon, ("locked", "controls"), at="right")
+            self.assertFalse(locked.quit)
+            self.assertTrue(mon.menu_open)
+            self.assertTrue(find_leaf(mon.dock, "controls").visible)
             mon.draw(view)
             self._assert_menu_checks(mon, on_theme="light")
 
@@ -302,7 +315,14 @@ class TrainerDockTests(unittest.TestCase):
             mon.draw(view)
             self._assert_menu_checks(mon, on_theme="dark")
             self._save_menu(mon, "/opt/cursor/artifacts/view_menu_dark.png")
-            self._assert_row_hover(mon, ("toggle", "lidar"))
+            find_leaf(mon.dock, "brain").visible = False
+            mon._apply_layout(mon.screen.get_height())
+            mon.draw(view)
+            self._assert_row_hover(
+                mon, ("toggle", "brain"), shot="/opt/cursor/artifacts/view_menu_c_dark.png"
+            )
+            find_leaf(mon.dock, "brain").visible = True
+            mon._apply_layout(mon.screen.get_height())
             mon.draw(view)
 
             outside = mon.cam_rect.center
@@ -330,11 +350,12 @@ class TrainerDockTests(unittest.TestCase):
             self._click_menu(mon, ("reset",))
             self.assertFalse(mon.menu_open)
             self.assertTrue(find_leaf(mon.dock, "journal").visible)
+            self.assertTrue(find_leaf(mon.dock, "brain").visible)
             self.assertLess(mon.cam_rect.y, mon.lid_rect.y)
         finally:
             pygame.quit()
 
-    def _assert_row_hover(self, mon, action, skipped: bool = False) -> None:
+    def _assert_row_hover(self, mon, action, skipped: bool = False, shot: str = "") -> None:
         import pygame
 
         row = next(rect for rect, item in mon._menu_hits if item == action)
@@ -342,15 +363,22 @@ class TrainerDockTests(unittest.TestCase):
         pygame.mouse.get_pos = lambda: (int(row.centerx), int(row.centery))
         try:
             mon.draw(mon._last_view)
-            sample = mon.screen.get_at((row.right - 10, row.centery))
+            if shot:
+                self._save_menu_panel(mon, shot)
+            spots = ((row.x + 4, row.y + 2), (row.right - 4, row.y + 3))
+            samples = [mon.screen.get_at(spot) for spot in spots]
         finally:
             pygame.mouse.get_pos = real
         quiet = next(rect for rect, item in mon._menu_hits if item == ("toggle", "camera"))
-        base = mon.screen.get_at((quiet.right - 10, quiet.centery))
-        if skipped:
-            self.assertLess(abs(int(sample.r) - int(base.r)), 8)
-            return
-        self.assertGreater(abs(int(sample.r) - int(base.r)), 8)
+        bases = (
+            mon.screen.get_at((quiet.x + 4, quiet.y + 2)),
+            mon.screen.get_at((quiet.right - 4, quiet.y + 3)),
+        )
+        for sample, base in zip(samples, bases):
+            if skipped:
+                self.assertLess(abs(int(sample.r) - int(base.r)), 8)
+            else:
+                self.assertGreater(abs(int(sample.r) - int(base.r)), 8)
 
     def _click_at(self, mon, logical) -> None:
         import pygame
@@ -361,9 +389,15 @@ class TrainerDockTests(unittest.TestCase):
         pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(wx), int(wy)), button=1))
         return mon.pump()
 
-    def _click_menu(self, mon, action):
+    def _click_menu(self, mon, action, at: str = "center"):
         rect = next(hit for hit, item in mon._menu_hits if item == action)
-        return self._click_at(mon, rect.center)
+        if at == "left":
+            point = (rect.x + 2, rect.centery)
+        elif at == "right":
+            point = (rect.right - 2, rect.centery)
+        else:
+            point = rect.center
+        return self._click_at(mon, point)
 
     def _slot_patch(self, frame, slot):
         return frame[slot.x + 1 : slot.right - 1, slot.y + 1 : slot.bottom - 1]
@@ -375,7 +409,7 @@ class TrainerDockTests(unittest.TestCase):
         self.assertLess(int(rs.max()) - int(rs.min()), 24, (int(rs.min()), int(rs.max())))
         self.assertFalse(bool(((rs > bs + 30) & (rs > 150)).any()))
 
-    def _assert_peach_mark(self, frame, slot, pale: bool) -> None:
+    def _assert_peach_mark(self, frame, slot) -> None:
         import numpy as np
 
         patch = self._slot_patch(frame, slot)
@@ -384,13 +418,23 @@ class TrainerDockTests(unittest.TestCase):
         bs = patch[:, :, 2].astype(int)
         mask = (rs > bs + 18) & (rs > gs)
         self.assertGreater(int(mask.sum()), 6, int(mask.sum()))
-        # Distance from the accent peach. A washed check sits farther away.
         dist = np.abs(rs - 201) + np.abs(gs - 120) + np.abs(bs - 91)
-        near = int(dist[mask].min())
-        if pale:
-            self.assertGreater(near, 70, near)
-        else:
-            self.assertLess(near, 55, near)
+        self.assertLess(int(dist[mask].min()), 55, int(dist[mask].min()))
+
+    def _assert_gray_mark(self, frame, slot) -> None:
+        import numpy as np
+
+        patch = self._slot_patch(frame, slot)
+        rs = patch[:, :, 0].astype(int)
+        gs = patch[:, :, 1].astype(int)
+        bs = patch[:, :, 2].astype(int)
+        lum = (rs + gs + bs) / 3.0
+        mask = np.abs(lum - float(np.median(lum))) > 24
+        self.assertGreater(int(mask.sum()), 6, int(mask.sum()))
+        self.assertLess(float(np.median(np.abs(rs[mask] - gs[mask]))), 16)
+        self.assertLess(float(np.median(np.abs(rs[mask] - bs[mask]))), 16)
+        dist = np.abs(rs - 201) + np.abs(gs - 120) + np.abs(bs - 91)
+        self.assertGreater(int(dist[mask].min()), 70, int(dist[mask].min()))
 
     def _assert_menu_switch(self, frame, rect, on: bool) -> None:
         radius = rect.h // 2
@@ -416,9 +460,38 @@ class TrainerDockTests(unittest.TestCase):
 
         self.assertEqual(theme_name(), on_theme)
         frame = pygame.surfarray.array3d(mon.screen)
-        self.assertEqual(len([action for _r, action in mon._menu_hits if action[0] == "theme"]), 1)
-        self.assertNotIn(("theme", "light"), [action for _r, action in mon._menu_hits])
-        self.assertNotIn(("theme", "dark"), [action for _r, action in mon._menu_hits])
+        order = [action for _rect, action in mon._menu_hits]
+        self.assertEqual(
+            order,
+            [
+                ("toggle", "camera"),
+                ("toggle", "lidar"),
+                ("toggle", "brain"),
+                ("toggle", "journal"),
+                ("toggle", "robot"),
+                ("locked", "controls"),
+                ("reset",),
+                ("theme",),
+                ("doggibot",),
+                ("go2",),
+            ],
+        )
+        self.assertEqual(
+            [mon._menu_captions[action] for action in order[:8]],
+            [
+                "Камера",
+                "Лидар",
+                "Панель мозга",
+                "Журнал",
+                "Робот",
+                "Кнопки (E-STOP)",
+                "Сброс раскладки",
+                "Тёмная тема",
+            ],
+        )
+        self.assertEqual(len([action for action in order if action[0] == "theme"]), 1)
+        self.assertNotIn(("theme", "light"), order)
+        self.assertNotIn(("theme", "dark"), order)
         self.assertEqual((mon._menu_switch_rect.w, mon._menu_switch_rect.h), (36, 20))
         slot_x = None
         for _rect, action in mon._menu_hits:
@@ -427,25 +500,41 @@ class TrainerDockTests(unittest.TestCase):
                 slot_x = slot.x
             self.assertEqual(slot.x, slot_x)
             self.assertEqual(slot.w, 16)
+            self.assertEqual(slot.x + 24, mon._menu_label_x)
+            row = next(rect for rect, item in mon._menu_hits if item == action)
+            self.assertEqual(row.x, mon._menu_panel.x)
+            self.assertEqual(row.w, mon._menu_panel.w)
             if action[0] == "toggle":
                 if find_leaf(mon.dock, action[1]).visible:
-                    self._assert_peach_mark(frame, slot, pale=False)
+                    self._assert_peach_mark(frame, slot)
                 else:
                     self._assert_empty_slot(frame, slot)
             elif action[0] == "locked":
                 self.assertTrue(find_leaf(mon.dock, action[1]).visible)
-                self._assert_peach_mark(frame, slot, pale=True)
+                self._assert_gray_mark(frame, slot)
             else:
                 self._assert_empty_slot(frame, slot)
         self._assert_menu_switch(frame, mon._menu_switch_rect, on_theme == "dark")
-        robot = next(rect for rect, action in mon._menu_hits if action == ("toggle", "robot"))
+        controls = next(rect for rect, action in mon._menu_hits if action == ("locked", "controls"))
         reset = next(rect for rect, action in mon._menu_hits if action[0] == "reset")
         rule = mon._menu_rule
-        self.assertGreater(rule.centery, robot.bottom)
+        self.assertGreater(rule.centery, controls.bottom)
         self.assertLess(rule.centery, reset.top)
-        above = frame[rule.centerx, rule.y - 5]
+        self.assertLess(rule.y - controls.bottom, 16)
+        self.assertLess(reset.top - rule.bottom, 16)
+        above = frame[rule.centerx, rule.y - 4]
         line = frame[rule.centerx, rule.y]
         self.assertGreaterEqual(abs(int(line[0]) - int(above[0])), 8)
+
+    def _save_menu_panel(self, mon, path: str) -> None:
+        import pygame
+
+        panel = mon._menu_panel
+        crop = pygame.Rect(panel.x - 20, panel.y - 16, panel.w + 40, panel.h + 40)
+        crop = crop.clamp(mon.screen.get_rect())
+        shot = pygame.Surface((crop.w, crop.h))
+        shot.blit(mon.screen, (0, 0), area=crop)
+        pygame.image.save(pygame.transform.smoothscale(shot, (crop.w * 2, crop.h * 2)), path)
 
     def _save_menu(self, mon, path: str) -> None:
         import pygame
@@ -490,8 +579,8 @@ class TrainerDockTests(unittest.TestCase):
             self.assertNotIn(("toggle", "controls"), actions)
 
             frame = pygame.surfarray.array3d(mon.screen)
-            self._assert_peach_mark(frame, mon._menu_marks[("toggle", "camera")], pale=False)
-            self._assert_peach_mark(frame, mon._menu_marks[("locked", "controls")], pale=True)
+            self._assert_peach_mark(frame, mon._menu_marks[("toggle", "camera")])
+            self._assert_gray_mark(frame, mon._menu_marks[("locked", "controls")])
             self.assertEqual(
                 {mon._menu_marks[action].x for _rect, action in mon._menu_hits},
                 {mon._menu_label_x - 24},

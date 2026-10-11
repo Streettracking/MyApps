@@ -743,6 +743,7 @@ class TrainMonitor:
         self._menu_hits: list = []
         self._menu_panel = None
         self._menu_marks = {}
+        self._menu_captions = {}
         self._menu_label_x = 0
         self._menu_rule = None
         self._menu_switch_rect = None
@@ -1911,6 +1912,7 @@ class TrainMonitor:
         self._menu_hits = []
         self._menu_panel = None
         self._menu_marks = {}
+        self._menu_captions = {}
         self._menu_label_x = 0
         self._menu_rule = None
         self._menu_switch_rect = None
@@ -2404,7 +2406,7 @@ class TrainMonitor:
                 pygame.draw.line(screen, INK_DIM, (mid, rect.centery - 18), (mid, rect.centery + 18), 2)
 
     def _blit_menu_check(self, screen, rect, color) -> None:
-        """A smoothed check. Drawn large, then scaled down, in a fixed slot."""
+        """Smoothed check, about 2px. Drawn large, then scaled into a fixed slot."""
         import pygame
 
         scale = 4
@@ -2415,29 +2417,49 @@ class TrainMonitor:
             return (int(round(x * rect.w / 14.0 * scale)), int(round(y * rect.h / 14.0 * scale)))
 
         pts = [pt(2.2, 7.2), pt(5.6, 11.0), pt(12.2, 2.8)]
-        width = max(2, int(round(2.2 * scale)))
+        width = max(1, int(round(2.0 * scale)))
         pygame.draw.lines(big, ink, False, pts, width)
         cap = max(1, width // 2)
         for point in pts:
             pygame.draw.circle(big, ink, point, cap)
         screen.blit(pygame.transform.smoothscale(big, (rect.w, rect.h)), rect.topleft)
 
-    def _menu_check_ink(self, pale: bool) -> tuple:
-        """Accent peach, or that peach washed into the card for a locked row."""
-        if not pale:
-            return tuple(int(c) for c in PEACH)
-        ground = _scheme_rgb("card")
-        return tuple(int(PEACH[i] * 0.42 + ground[i] * 0.58) for i in range(3))
+    def _menu_check_ink(self, locked: bool) -> tuple:
+        """Accent peach. The locked E-STOP row uses the muted text gray."""
+        if locked:
+            return _scheme_rgb("ink_dim")
+        return tuple(int(c) for c in PEACH)
+
+    def _fill_menu_row(self, screen, panel, row) -> None:
+        """Pale hover across the whole row, clipped to the rounded card."""
+        import pygame
+
+        color = _scheme_rgb("pin_plate_hot")
+        band = pygame.Surface((panel.w, panel.h), pygame.SRCALPHA)
+        local = pygame.Rect(0, row.y - panel.y, panel.w, row.h)
+        pygame.draw.rect(band, (int(color[0]), int(color[1]), int(color[2]), 255), local)
+        mask = pygame.Surface((panel.w, panel.h), pygame.SRCALPHA)
+        pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=10)
+        band.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        screen.blit(band, panel.topleft)
 
     def _draw_menu(self, screen) -> None:
         import pygame
 
+        titles = {
+            "camera": "Камера",
+            "lidar": "Лидар",
+            "brain": "Панель мозга",
+            "journal": "Журнал",
+            "robot": "Робот",
+            "controls": "Кнопки (E-STOP)",
+        }
         blocks = []
-        for name in BLOCKS:
+        for name in ("camera", "lidar", "brain", "journal", "robot", "controls"):
             if name == "controls":
-                blocks.append((("locked", name), BLOCK_TITLES[name], "locked", name))
+                blocks.append((("locked", name), titles[name], "locked", name))
             else:
-                blocks.append((("toggle", name), BLOCK_TITLES[name], "check", name))
+                blocks.append((("toggle", name), titles[name], "check", name))
         actions = [
             (("reset",), "Сброс раскладки", "button", None),
             (("theme",), "Тёмная тема", "theme", None),
@@ -2464,6 +2486,7 @@ class TrainMonitor:
         self._card(screen, panel, radius=10)
         self._menu_hits = []
         self._menu_marks = {}
+        self._menu_captions = {}
         self._menu_switch_rect = None
         label_x = panel.x + pad_l + mark + gap
         self._menu_label_x = label_x
@@ -2472,13 +2495,14 @@ class TrainMonitor:
 
         def paint(action, label, kind, arg) -> None:
             nonlocal cursor
-            row = pygame.Rect(panel.x + 4, cursor, panel.w - 8, row_h)
+            row = pygame.Rect(panel.x, cursor, panel.w, row_h)
             self._menu_hits.append((row, action))
+            self._menu_captions[action] = label
             slot = pygame.Rect(panel.x + pad_l, row.centery - mark // 2, mark, mark)
             self._menu_marks[action] = slot
             hot = kind != "locked" and row.collidepoint(pointer)
             if hot:
-                pygame.draw.rect(screen, _scheme_rgb("pin_plate_hot"), row, border_radius=6)
+                self._fill_menu_row(screen, panel, row)
             caption = LABEL
             if kind == "check":
                 leaf = self._leaf(arg)
