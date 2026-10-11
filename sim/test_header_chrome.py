@@ -183,7 +183,7 @@ class HeaderChromeTests(unittest.TestCase):
         )
 
     def _assert_gaps(self, mon) -> None:
-        from sim.train_monitor import MENU_H, WIN_W
+        from sim.train_monitor import MENU_H, MIN_CONTENT_W, WIN_W
 
         ordered = (
             mon.help_bar_rect,
@@ -195,6 +195,9 @@ class HeaderChromeTests(unittest.TestCase):
             mon.theme_label_rect,
             mon.theme_switch_rect,
         )
+        ordered = tuple(rect for rect in ordered if rect.w > 0)
+        if mon.window is not None and mon.window.get_width() >= MIN_CONTENT_W:
+            self.assertGreater(mon.theme_label_rect.w, 0)
         for rect in self._header_rects(mon):
             self.assertGreaterEqual(rect.x, 0)
             self.assertLessEqual(rect.right, WIN_W)

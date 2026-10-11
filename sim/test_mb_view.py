@@ -227,14 +227,12 @@ class WindowTests(unittest.TestCase):
         mon.scroll_y = 0
         mon.draw(view)
         wx, wy = window_from_logical(mon.brain_rect.center, 800, 600, (0, 0))
-        self.assertGreaterEqual(wx, 800)
+        self.assertGreaterEqual(wx, 0)
+        self.assertLess(wx, 800)
+        self.assertGreater(scroll_limits(800, 600)[0], 0)
         pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(48, 18), button=1))
         missed = mon.pump()
         self.assertFalse(missed.brain_toggle)
-        mon.scroll_x = scroll_limits(800, 600)[0]
-        wx, wy = window_from_logical(mon.brain_rect.center, 800, 600, (mon.scroll_x, mon.scroll_y))
-        self.assertGreaterEqual(wx, 0)
-        self.assertLess(wx, 800)
         pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(wx, wy), button=1))
         hit = mon.pump()
         self.assertTrue(hit.brain_toggle)

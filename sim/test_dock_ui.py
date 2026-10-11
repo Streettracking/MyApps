@@ -588,9 +588,18 @@ class HelpPopoverTests(unittest.TestCase):
             pygame.quit()
 
     def _aim(self, mon, logical, point) -> None:
-        from sim.train_monitor import window_from_logical
+        from sim.train_monitor import FOOTER_H, window_from_logical
 
-        wx, wy = window_from_logical(logical, mon.window.get_width(), mon.window.get_height(), (mon.scroll_x, mon.scroll_y))
+        ww, wh = mon.window.get_size()
+        canvas_h = mon.screen.get_height() if mon.screen is not None else None
+        wx, wy = window_from_logical(
+            logical,
+            ww,
+            wh,
+            (mon.scroll_x, mon.scroll_y),
+            footer_h=int(getattr(mon, "_footer_h", FOOTER_H)),
+            canvas_h=canvas_h,
+        )
         point[0], point[1] = int(wx), int(wy)
 
     def _click(self, mon, logical, point):
@@ -1066,7 +1075,9 @@ class BoardLampTests(unittest.TestCase):
             mon.brain_rect = pygame.Rect(700, 0, 160, 24)
             mon.help_bar_rect = pygame.Rect(430, 4, 28, 24)
             mon._link_lamp(surf, view, 400)
-            self.assertGreater(max(surf.get_at((400, 22))[:3]), 40)
+            from sim.train_monitor import MENU_H
+
+            self.assertGreater(max(surf.get_at((400, MENU_H // 2))[:3]), 40)
             band = pygame.surfarray.array3d(surf)[414:470, 6:30]
             self.assertTrue((band.max(axis=2) <= 12).all())
             wide = pygame.Surface((800, 40))
@@ -1077,3 +1088,145 @@ class BoardLampTests(unittest.TestCase):
             self.assertGreater(int((word.max(axis=2) > 40).sum()), 8)
         finally:
             pygame.quit()
+
+
+class FooterClearanceTests(unittest.TestCase):
+    def test_buttons_clear_the_footer_at_laptop_sizes(self):
+        """Client 1920×1017, 1440×900, and scale 0.75 keep every button above the footer."""
+        import pygame
+
+        from sim.recognize_train import SIM_KEYS
+        from sim.train_monitor import ESTOP, MonitorView, TrainMonitor, fit_window, window_from_logical
+
+        pygame.init()
+        mon = TrainMonitor("footer-fit")
+        view = MonitorView(
+            title="тренировка узнавания   go2_1",
+            learner="mb",
+            learning_on=True,
+            yolo_state="смотрит",
+            udp_status="симулятор. В автономии ведёт мозг, иначе стрелки или сценарий.",
+            last_command="сценарий",
+            keys_hint=SIM_KEYS,
+            focused=True,
+        )
+        names = (
+            "learn_rect",
+            "auto_rect",
+            "take_rect",
+            "steer_rect",
+            "treat_rect",
+            "estop_rect",
+            "stand_up_rect",
+            "stand_down_rect",
+            "recovery_rect",
+            "lidar_reset_rect",
+            "lidar_fresh_rect",
+            "view_rect",
+            "go2_rect",
+            "brain_rect",
+            "teacher_rect",
+            "record_rect",
+            "pin_rect",
+            "theme_switch_rect",
+        )
+        try:
+            for ww, wh in ((1920, 1017), (1440, 900)):
+                mon._on_resize(ww, wh)
+                mon.scroll_x = 0
+                mon.scroll_y = 0
+                mon.draw(view)
+                self.assertEqual(mon.window.get_size(), (ww, wh))
+                scale = fit_window(ww, wh)[0]
+                if ww == 1440:
+                    self.assertAlmostEqual(scale, 0.75, places=2)
+                canvas_h = mon.screen.get_height()
+                footer_h = int(mon._footer_h)
+                footer_top = window_from_logical(
+                    (16, mon.layout["footer_y"]),
+                    ww,
+                    wh,
+                    (0, 0),
+                    footer_h=footer_h,
+                    canvas_h=canvas_h,
+                )[1]
+                self.assertGreater(footer_h, 0)
+                self.assertLess(footer_top, wh)
+                buttons = []
+                for name in names:
+                    rect = getattr(mon, name)
+                    if rect.w < 8 or rect.h < 8:
+                        continue
+                    box = self._window_box(mon, rect, ww, wh)
+                    buttons.append((name, box, rect))
+                    self.assertGreaterEqual(box.x, 0, (name, ww, wh, box))
+                    self.assertGreaterEqual(box.y, 0, (name, ww, wh, box))
+                    self.assertLessEqual(box.right, ww, (name, ww, wh, box))
+                    self.assertLessEqual(box.bottom, wh, (name, ww, wh, box))
+                    self.assertLessEqual(box.bottom, footer_top, (name, ww, wh, box, footer_top))
+                self.assertTrue(any(name == "estop_rect" for name, _box, _rect in buttons))
+                estop = next(box for name, box, _rect in buttons if name == "estop_rect")
+                self.assertGreaterEqual(estop.h, 24, (ww, wh, estop))
+                frame = mon.present_into((ww, wh))
+                sample = frame.get_at((estop.centerx, estop.centery))
+                self.assertLess(abs(sample.r - ESTOP[0]), 30, (ww, wh, sample))
+                self.assertLess(abs(sample.g - ESTOP[1]), 40, (ww, wh, sample))
+                switch = self._window_box(mon, mon.theme_switch_rect, ww, wh)
+                pin = self._window_box(mon, mon.pin_rect, ww, wh)
+                self.assertLessEqual(switch.right, ww - 4, (ww, wh, switch))
+                self.assertGreaterEqual(pin.x, 0)
+                self.assertLess(pin.right, switch.x)
+                if mon.theme_label_rect.w > 0:
+                    label = self._window_box(mon, mon.theme_label_rect, ww, wh)
+                    self.assertLessEqual(label.right, switch.x, (ww, wh, label, switch))
+                    self.assertGreaterEqual(label.x, pin.right)
+
+            ww, wh = 1920, 280
+            mon._on_resize(ww, wh)
+            mon.scroll_x = 0
+            mon.scroll_y = 0
+            mon.draw(view)
+            geom = mon.scroll_geometry((ww, wh))
+            self.assertIsNotNone(geom["thumb_y"])
+            self.assertGreater(geom["max_y"], 0)
+            mon.scroll_y = geom["max_y"]
+            mon.draw(view)
+            canvas_h = mon.screen.get_height()
+            footer_h = int(mon._footer_h)
+            footer_top = window_from_logical(
+                (16, mon.layout["footer_y"]),
+                ww,
+                wh,
+                (0, mon.scroll_y),
+                footer_h=footer_h,
+                canvas_h=canvas_h,
+            )[1]
+            client = pygame.Rect(0, 0, ww, wh)
+            for name in names:
+                rect = getattr(mon, name)
+                if rect.w < 8 or rect.h < 8:
+                    continue
+                box = self._window_box(mon, rect, ww, wh, (0, mon.scroll_y))
+                if not client.colliderect(box):
+                    continue
+                self.assertTrue(client.contains(box), (name, box))
+                self.assertLessEqual(box.bottom, footer_top, (name, box, footer_top))
+            estop = self._window_box(mon, mon.estop_rect, ww, wh, (0, mon.scroll_y))
+            self.assertGreaterEqual(estop.h, 24)
+            frame = mon.present_into((ww, wh))
+            sample = frame.get_at((estop.centerx, estop.centery))
+            self.assertLess(abs(sample.r - ESTOP[0]), 30, sample)
+            self.assertLess(abs(sample.g - ESTOP[1]), 40, sample)
+        finally:
+            pygame.quit()
+
+    def _window_box(self, mon, rect, ww, wh, scroll=(0, 0)):
+        import pygame
+
+        from sim.train_monitor import window_from_logical
+
+        canvas_h = mon.screen.get_height()
+        footer_h = int(mon._footer_h)
+        x0, y0 = window_from_logical((rect.x, rect.y), ww, wh, scroll, footer_h=footer_h, canvas_h=canvas_h)
+        x1, y1 = window_from_logical((rect.right, rect.bottom), ww, wh, scroll, footer_h=footer_h, canvas_h=canvas_h)
+        return pygame.Rect(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))

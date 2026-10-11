@@ -300,14 +300,19 @@ def scroll_limits(ww: int, wh: int) -> tuple:
     return max(0, content_w - int(ww)), max(0, content_h - int(wh))
 
 
-def scrollbar_geom(ww: int, wh: int, scroll_x: int = 0, scroll_y: int = 0) -> dict:
+def scrollbar_geom(ww: int, wh: int, scroll_x: int = 0, scroll_y: int = 0, content_h: int | None = None) -> dict:
     """Tracks and thumbs in window pixels. Missing bars are ``None``."""
     import pygame
 
     ww = int(ww)
     wh = int(wh)
     max_x, max_y = scroll_limits(ww, wh)
-    _scale, _lw, _lh, content_w, content_h = fit_window(ww, wh)
+    _scale, _lw, _lh, content_w, fitted_h = fit_window(ww, wh)
+    if content_h is None:
+        content_h = fitted_h
+    else:
+        content_h = max(1, int(content_h))
+        max_y = max(0, content_h - int(wh))
     sx = max(0, min(int(scroll_x), max_x))
     sy = max(0, min(int(scroll_y), max_y))
     show_x = max_x > 0
@@ -339,16 +344,20 @@ def scrollbar_geom(ww: int, wh: int, scroll_x: int = 0, scroll_y: int = 0) -> di
     }
 
 
-def logical_from_window(pos, ww: int, wh: int, scroll=(0, 0)) -> tuple:
+def logical_from_window(pos, ww: int, wh: int, scroll=(0, 0), footer_h: int | None = None, canvas_h: int | None = None) -> tuple:
     """Window pixels → canvas pixels, including scroll. A bar click is ``(-1, -1)``."""
     scale, logical_w, logical_h, content_w, content_h = fit_window(ww, wh)
-    geom = scrollbar_geom(ww, wh, scroll[0], scroll[1])
+    footer = FOOTER_H if footer_h is None else max(1, int(footer_h))
+    if canvas_h is not None:
+        logical_h = max(1, int(canvas_h))
+        content_h = max(1, int(round(logical_h * scale)))
+    geom = scrollbar_geom(ww, wh, scroll[0], scroll[1], content_h=content_h if canvas_h is not None else None)
     px, py = int(pos[0]), int(pos[1])
     for bar in (geom["track_x"], geom["track_y"]):
         if bar is not None and bar.collidepoint(px, py):
             return (-1, -1)
     sx, sy = geom["scroll"]
-    bands = _chrome_bands(scale, wh, content_h)
+    bands = _chrome_bands(scale, wh, content_h, footer_h=footer)
     if bands["pinned"]:
         menu_px = bands["menu_px"]
         footer_px = bands["footer_px"]
@@ -356,7 +365,7 @@ def logical_from_window(pos, ww: int, wh: int, scroll=(0, 0)) -> tuple:
         if py < menu_px:
             y_logical = py / scale
         elif py >= wh - footer_px:
-            y_logical = (logical_h - FOOTER_H) + (py - (wh - footer_px)) / scale
+            y_logical = (logical_h - footer) + (py - (wh - footer_px)) / scale
         else:
             y_logical = MENU_H + (py - menu_px + sy) / scale
         if x < 0 or x >= content_w or py < 0 or py >= wh:
@@ -373,19 +382,23 @@ def logical_from_window(pos, ww: int, wh: int, scroll=(0, 0)) -> tuple:
     return (max(0, min(logical_w - 1, lx)), max(0, min(logical_h - 1, ly)))
 
 
-def window_from_logical(pos, ww: int, wh: int, scroll=(0, 0)) -> tuple:
+def window_from_logical(pos, ww: int, wh: int, scroll=(0, 0), footer_h: int | None = None, canvas_h: int | None = None) -> tuple:
     """Canvas pixels → window pixels. Scroll shifts the point toward the origin.
 
     When the canvas is taller than the client, the menu stays at y=0 and the
     footer stays on the bottom edge. Only the blocks between them scroll.
     """
     scale, _lw, logical_h, _cw, content_h = fit_window(ww, wh)
-    geom = scrollbar_geom(ww, wh, scroll[0], scroll[1])
+    footer = FOOTER_H if footer_h is None else max(1, int(footer_h))
+    if canvas_h is not None:
+        logical_h = max(1, int(canvas_h))
+        content_h = max(1, int(round(logical_h * scale)))
+    geom = scrollbar_geom(ww, wh, scroll[0], scroll[1], content_h=content_h if canvas_h is not None else None)
     sx, sy = geom["scroll"]
     lx = float(pos[0])
     ly = float(pos[1])
     wx = int(round(lx * scale)) - sx
-    bands = _chrome_bands(scale, wh, content_h)
+    bands = _chrome_bands(scale, wh, content_h, footer_h=footer)
     if not bands["pinned"]:
         wy = int(round(ly * scale)) - sy
         return wx, wy
@@ -393,24 +406,26 @@ def window_from_logical(pos, ww: int, wh: int, scroll=(0, 0)) -> tuple:
     footer_px = bands["footer_px"]
     if ly < MENU_H:
         wy = int(round(ly * scale))
-    elif ly >= logical_h - FOOTER_H:
-        wy = (wh - footer_px) + int(round((ly - (logical_h - FOOTER_H)) * scale))
+    elif ly >= logical_h - footer:
+        wy = (wh - footer_px) + int(round((ly - (logical_h - footer)) * scale))
     else:
         wy = menu_px + int(round((ly - MENU_H) * scale)) - sy
     return wx, wy
 
 
-def _chrome_bands(scale: float, wh: int, content_h: int) -> dict:
+def _chrome_bands(scale: float, wh: int, content_h: int, footer_h: int | None = None) -> dict:
     """Menu and footer heights in window pixels. ``pinned`` when the canvas is taller."""
+    footer = FOOTER_H if footer_h is None else max(1, int(footer_h))
     menu_px = max(1, int(round(MENU_H * scale)))
-    footer_px = max(1, int(round(FOOTER_H * scale)))
+    footer_px = max(1, int(round(footer * scale)))
     if menu_px + footer_px >= int(wh):
         room = max(2, int(wh))
-        menu_px = max(1, int(round(room * MENU_H / float(MENU_H + FOOTER_H))))
+        menu_px = max(1, int(round(room * MENU_H / float(MENU_H + footer))))
         footer_px = max(1, room - menu_px)
     return {
         "menu_px": menu_px,
         "footer_px": footer_px,
+        "footer_h": footer,
         "pinned": int(content_h) > int(wh),
     }
 
@@ -709,6 +724,11 @@ class TrainMonitor:
         self._settings = load_settings() if self._persist else default_settings()
         apply_theme(self._settings.get("theme") if self._persist else "light")
         self.pin_on_top = bool(self._settings.get("pin_on_top"))
+        self._footer_h = FOOTER_H
+        self._footer_lines = []
+        self._show_theme_label = True
+        self._header_short = False
+        self._client_size = (WIN_W, WIN_H)
         self._pin_surface = None
         self._pin_applied = None
         self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
@@ -802,9 +822,10 @@ class TrainMonitor:
     def _apply_layout(self, height: int = WIN_H) -> None:
         import pygame
 
-        height = max(WIN_H, int(height))
-        footer_y = height - FOOTER_H
-        area_h = max(160, footer_y - MENU_H)
+        footer_h = int(getattr(self, "_footer_h", FOOTER_H))
+        height = max(MENU_H + footer_h + 96, int(height))
+        footer_y = height - footer_h
+        area_h = max(96, footer_y - MENU_H)
         placed = layout_dock(self.dock, 12, MENU_H, WIN_W - 24, area_h)
         self._dock_blocks = placed["blocks"]
         self._dock_splitters = placed["splitters"]
@@ -838,24 +859,7 @@ class TrainMonitor:
                 cursor += rw + gap_b
             return out
 
-        self.view_rect = pygame.Rect(8, 4, 52, 24)
-        dog_w = self.font_sm.size("DoggiBOT")[0] + 28
-        self.doggibot_rect = pygame.Rect(self.view_rect.right + 8, 4, dog_w, 24)
-        self.pin_rect, self.theme_label_rect, self.theme_switch_rect = self._place_header_chrome()
-        go2_w = self._go2_button_width()
-        header_items = [("go2", go2_w), ("brain", 168), ("teacher", 280), ("record", 250)]
-        header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
-        header_limit = self.pin_rect.x - 8
-        title_w = self.font.size("recognition training")[0]
-        lamp_w = 14 + self.font_sm.size("борт")[0]
-        min_help = self.doggibot_rect.right + 12 + title_w + 18 + lamp_w + 8
-        header_x = max(min_help + 36, header_limit - header_total)
-        buttons = row(header_items, header_x, 4, 24, header_limit)
-        self.go2_rect = buttons["go2"]
-        self.brain_rect = buttons["brain"]
-        self.teacher_rect = buttons["teacher"]
-        self.record_rect = buttons["record"]
-        self.help_bar_rect = pygame.Rect(self.go2_rect.x - 36, 4, 28, 24)
+        self._place_header()
 
         leaf = self._dock_leaves.get("controls")
         inner = None
@@ -1119,7 +1123,15 @@ class TrainMonitor:
         if ww < 2 or wh < 2:
             return (int(pos[0]), int(pos[1]))
         self._clamp_scroll(ww, wh)
-        return logical_from_window(pos, ww, wh, (self.scroll_x, self.scroll_y))
+        canvas_h = self.screen.get_height() if self.screen is not None else None
+        return logical_from_window(
+            pos,
+            ww,
+            wh,
+            (self.scroll_x, self.scroll_y),
+            footer_h=int(getattr(self, "_footer_h", FOOTER_H)),
+            canvas_h=canvas_h,
+        )
 
     def _mouse(self) -> tuple:
         import pygame
@@ -1190,7 +1202,11 @@ class TrainMonitor:
             if self.window is None:
                 return
             ww, wh = self.window.get_size()
-        max_x, max_y = scroll_limits(int(ww), int(wh))
+        ww, wh = int(ww), int(wh)
+        max_x, _fit_y = scroll_limits(ww, wh)
+        scale = fit_window(ww, wh)[0]
+        canvas_h = self.screen.get_height() if self.screen is not None else fit_window(ww, wh)[2]
+        max_y = max(0, int(round(canvas_h * scale)) - wh)
         self.scroll_x = max(0, min(int(self.scroll_x), max_x))
         self.scroll_y = max(0, min(int(self.scroll_y), max_y))
 
@@ -1204,7 +1220,11 @@ class TrainMonitor:
             if self.window is None:
                 return scrollbar_geom(WIN_W, WIN_H, 0, 0)
             size = self.window.get_size()
-        return scrollbar_geom(int(size[0]), int(size[1]), self.scroll_x, self.scroll_y)
+        ww, wh = int(size[0]), int(size[1])
+        scale = fit_window(ww, wh)[0]
+        canvas_h = self.screen.get_height() if self.screen is not None else None
+        content_h = None if canvas_h is None else max(1, int(round(canvas_h * scale)))
+        return scrollbar_geom(ww, wh, self.scroll_x, self.scroll_y, content_h=content_h)
 
     def _bind_display(self) -> None:
         """Point self.window at the surface SDL is using right now."""
@@ -1234,15 +1254,22 @@ class TrainMonitor:
         self.font_ind = _ui_font(font_px(18, scale))
 
     def _sync_canvas(self, ww: int, wh: int) -> None:
-        scale, logical_w, logical_h, _cw, _ch = fit_window(ww, wh)
-        self._ensure_fonts(scale)
-        self._clamp_scroll(ww, wh)
-        if self.screen is None or self.screen.get_size() != (logical_w, logical_h):
-            import pygame
+        import pygame
 
+        scale, logical_w, fit_h, _cw, _ch = fit_window(ww, wh)
+        self._ensure_fonts(scale)
+        self._client_size = (int(ww), int(wh))
+        wrap_w = max(80, min(WIN_W, int(round(ww / max(scale, 1e-6)))) - 32)
+        footer_h, lines = self._measure_footer(wrap_w)
+        self._footer_h = footer_h
+        self._footer_lines = lines
+        use_h = self._canvas_height(fit_h, scale, wh, footer_h)
+        if self.screen is None or self.screen.get_size() != (logical_w, use_h):
             self._drop_surface_caches()
-            self.screen = pygame.Surface((logical_w, logical_h))
-            self._apply_layout(logical_h)
+            self.screen = pygame.Surface((logical_w, use_h))
+        self._apply_layout(use_h)
+        self._clamp_scroll(ww, wh)
+        self._place_header()
 
     def _present(self) -> None:
         """Scale the logical canvas from the top-left. A minimized window skips the blit."""
@@ -1282,9 +1309,10 @@ class TrainMonitor:
             scaled = pygame.transform.smoothscale(source, (target_w, target_h))
         else:
             scaled = source
-        bands = _chrome_bands(content_w / float(max(logical_w, 1)), wh, max(content_h, target_h))
+        footer_h = int(getattr(self, "_footer_h", FOOTER_H))
+        bands = _chrome_bands(content_w / float(max(logical_w, 1)), wh, target_h, footer_h=footer_h)
         if bands["pinned"]:
-            out = self._pin_chrome(scaled, ww, wh, logical_h, bands)
+            out = self._pin_chrome(scaled, ww, wh, sh, bands)
         elif (target_w, target_h) == (ww, wh) and self.scroll_x == 0 and self.scroll_y == 0:
             out = scaled
         else:
@@ -1301,8 +1329,9 @@ class TrainMonitor:
         sw = scaled.get_width()
         menu_px = int(bands["menu_px"])
         footer_px = int(bands["footer_px"])
+        footer_h = int(bands.get("footer_h", FOOTER_H))
         menu_src = max(1, int(round(MENU_H * sh / float(max(logical_h, 1)))))
-        footer_src = max(1, int(round(FOOTER_H * sh / float(max(logical_h, 1)))))
+        footer_src = max(1, int(round(footer_h * sh / float(max(logical_h, 1)))))
         if menu_src + footer_src >= sh:
             menu_src = max(1, sh // 5)
             footer_src = max(1, sh - menu_src - 1)
@@ -1330,7 +1359,7 @@ class TrainMonitor:
     def _paint_scrollbars(self, surface, ww: int, wh: int):
         import pygame
 
-        geom = scrollbar_geom(ww, wh, self.scroll_x, self.scroll_y)
+        geom = self.scroll_geometry((ww, wh))
         for track, thumb in ((geom["track_x"], geom["thumb_x"]), (geom["track_y"], geom["thumb_y"])):
             if track is None or thumb is None:
                 continue
@@ -1661,7 +1690,7 @@ class TrainMonitor:
             return
         axis, grab = self._scroll_drag
         ww, wh = self.window.get_size()
-        geom = scrollbar_geom(ww, wh, self.scroll_x, self.scroll_y)
+        geom = self.scroll_geometry((ww, wh))
         if axis == "y" and geom["track_y"] is not None and geom["thumb_y"] is not None:
             travel = max(1, geom["track_y"].h - geom["thumb_y"].h)
             thumb_top = max(0, min(int(pos[1]) - grab, travel))
@@ -1868,18 +1897,12 @@ class TrainMonitor:
         self.cam_inner = None
         self.lid_inner = None
         self.show_stand = bool(view.onboard)
-        sm = self.font_sm
         self._draw_menu_bar(screen, view)
         self._draw_blocks(screen, view)
         self._draw_splitters(screen)
         footer = int(self.layout["footer_y"])
         pygame.draw.line(screen, LINE, (24, footer), (WIN_W - 24, footer), 1)
-        focus = "окно в фокусе" if view.focused else "нажмите на окно — клавиши не читаются"
-        from .tabnum import phrase as tab_phrase
-
-        self._cells(screen, tab_phrase(view.udp_status, 78) + "  " + tab_phrase(focus, 42), 16, footer + 6, LABEL)
-        self._cells(screen, format_command(view.last_command or "—"), 16, footer + 26, VALUE)
-        screen.blit(sm.render(view.keys_hint, True, LABEL), (16, footer + 40))
+        self._draw_footer_lines(screen, footer)
         if view.learner == "mb":
             if view.recognized and not self._prev_rec and self.beep_on:
                 self._play_beep()
@@ -1894,6 +1917,16 @@ class TrainMonitor:
         self._present()
         self.clock.tick(20)
 
+    def _draw_footer_lines(self, screen, footer: int) -> None:
+        lines = getattr(self, "_footer_lines", None) or []
+        if not lines:
+            _h, lines = self._measure_footer(WIN_W - 32)
+        for role, font, text, y in lines:
+            if not text:
+                continue
+            color = VALUE if role == "command" else LABEL
+            screen.blit(font.render(text, True, color), (16, footer + y))
+
     def _draw_menu_bar(self, screen, view: MonitorView) -> None:
         import pygame
 
@@ -1906,7 +1939,7 @@ class TrainMonitor:
         self._mini_glyph(screen, self.help_bar_rect, "i")
         title = self.font.render(view.title, True, LABEL)
         title_x = self.doggibot_rect.right + 12
-        screen.blit(title, (title_x, 6))
+        screen.blit(title, (title_x, (MENU_H - title.get_height()) // 2))
         self._link_lamp(screen, view, title_x + title.get_width() + 18)
         self._go2_button(screen)
         self._brain_button(screen, view)
@@ -1914,18 +1947,225 @@ class TrainMonitor:
         self._record_button(screen, view)
         self._draw_header_chrome(screen)
 
-    def _place_header_chrome(self):
-        """Paperclip, then «Тёмная тема», then the pill, packed to the right edge."""
+    def _view_size(self) -> tuple:
+        size = getattr(self, "_client_size", None)
+        if size and int(size[0]) >= 64 and int(size[1]) >= 64:
+            return int(size[0]), int(size[1])
+        if self.window is not None:
+            w, h = self.window.get_size()
+            if int(w) >= 64 and int(h) >= 64:
+                return int(w), int(h)
+        return WIN_W, WIN_H
+
+    def _visible_right(self) -> int:
+        """Logical x of the last visible pixel on the menu bar."""
+        ww, wh = self._view_size()
+        scale, _lw, fit_h, content_w, _ch = fit_window(ww, wh)
+        canvas_h = self.screen.get_height() if self.screen is not None else fit_h
+        vbar = SCROLL_BAR if int(round(canvas_h * scale)) > wh else 0
+        right_px = max(1, ww - vbar)
+        logical = (int(getattr(self, "scroll_x", 0)) + right_px) / max(float(scale), 1e-6)
+        return max(1, min(WIN_W, int(logical)))
+
+    def _canvas_height(self, fit_h: int, scale: float, wh: int, footer_h: int) -> int:
+        """Match the client when every block still has room above the footer.
+
+        A shorter client keeps the tall canvas and scrolls, instead of
+        covering a button or squeezing a card down to nothing.
+        """
+        if wh >= int(round(fit_h * scale)) - 1:
+            return int(fit_h)
+        fill_h = max(1, int(round(wh / max(float(scale), 1e-6))))
+        while int(round(fill_h * scale)) < wh:
+            fill_h += 1
+        fill_h = min(int(fit_h), fill_h)
+        if self._dock_fits(fill_h, footer_h):
+            return fill_h
+        return int(fit_h)
+
+    def _dock_fits(self, height: int, footer_h: int) -> bool:
+        """True when every visible card still has a readable content area."""
+        area_h = int(height) - int(footer_h) - MENU_H
+        if area_h < 96:
+            return False
+        placed = layout_dock(self.dock, 12, MENU_H, WIN_W - 24, area_h)
+        blocks = placed["blocks"]
+        for leaf in _iter_leaves(self.dock):
+            if not leaf.visible:
+                continue
+            rect = blocks.get(leaf.block)
+            if rect is None or rect[2] < 48:
+                return False
+            if leaf.collapsed:
+                if rect[3] < DOCK_HEADER // 2:
+                    return False
+                continue
+            inner = dock_content(rect, False)
+            if inner is None or inner[2] < 48 or inner[3] < 40:
+                return False
+        return True
+
+    def _wrap_words(self, font, text: str, width: int) -> list:
+        words = str(text or "").split()
+        if not words:
+            return [""]
+        lines = []
+        cur = ""
+        limit = max(8, int(width))
+        for word in words:
+            trial = word if not cur else cur + " " + word
+            if font.size(trial)[0] <= limit or not cur:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = word
+        if cur:
+            lines.append(cur)
+        return lines or [""]
+
+    def _footer_sources(self) -> tuple:
+        from .tabnum import phrase as tab_phrase
+
+        view = getattr(self, "_last_view", None)
+        status = ""
+        command = "—"
+        keys = ""
+        focused = True
+        if view is not None:
+            status = view.udp_status or ""
+            command = format_command(view.last_command or "—")
+            keys = view.keys_hint or ""
+            focused = bool(view.focused)
+        focus = "окно в фокусе" if focused else "нажмите на окно — клавиши не читаются"
+        line = tab_phrase(status, 78) + "  " + tab_phrase(focus, 42)
+        return line, command, keys
+
+    def _measure_footer(self, width: int) -> tuple:
+        """Status, command, and wrapped keys. Height is reserved before the dock is placed."""
+        from .tabnum import load_font
+
+        mono = load_font(14)
+        sm = self.font_sm
+        status, command, keys = self._footer_sources()
+        groups = (
+            (mono, self._wrap_words(mono, status, width)),
+            (mono, self._wrap_words(mono, command, width)),
+            (sm, self._wrap_words(sm, keys, width)),
+        )
+        pad = 6
+        gap = 4
+        y = pad
+        placed = []
+        roles = ("status", "command", "keys")
+        for role, (font, lines) in zip(roles, groups):
+            for line in lines:
+                placed.append((role, font, line, y))
+                y += font.get_height() + gap
+        height = max(FOOTER_H, y - gap + pad)
+        return height, placed
+
+    def _place_header(self) -> None:
+        """Pack the menu bar into the visible client. Hide the theme label, then shorten captions."""
         import pygame
 
-        label_w, _label_h = self.font_sm.size("Тёмная тема")
+        if self.font_sm is None:
+            return
+        limit = self._visible_right()
+        margin = 12
         switch_w, switch_h = 36, 20
         pin_w, pin_h = 30, 26
-        right = WIN_W - 12
-        switch = pygame.Rect(right - switch_w, (MENU_H - switch_h) // 2, switch_w, switch_h)
-        label = pygame.Rect(switch.x - 8 - label_w, 0, label_w, MENU_H)
-        pin = pygame.Rect(label.x - 14 - pin_w, (MENU_H - pin_h) // 2, pin_w, pin_h)
-        return pin, label, switch
+        label_w = self.font_sm.size("Тёмная тема")[0]
+        self.view_rect = pygame.Rect(8, 4, 52, 24)
+        dog_w = self.font_sm.size("DoggiBOT")[0] + 28
+        self.doggibot_rect = pygame.Rect(self.view_rect.right + 8, 4, dog_w, 24)
+        title = "recognition training"
+        view = getattr(self, "_last_view", None)
+        if view is not None and view.title:
+            title = view.title
+        title_w = max(self.font.size("recognition training")[0], self.font.size(title)[0])
+        lamp_w = 14 + self.font_sm.size("борт")[0]
+        min_help = self.doggibot_rect.right + 12 + title_w + 18 + lamp_w + 8
+        variants = ((True, False), (False, False), (False, True))
+        chosen = variants[-1]
+        placed = None
+        for show_label, short in variants:
+            items = self._header_items(short)
+            total = sum(ww for _name, ww in items) + 8 * (len(items) - 1)
+            switch_right = limit - margin
+            switch = pygame.Rect(switch_right - switch_w, (MENU_H - switch_h) // 2, switch_w, switch_h)
+            if show_label:
+                label = pygame.Rect(switch.x - 8 - label_w, 0, label_w, MENU_H)
+                pin = pygame.Rect(label.x - 14 - pin_w, (MENU_H - pin_h) // 2, pin_w, pin_h)
+            else:
+                label = pygame.Rect(switch.x, 0, 0, 0)
+                pin = pygame.Rect(switch.x - 8 - pin_w, (MENU_H - pin_h) // 2, pin_w, pin_h)
+            header_limit = pin.x - 8
+            header_x = max(min_help + 36, header_limit - total)
+            buttons = self._header_row(items, header_x, header_limit)
+            help_rect = pygame.Rect(buttons["go2"].x - 36, 4, 28, 24)
+            fits = (
+                switch.right <= limit - 4
+                and pin.x >= help_rect.right + 4
+                and buttons["record"].right <= pin.x - 4
+                and help_rect.x >= min_help
+            )
+            placed = (pin, label, switch, buttons, help_rect)
+            chosen = (show_label, short)
+            if fits:
+                break
+        pin, label, switch, buttons, help_rect = placed
+        self.pin_rect = pin
+        self.theme_label_rect = label
+        self.theme_switch_rect = switch
+        self.go2_rect = buttons["go2"]
+        self.brain_rect = buttons["brain"]
+        self.teacher_rect = buttons["teacher"]
+        self.record_rect = buttons["record"]
+        self.help_bar_rect = help_rect
+        self._show_theme_label = bool(chosen[0])
+        self._header_short = bool(chosen[1])
+
+    def _header_items(self, short: bool) -> list:
+        if not short:
+            return [
+                ("go2", self._go2_button_width(False)),
+                ("brain", 168),
+                ("teacher", 280),
+                ("record", 250),
+            ]
+        return [
+            ("go2", self._go2_button_width(True)),
+            ("brain", self._caption_slot("МОЗГ", lamp=True, key=True)),
+            ("teacher", self._caption_slot("УЧ", lamp=True, key=True)),
+            ("record", self._caption_slot("ЗАП", lamp=True, key=True)),
+        ]
+
+    def _caption_slot(self, text: str, lamp: bool, key: bool) -> int:
+        pad = 36 if lamp else 16
+        badge = 28 if key else 8
+        return max(72, self.font_sm.size(text)[0] + pad + badge)
+
+    def _header_row(self, items, x: int, limit: int) -> dict:
+        import pygame
+
+        gap_b = 8
+        total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
+        avail = max(1, limit - x)
+        scale = min(1.0, avail / float(max(total, 1)))
+        out = {}
+        cursor = x
+        for name, ww in items:
+            rw = max(48, int(ww * scale))
+            if cursor + rw > limit:
+                rw = max(32, limit - cursor)
+            out[name] = pygame.Rect(cursor, 4, max(1, rw), 24)
+            cursor += rw + gap_b
+        return out
+
+    def _place_header_chrome(self):
+        """Paperclip, then «Тёмная тема», then the pill, packed to the right edge."""
+        self._place_header()
+        return self.pin_rect, self.theme_label_rect, self.theme_switch_rect
 
     def _header_chrome_hit(self, pos) -> bool:
         pin = getattr(self, "pin_rect", None)
@@ -1970,9 +2210,10 @@ class TrainMonitor:
         self._apply_pin()
 
     def _draw_header_chrome(self, screen) -> None:
-        label = self.font_sm.render("Тёмная тема", True, INK_DIM)
-        text_y = self.theme_label_rect.centery - label.get_height() // 2
-        screen.blit(label, (self.theme_label_rect.x, text_y))
+        if getattr(self, "_show_theme_label", True) and self.theme_label_rect.w > 0:
+            label = self.font_sm.render("Тёмная тема", True, INK_DIM)
+            text_y = (MENU_H - label.get_height()) // 2
+            screen.blit(label, (self.theme_label_rect.x, text_y))
         self._draw_theme_switch(screen, self.theme_switch_rect)
         hover = self.pin_rect.collidepoint(self._mouse())
         fill, stroke = self._pin_colors(hover)
@@ -2719,6 +2960,17 @@ class TrainMonitor:
         screen.blit(glyph, (badge.centerx - glyph.get_width() // 2, badge.centery - glyph.get_height() // 2))
         return badge
 
+    def _blit_clipped(self, screen, surface, pos, rect) -> None:
+        previous = screen.get_clip()
+        clip = rect if previous is None else rect.clip(previous)
+        if clip.width <= 0 or clip.height <= 0:
+            return
+        screen.set_clip(clip)
+        try:
+            screen.blit(surface, pos)
+        finally:
+            screen.set_clip(previous)
+
     def _button(self, screen, rect, text: str, lamp, hot: bool, label_color=None, fill=None, key: str = "") -> None:
         import pygame
 
@@ -2741,9 +2993,9 @@ class TrainMonitor:
             return
         label = self.font_sm.render(text, True, label_color or VALUE)
         if fill is not None:
-            screen.blit(label, (rect.centerx - label.get_width() // 2, rect.centery - label.get_height() // 2))
+            self._blit_clipped(screen, label, (rect.centerx - label.get_width() // 2, rect.centery - label.get_height() // 2), rect)
         else:
-            screen.blit(label, (x, rect.centery - label.get_height() // 2))
+            self._blit_clipped(screen, label, (x, rect.centery - label.get_height() // 2), rect)
         if key:
             self._draw_key_badge(screen, rect, key)
 
@@ -2770,9 +3022,10 @@ class TrainMonitor:
             stop = min(stop, bar.x - 8)
         if x + 14 > stop:
             return
-        self._lamp(screen, (x, 22), color, 6)
+        cy = MENU_H // 2
+        self._lamp(screen, (x, cy), color, 6)
         if x + 14 + label.get_width() <= stop:
-            screen.blit(label, (x + 14, 12))
+            screen.blit(label, (x + 14, (MENU_H - label.get_height()) // 2))
 
     def show_toast(self, text: str, seconds: float = 3.0) -> None:
         import time
@@ -2844,11 +3097,11 @@ class TrainMonitor:
                 key="K",
             )
 
-    def _go2_button_width(self) -> int:
+    def _go2_button_width(self, short: bool = False) -> int:
         """Lamp, tiny caption, lamp, tiny caption, then the title."""
         server = self.font_tiny.size("сервер")[0]
         panel = self.font_tiny.size("панель")[0]
-        title = self.font_sm.size("УПРАВЛЕНИЕ")[0]
+        title = self.font_sm.size("УПР" if short else "УПРАВЛЕНИЕ")[0]
         return 12 + 10 + 4 + server + 10 + 10 + 4 + panel + 8 + title + 12
 
     def _go2_button(self, screen) -> None:
@@ -2879,8 +3132,9 @@ class TrainMonitor:
         panel = self.font_tiny.render("панель", True, ink)
         screen.blit(panel, (x + 8, cy - panel.get_height() // 2))
         x = x + 8 + panel.get_width() + 8
-        label = self.font_sm.render("УПРАВЛЕНИЕ", True, INK_DIM if missing else VALUE)
-        screen.blit(label, (x, cy - label.get_height() // 2))
+        word = "УПР" if getattr(self, "_header_short", False) else "УПРАВЛЕНИЕ"
+        label = self.font_sm.render(word, True, INK_DIM if missing else VALUE)
+        self._blit_clipped(screen, label, (x, cy - label.get_height() // 2), self.go2_rect)
 
     def _brain_button(self, screen, view: MonitorView) -> None:
         if view.learner != "mb":
@@ -2888,7 +3142,7 @@ class TrainMonitor:
         self._button(
             screen,
             self.brain_rect,
-            "МОЗГ 3D",
+            "МОЗГ" if getattr(self, "_header_short", False) else "МОЗГ 3D",
             PEACH if self.brain_open else LAMP_OFF,
             self.brain_rect.collidepoint(self._mouse()),
             key="J",
@@ -2913,12 +3167,14 @@ class TrainMonitor:
         if rect.w < 8 or rect.h < 8:
             return
         badge = self._draw_key_badge(screen, rect, "Y")
-        title = self.font_sm.render("УЧИТЕЛЬ", True, VALUE)
-        screen.blit(title, (rect.x + 32, rect.centery - title.get_height() // 2))
-        slot = self.font_sm.size("смотрит")[0]
-        glyph = self.font_sm.render(status, True, ink)
-        right = badge.left - 8 if badge is not None else rect.right - 8
-        screen.blit(glyph, (right - slot, rect.centery - glyph.get_height() // 2))
+        word = "УЧ" if getattr(self, "_header_short", False) else "УЧИТЕЛЬ"
+        title = self.font_sm.render(word, True, VALUE)
+        self._blit_clipped(screen, title, (rect.x + 32, rect.centery - title.get_height() // 2), rect)
+        if not getattr(self, "_header_short", False):
+            slot = self.font_sm.size("смотрит")[0]
+            glyph = self.font_sm.render(status, True, ink)
+            right = badge.left - 8 if badge is not None else rect.right - 8
+            self._blit_clipped(screen, glyph, (right - slot, rect.centery - glyph.get_height() // 2), rect)
 
     def _draw_det_boxes(self, screen, inner, boxes) -> None:
         """Screen-only YOLO frames. The camera array is not written."""
@@ -2971,7 +3227,8 @@ class TrainMonitor:
             )
             self._draw_key_badge(screen, self.record_rect, "U")
         else:
-            self._button(screen, self.record_rect, "ЗАПИСЬ КАДРОВ", LAMP_OFF, hot, key="U")
+            word = "ЗАП" if getattr(self, "_header_short", False) else "ЗАПИСЬ КАДРОВ"
+            self._button(screen, self.record_rect, word, LAMP_OFF, hot, key="U")
 
     def _ensure_audio(self) -> bool:
         if self.audio_ok is not None:
