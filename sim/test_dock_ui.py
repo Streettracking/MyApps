@@ -356,7 +356,7 @@ class TrainerDockTests(unittest.TestCase):
         self.assertEqual(theme_name(), on_theme)
         frame = pygame.surfarray.array3d(mon.screen)
         box_x = None
-        toggles = [(rect, action) for rect, action in mon._menu_hits if action[0] in ("toggle", "theme")]
+        toggles = [(rect, action) for rect, action in mon._menu_hits if action[0] in ("toggle", "theme", "locked")]
         self.assertEqual(len([action for _r, action in toggles if action[0] == "theme"]), 1)
         self.assertNotIn(("theme", "light"), [action for _r, action in mon._menu_hits])
         self.assertNotIn(("theme", "dark"), [action for _r, action in mon._menu_hits])
@@ -368,6 +368,9 @@ class TrainerDockTests(unittest.TestCase):
             interior = frame[box.x + 3 : box.x + 11, box.y + 3 : box.y + 11]
             if action[0] == "theme":
                 on = on_theme == "dark"
+            elif action[0] == "locked":
+                on = True
+                self.assertTrue(find_leaf(mon.dock, action[1]).visible)
             else:
                 on = bool(find_leaf(mon.dock, action[1]).visible)
             if on:
@@ -398,6 +401,73 @@ class TrainerDockTests(unittest.TestCase):
         shot = pygame.Surface((crop.w, crop.h))
         shot.blit(mon.screen, (0, 0), area=crop)
         pygame.image.save(pygame.transform.scale(shot, (crop.w * 2, crop.h * 2)), path)
+
+    def test_view_check_restores_every_other_block_and_controls_stays_on(self):
+        import pygame
+        import numpy as np
+
+        from sim.dock_layout import BLOCKS, find_leaf
+        from sim.train_monitor import MonitorView, TrainMonitor
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("controls-pin")
+            mon._on_resize(1920, 1080)
+            view = MonitorView(
+                title="recognition training",
+                learner="mb",
+                learning_on=True,
+                camera=np.zeros((90, 160, 3), dtype=np.uint8),
+                lidar=np.zeros((64, 64, 3), dtype=np.uint8),
+                log_lines=["строка журнала"],
+                keys_hint="A авто  J мозг",
+            )
+            mon.draw(view)
+            original = {name: tuple(rect) for name, rect in mon._dock_blocks.items()}
+            saved = mon.dock.to_dict()
+            mon.menu_open = True
+            mon.draw(view)
+            actions = [action for _rect, action in mon._menu_hits]
+            self.assertIn(("locked", "controls"), actions)
+            self.assertNotIn(("toggle", "controls"), actions)
+
+            frame = pygame.surfarray.array3d(mon.screen)
+            locked = next(rect for rect, action in mon._menu_hits if action == ("locked", "controls"))
+            camera = next(rect for rect, action in mon._menu_hits if action == ("toggle", "camera"))
+            self.assertGreater(int(frame[self._menu_box(locked).x, locked.centery].max()), 50)
+            self.assertLess(int(frame[self._menu_box(camera).x, camera.centery].max()), 50)
+
+            self._click_menu(mon, ("locked", "controls"))
+            self.assertTrue(mon.menu_open)
+            self.assertTrue(find_leaf(mon.dock, "controls").visible)
+            self.assertFalse(find_leaf(mon.dock, "controls").collapsed)
+            self.assertEqual({name: tuple(rect) for name, rect in mon._dock_blocks.items()}, original)
+
+            for name in BLOCKS:
+                if name == "controls":
+                    continue
+                self._click_menu(mon, ("toggle", name))
+                self.assertTrue(mon.menu_open)
+                self.assertFalse(find_leaf(mon.dock, name).visible)
+                self.assertNotIn(name, mon._dock_blocks)
+                self._click_menu(mon, ("toggle", name))
+                self.assertTrue(mon.menu_open)
+                self.assertTrue(find_leaf(mon.dock, name).visible)
+                self.assertEqual({key: tuple(rect) for key, rect in mon._dock_blocks.items()}, original)
+                self.assertEqual(mon.dock.to_dict(), saved)
+
+            kinds = [kind for _hit, kind, arg in mon._chrome if arg == "controls"]
+            self.assertEqual(kinds, ["info"])
+            info = next(hit for hit, kind, arg in mon._chrome if kind == "info" and arg == "controls")
+            block = mon._dock_blocks["controls"]
+            self.assertGreaterEqual(info.right, block[0] + block[2] - 8)
+            self._click_at(mon, info.center)
+            self.assertEqual(mon.help_id, "controls")
+            self.assertTrue(find_leaf(mon.dock, "controls").visible)
+            self.assertFalse(find_leaf(mon.dock, "controls").collapsed)
+            self.assertEqual({name: tuple(rect) for name, rect in mon._dock_blocks.items()}, original)
+        finally:
+            pygame.quit()
 
 
 class HelpPopoverTests(unittest.TestCase):
@@ -490,9 +560,16 @@ class HelpPopoverTests(unittest.TestCase):
             infos = {arg: rect for rect, kind, arg in mon._chrome if kind == "info"}
             self.assertEqual(set(infos), {"camera", "lidar", "brain", "journal", "controls", "robot"})
             for name, rect in infos.items():
+                self.assertEqual((rect.w, rect.h), (20, 20))
+                block = mon._dock_blocks[name]
+                if name == "controls":
+                    kinds = [kind for _hit, kind, arg in mon._chrome if arg == name]
+                    self.assertNotIn("collapse", kinds)
+                    self.assertNotIn("close", kinds)
+                    self.assertGreaterEqual(rect.right, block[0] + block[2] - 8)
+                    continue
                 collapse = next(hit for hit, kind, arg in mon._chrome if kind == "collapse" and arg == name)
                 close = next(hit for hit, kind, arg in mon._chrome if kind == "close" and arg == name)
-                self.assertEqual((rect.w, rect.h), (20, 20))
                 self.assertLess(rect.right, collapse.x)
                 self.assertLess(collapse.right, close.x)
             self.assertEqual((mon.help_bar_rect.w, mon.help_bar_rect.h), (28, 24))
@@ -1237,7 +1314,7 @@ class CardButtonTests(unittest.TestCase):
         import pygame
 
         from sim.dock_layout import find_leaf
-        from sim.train_monitor import ESTOP, MonitorView, TrainMonitor, window_from_logical
+        from sim.train_monitor import MonitorView, TrainMonitor, window_from_logical
 
         pygame.init()
         mon = TrainMonitor("card-buttons")
@@ -1273,38 +1350,26 @@ class CardButtonTests(unittest.TestCase):
 
             leaf = find_leaf(mon.dock, "controls")
             leaf.collapsed = True
-            mon._apply_layout(mon.screen.get_height())
-            self.assertLess(mon.estop_rect.w, 8)
-            self.assertGreaterEqual(mon.estop_bar_rect.w, 8)
-            self.assertLess(mon.estop_bar_rect.bottom, 32)
-            bx, by = window_from_logical(
-                mon.estop_bar_rect.center,
-                1920,
-                1017,
-                (0, 0),
-                footer_h=int(mon._footer_h),
-                canvas_h=mon.screen.get_height(),
-            )
-            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(bx), int(by)), button=1))
-            stopped = mon.pump()
-            self.assertTrue(stopped.estop)
-
-            leaf.collapsed = False
             leaf.visible = False
             mon._apply_layout(mon.screen.get_height())
-            self.assertLess(mon.estop_rect.w, 8)
-            self.assertGreaterEqual(mon.estop_bar_rect.w, 8)
+            mon.draw(view)
+            self.assertTrue(leaf.visible)
+            self.assertFalse(leaf.collapsed)
+            self.assertGreaterEqual(mon.estop_rect.w, 8)
+            self.assertTrue(mon._content_of("controls").contains(mon.estop_rect))
+            self.assertLess(mon.estop_bar_rect.w, 8)
+            kinds = [kind for _hit, kind, arg in mon._chrome if arg == "controls"]
+            self.assertIn("info", kinds)
+            self.assertNotIn("collapse", kinds)
+            self.assertNotIn("close", kinds)
 
-            leaf.visible = True
             mon._on_resize(1920, 280)
             mon.scroll_x = 0
             mon.scroll_y = 0
             mon.draw(view)
-            self.assertGreaterEqual(mon.estop_bar_rect.w, 8)
-            frame = mon.present_into((1920, 280))
-            sample = frame.get_at((mon.estop_bar_rect.x + 8, mon.estop_bar_rect.centery))
-            self.assertLess(abs(sample.r - ESTOP[0]), 30, sample)
-            self.assertLess(abs(sample.g - ESTOP[1]), 40, sample)
+            self.assertLess(mon.estop_bar_rect.w, 8)
+            self.assertTrue(find_leaf(mon.dock, "controls").visible)
+            self.assertFalse(find_leaf(mon.dock, "controls").collapsed)
         finally:
             pygame.quit()
 
@@ -1401,6 +1466,8 @@ class DockReflowTests(unittest.TestCase):
         saved = fresh.to_dict()
 
         for name in BLOCKS:
+            if name == "controls":
+                continue
             tree = default_tree()
             before, _area = self._place(tree)
             self.assertEqual(before["blocks"], base["blocks"])
@@ -1471,6 +1538,65 @@ class DockReflowTests(unittest.TestCase):
         self.assertAlmostEqual(locked.a.a.ratio, 0.5, places=3)
         find_leaf(locked, "lidar").collapsed = False
         self.assertEqual(self._place(locked)[0]["blocks"], open_blocks)
+
+    def test_old_window_json_cannot_hide_or_fold_the_buttons_card(self):
+        from sim.dock_layout import default_tree, find_leaf, tree_from_dict
+
+        saved = default_tree().to_dict()
+
+        def paint(node, name, **flags):
+            if node.get("t") == "leaf" and node.get("id") == name:
+                node.update(flags)
+                return
+            for side in ("a", "b"):
+                child = node.get(side)
+                if isinstance(child, dict):
+                    paint(child, name, **flags)
+
+        paint(saved, "controls", visible=False, collapsed=True)
+        paint(saved, "journal", visible=False, collapsed=True)
+        tree = tree_from_dict(saved)
+        controls = find_leaf(tree, "controls")
+        journal = find_leaf(tree, "journal")
+        self.assertTrue(controls.visible)
+        self.assertFalse(controls.collapsed)
+        self.assertFalse(journal.visible)
+        self.assertTrue(journal.collapsed)
+
+        def leaf_of(node, name):
+            if node.get("t") == "leaf":
+                return node if node.get("id") == name else None
+            for side in ("a", "b"):
+                found = leaf_of(node.get(side) or {}, name)
+                if found is not None:
+                    return found
+            return None
+
+        written = tree.to_dict()
+        self.assertTrue(leaf_of(written, "controls")["visible"])
+        self.assertFalse(leaf_of(written, "controls")["collapsed"])
+        self.assertFalse(leaf_of(written, "journal")["visible"])
+        self.assertTrue(leaf_of(written, "journal")["collapsed"])
+
+        fresh = default_tree()
+        find_leaf(fresh, "journal").visible = False
+        find_leaf(fresh, "journal").collapsed = True
+        loaded, _area = self._place(tree)
+        expected, _area = self._place(fresh)
+        self.assertEqual(loaded["blocks"], expected["blocks"])
+        self.assertIn("controls", loaded["blocks"])
+        self.assertGreater(loaded["blocks"]["controls"][3], 26)
+        self.assertNotIn("journal", loaded["blocks"])
+
+        live = default_tree()
+        leaf = find_leaf(live, "controls")
+        leaf.visible = False
+        leaf.collapsed = True
+        opened, _area = self._place(live)
+        self.assertTrue(leaf.visible)
+        self.assertFalse(leaf.collapsed)
+        base, _area = self._place(default_tree())
+        self.assertEqual(opened["blocks"]["controls"], base["blocks"]["controls"])
 
 
 def layout_of(tree):

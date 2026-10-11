@@ -89,7 +89,13 @@ def tree_from_dict(data) -> Split:
             name = node.get("id")
             if name not in BLOCKS:
                 return None
-            return Leaf(name, bool(node.get("collapsed")), bool(node.get("visible", True)))
+            collapsed = bool(node.get("collapsed"))
+            visible = bool(node.get("visible", True))
+            # The buttons card carries E-STOP. A saved file cannot hide or fold it.
+            if name == "controls":
+                collapsed = False
+                visible = True
+            return Leaf(name, collapsed, visible)
         if node.get("t") == "split":
             a = parse(node.get("a"))
             b = parse(node.get("b"))
@@ -125,6 +131,7 @@ def tree_from_dict(data) -> Split:
             return default_tree()
     elif set(names) != set(BLOCKS):
         return default_tree()
+    keep_controls_open(parsed)
     return parsed
 
 
@@ -146,6 +153,15 @@ def _leaves(node) -> list:
     if isinstance(node, Leaf):
         return [node]
     return _leaves(node.a) + _leaves(node.b)
+
+
+def keep_controls_open(node) -> None:
+    """The buttons card stays expanded. Closing and collapsing do not apply to it."""
+    leaf = find_leaf(node, "controls")
+    if leaf is None:
+        return
+    leaf.visible = True
+    leaf.collapsed = False
 
 
 def find_leaf(node, block: str) -> Leaf | None:
@@ -408,6 +424,7 @@ def layout_dock(node, x: int, y: int, w: int, h: int) -> dict:
     the header tall. The band it gives up goes to the neighbors above it.
     Splitter ratios are not rewritten, so opening the block puts it back.
     """
+    keep_controls_open(node)
     blocks: dict = {}
     splitters: list = []
     gaps: list = []
@@ -517,9 +534,16 @@ def content_rect(block_rect: tuple, collapsed: bool) -> tuple | None:
     return (x + 8, y + HEADER, max(1, w - 16), max(1, h - HEADER - 8))
 
 
-def header_controls(block_rect: tuple) -> dict:
+def header_controls(block_rect: tuple, pinned: bool = False) -> dict:
     x, y, w, h = block_rect
     hy = y + 2
+    if pinned:
+        return {
+            "bar": (x, y, w, min(HEADER, h)),
+            "info": (x + w - 24, hy, 20, 20),
+            "collapse": (0, 0, 0, 0),
+            "close": (0, 0, 0, 0),
+        }
     return {
         "bar": (x, y, w, min(HEADER, h)),
         "info": (x + w - 68, hy, 20, 20),

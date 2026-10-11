@@ -1521,7 +1521,11 @@ class TrainMonitor:
 
     def _run_menu(self, action) -> None:
         kind = action[0]
+        if kind == "locked":
+            return
         if kind == "toggle":
+            if action[1] == "controls":
+                return
             leaf = find_leaf(self.dock, action[1])
             if leaf is not None:
                 leaf.visible = not leaf.visible
@@ -1605,6 +1609,8 @@ class TrainMonitor:
             self.menu_open = False
         kind, arg = self._chrome_at(pos)
         if kind == "collapse":
+            if arg == "controls":
+                return
             leaf = find_leaf(self.dock, arg)
             if leaf is not None:
                 leaf.collapsed = not leaf.collapsed
@@ -1612,6 +1618,8 @@ class TrainMonitor:
                 self._save_ui()
             return
         if kind == "close":
+            if arg == "controls":
+                return
             leaf = find_leaf(self.dock, arg)
             if leaf is not None:
                 leaf.visible = False
@@ -2154,37 +2162,8 @@ class TrainMonitor:
     def _estop_bar_width(self) -> int:
         return self.font_sm.size("E-STOP")[0] + 64
 
-    def _window_box(self, rect):
-        """Logical rect → window pixels, including scroll and the pinned chrome."""
-        import pygame
-
-        ww, wh = self._view_size()
-        canvas_h = self.screen.get_height() if self.screen is not None else None
-        footer_h = int(getattr(self, "_footer_h", FOOTER_H))
-        scroll = (int(getattr(self, "scroll_x", 0)), int(getattr(self, "scroll_y", 0)))
-        x0, y0 = window_from_logical((rect.x, rect.y), ww, wh, scroll, footer_h=footer_h, canvas_h=canvas_h)
-        x1, y1 = window_from_logical((rect.right, rect.bottom), ww, wh, scroll, footer_h=footer_h, canvas_h=canvas_h)
-        return pygame.Rect(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
-
     def _estop_needs_bar(self) -> bool:
-        """Header copy of E-STOP when the card button is closed, collapsed, or off screen."""
-        rect = getattr(self, "estop_rect", None)
-        if rect is None or rect.w < 8 or rect.h < 8:
-            return True
-        ww, wh = self._view_size()
-        box = self._window_box(rect)
-        if box.w < 8 or box.h < 12:
-            return True
-        scale, _lw, logical_h, _cw, content_h = fit_window(ww, wh)
-        canvas_h = self.screen.get_height() if self.screen is not None else logical_h
-        content_h = max(1, int(round(int(canvas_h) * scale)))
-        bands = _chrome_bands(scale, wh, content_h, footer_h=int(getattr(self, "_footer_h", FOOTER_H)))
-        top = bands["menu_px"] if bands["pinned"] else 0
-        bottom = wh - bands["footer_px"] if bands["pinned"] else wh
-        if box.x < -1 or box.y < top - 1:
-            return True
-        if box.right > ww + 1 or box.bottom > bottom + 1:
-            return True
+        """E-STOP stays on the buttons card. That card cannot be closed or folded."""
         return False
 
     def _draw_estop_bar(self, screen) -> None:
@@ -2370,7 +2349,9 @@ class TrainMonitor:
         import pygame
 
         self._card(screen, rect, radius=12)
-        bar = header_controls((rect.x, rect.y, rect.w, rect.h))
+        # The buttons card carries E-STOP, so it has no collapse or close.
+        pinned = name == "controls"
+        bar = header_controls((rect.x, rect.y, rect.w, rect.h), pinned=pinned)
         pygame.draw.rect(screen, MENU, pygame.Rect(*bar["bar"]))
         pygame.draw.line(screen, LINE, (rect.x + 8, rect.y + DOCK_HEADER - 1), (rect.right - 8, rect.y + DOCK_HEADER - 1), 1)
         info = pygame.Rect(*bar["info"])
@@ -2382,12 +2363,14 @@ class TrainMonitor:
             screen.blit(label, (rect.x + 12, rect.y + 4))
         finally:
             screen.set_clip(previous)
+        self._chrome.append((info, "info", name))
+        self._mini_glyph(screen, info, "i")
+        if pinned:
+            return
         collapse = pygame.Rect(*bar["collapse"])
         close = pygame.Rect(*bar["close"])
-        self._chrome.append((info, "info", name))
         self._chrome.append((collapse, "collapse", name))
         self._chrome.append((close, "close", name))
-        self._mini_glyph(screen, info, "i")
         self._mini_glyph(screen, collapse, "–" if not collapsed else "+")
         self._mini_glyph(screen, close, "×")
 
@@ -2412,13 +2395,13 @@ class TrainMonitor:
                 mid = rect.centerx
                 pygame.draw.line(screen, INK_DIM, (mid, rect.centery - 18), (mid, rect.centery + 18), 2)
 
-    def _menu_box(self, screen, x: int, centery: int, on: bool) -> None:
+    def _menu_box(self, screen, x: int, centery: int, on: bool, border=None) -> None:
         """One checkbox. The same x keeps every square in a single column."""
         import pygame
 
         box = pygame.Rect(int(x), int(centery) - 7, 14, 14)
         pygame.draw.rect(screen, INSET, box)
-        pygame.draw.rect(screen, LABEL, box, 1)
+        pygame.draw.rect(screen, LABEL if border is None else border, box, 1)
         if not on:
             return
         pygame.draw.lines(
@@ -2432,7 +2415,12 @@ class TrainMonitor:
     def _draw_menu(self, screen) -> None:
         import pygame
 
-        rows = [(("toggle", name), BLOCK_TITLES[name], "check", name) for name in BLOCKS]
+        rows = []
+        for name in BLOCKS:
+            if name == "controls":
+                rows.append((("locked", name), BLOCK_TITLES[name], "locked", name))
+            else:
+                rows.append((("toggle", name), BLOCK_TITLES[name], "check", name))
         rows.append((("reset",), "Сброс раскладки", "button", None))
         rows.append((("theme",), "Тёмная тема", "theme", None))
         rows.append((("doggibot",), "DoggiBOT", "button", None))
@@ -2453,12 +2441,16 @@ class TrainMonitor:
         for action, label, kind, arg in rows:
             row = pygame.Rect(panel.x + 4, cursor, panel.w - 8, row_h)
             self._menu_hits.append((row, action))
+            caption = LABEL
             if kind == "check":
                 leaf = self._leaf(arg)
                 self._menu_box(screen, box_x, row.centery, leaf is not None and leaf.visible)
+            elif kind == "locked":
+                self._menu_box(screen, box_x, row.centery, True, INK_DIM)
+                caption = INK_DIM
             elif kind == "theme":
                 self._menu_box(screen, box_x, row.centery, theme_name() == "dark")
-            screen.blit(self.font_sm.render(label, True, LABEL), (label_x, row.centery - 8))
+            screen.blit(self.font_sm.render(label, True, caption), (label_x, row.centery - 8))
             cursor += row_h
 
     def _draw_camera_block(self, screen, view: MonitorView, content) -> None:
