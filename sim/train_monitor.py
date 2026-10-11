@@ -624,6 +624,60 @@ def _snap(screen, rect):
     return snap
 
 
+def _scheme_rgb(key: str) -> tuple:
+    from .ui_theme import ACTIVE
+
+    raw = ACTIVE[key]
+    return (int(raw[0]), int(raw[1]), int(raw[2]))
+
+
+def _paperclip_points(width: int, height: int, scale: int = 4) -> list:
+    """Paperclip stroke, same path as the Go2 control icon, in scaled pixels."""
+    import math
+
+    big_w = int(width) * scale
+    big_h = int(height) * scale
+
+    def arc(cx, cy, radius, start, end, steps=14):
+        pts = []
+        steps = max(1, int(steps))
+        for i in range(steps + 1):
+            t = start + (end - start) * i / float(steps)
+            pts.append((cx + radius * math.cos(t), cy + radius * math.sin(t)))
+        return pts
+
+    path = [(40.0, 34.0), (40.0, 72.0)]
+    path += arc(50, 72, 10, math.pi, 0.0)
+    path += [(60.0, 22.0)]
+    path += arc(45, 22, 15, 0.0, -math.pi)
+    path += [(30.0, 78.0)]
+    path += arc(50, 78, 20, math.pi, 0.0)
+    path += [(70.0, 30.0)]
+    angle = math.radians(35)
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    unit = (height * 0.74 * scale) / 100.0
+    points = []
+    for x, y in path:
+        dx, dy = x - 50.0, y - 52.0
+        rx = dx * cos_a - dy * sin_a
+        ry = dx * sin_a + dy * cos_a
+        points.append((big_w / 2.0 + rx * unit, big_h / 2.0 + ry * unit))
+    return points
+
+
+def _blit_paperclip(screen, rect, fill, stroke) -> None:
+    """Rounded plate and a paperclip, drawn large and smoothed down."""
+    import pygame
+
+    scale = 4
+    big = pygame.Surface((max(1, rect.w) * scale, max(1, rect.h) * scale), pygame.SRCALPHA)
+    pygame.draw.rect(big, fill, big.get_rect(), border_radius=5 * scale)
+    pts = [(int(round(x)), int(round(y))) for x, y in _paperclip_points(rect.w, rect.h, scale)]
+    if len(pts) >= 2:
+        pygame.draw.lines(big, stroke, False, pts, max(1, int(1.7 * scale)))
+    screen.blit(pygame.transform.smoothscale(big, (rect.w, rect.h)), rect.topleft)
+
+
 def _iter_leaves(node):
     from .dock_layout import Leaf, Split
 
@@ -654,6 +708,9 @@ class TrainMonitor:
         self._persist = persist_enabled()
         self._settings = load_settings() if self._persist else default_settings()
         apply_theme(self._settings.get("theme") if self._persist else "light")
+        self.pin_on_top = bool(self._settings.get("pin_on_top"))
+        self._pin_surface = None
+        self._pin_applied = None
         self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
         self.menu_open = False
         self.help_id = None
@@ -699,6 +756,7 @@ class TrainMonitor:
                 if saved_x is not None and saved_y is not None:
                     os.environ["SDL_VIDEO_WINDOW_POS"] = "%d,%d" % (int(saved_x), int(saved_y))
         self._open_display()
+        self._apply_pin()
         if self._maximized and not self.fullscreen:
             self._try_maximize()
         self._font_need = None
@@ -780,18 +838,23 @@ class TrainMonitor:
                 cursor += rw + gap_b
             return out
 
+        self.view_rect = pygame.Rect(8, 4, 52, 24)
+        dog_w = self.font_sm.size("DoggiBOT")[0] + 28
+        self.doggibot_rect = pygame.Rect(self.view_rect.right + 8, 4, dog_w, 24)
+        self.pin_rect, self.theme_label_rect, self.theme_switch_rect = self._place_header_chrome()
         go2_w = self._go2_button_width()
         header_items = [("go2", go2_w), ("brain", 168), ("teacher", 280), ("record", 250)]
         header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
-        header_x = WIN_W - 16 - header_total
-        buttons = row(header_items, header_x, 4, 24, WIN_W - 16)
+        header_limit = self.pin_rect.x - 8
+        title_w = self.font.size("recognition training")[0]
+        lamp_w = 14 + self.font_sm.size("борт")[0]
+        min_help = self.doggibot_rect.right + 12 + title_w + 18 + lamp_w + 8
+        header_x = max(min_help + 36, header_limit - header_total)
+        buttons = row(header_items, header_x, 4, 24, header_limit)
         self.go2_rect = buttons["go2"]
         self.brain_rect = buttons["brain"]
         self.teacher_rect = buttons["teacher"]
         self.record_rect = buttons["record"]
-        self.view_rect = pygame.Rect(8, 4, 52, 24)
-        dog_w = self.font_sm.size("DoggiBOT")[0] + 28
-        self.doggibot_rect = pygame.Rect(self.view_rect.right + 8, 4, dog_w, 24)
         self.help_bar_rect = pygame.Rect(self.go2_rect.x - 36, 4, 28, 24)
 
         leaf = self._dock_leaves.get("controls")
@@ -896,6 +959,7 @@ class TrainMonitor:
         data = default_settings()
         data.update(self._settings)
         data["theme"] = theme_name()
+        data["pin_on_top"] = bool(getattr(self, "pin_on_top", False))
         data["fullscreen"] = bool(self.fullscreen)
         data["maximized"] = bool(getattr(self, "_maximized", False))
         data["layout"] = self.dock.to_dict()
@@ -1042,6 +1106,7 @@ class TrainMonitor:
         self.fullscreen = not self.fullscreen
         self._minimized = False
         self._open_display()
+        self._apply_pin()
         self._save_ui()
         return self.fullscreen
 
@@ -1099,6 +1164,7 @@ class TrainMonitor:
         self._window_size = (int(w), int(h))
         self._clamp_scroll(int(w), int(h))
         self._save_ui(geometry_only=True)
+        self._apply_pin()
 
     def _adopt_client(self) -> None:
         """WINDOWMAXIMIZED / WINDOWSIZECHANGED already resized the surface."""
@@ -1485,6 +1551,8 @@ class TrainMonitor:
             return
         if self._help_hit(pos):
             return
+        if self._header_chrome_hit(pos):
+            return
         if self.view_rect.collidepoint(pos):
             self.menu_open = not self.menu_open
             return
@@ -1781,6 +1849,7 @@ class TrainMonitor:
 
         require_main_thread()
         self._bind_display()
+        self._ensure_pin()
         self._last_view = view
         if self.window is not None and not self._minimized:
             ww, wh = self.window.get_size()
@@ -1821,6 +1890,7 @@ class TrainMonitor:
             self._draw_menu(screen)
         self._draw_toast(screen)
         self._draw_help(screen)
+        self._draw_pin_tip(screen)
         self._present()
         self.clock.tick(20)
 
@@ -1842,6 +1912,110 @@ class TrainMonitor:
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
         self._record_button(screen, view)
+        self._draw_header_chrome(screen)
+
+    def _place_header_chrome(self):
+        """Paperclip, then «Тёмная тема», then the pill, packed to the right edge."""
+        import pygame
+
+        label_w, _label_h = self.font_sm.size("Тёмная тема")
+        switch_w, switch_h = 36, 20
+        pin_w, pin_h = 30, 26
+        right = WIN_W - 12
+        switch = pygame.Rect(right - switch_w, (MENU_H - switch_h) // 2, switch_w, switch_h)
+        label = pygame.Rect(switch.x - 8 - label_w, 0, label_w, MENU_H)
+        pin = pygame.Rect(label.x - 14 - pin_w, (MENU_H - pin_h) // 2, pin_w, pin_h)
+        return pin, label, switch
+
+    def _header_chrome_hit(self, pos) -> bool:
+        pin = getattr(self, "pin_rect", None)
+        if pin is not None and pin.collidepoint(pos):
+            self._toggle_pin()
+            return True
+        label = getattr(self, "theme_label_rect", None)
+        switch = getattr(self, "theme_switch_rect", None)
+        on_label = label is not None and label.collidepoint(pos)
+        on_switch = (
+            switch is not None
+            and switch.x <= int(pos[0]) < switch.right
+            and 0 <= int(pos[1]) < MENU_H
+        )
+        if on_label or on_switch:
+            self._toggle_theme()
+            return True
+        return False
+
+    def _toggle_theme(self) -> None:
+        self._set_theme("light" if theme_name() == "dark" else "dark")
+
+    def _toggle_pin(self) -> None:
+        self.pin_on_top = not bool(self.pin_on_top)
+        self._apply_pin()
+        self._save_ui()
+
+    def _apply_pin(self) -> bool:
+        """Native topmost on Windows. Other systems no-op. Size and position stay."""
+        from .window_pin import set_always_on_top
+
+        ok = set_always_on_top(bool(getattr(self, "pin_on_top", False)))
+        self._pin_surface = id(self.window) if self.window is not None else 0
+        self._pin_applied = bool(self.pin_on_top)
+        return ok
+
+    def _ensure_pin(self) -> None:
+        """Re-apply after SDL replaces the window, without a set_mode of our own."""
+        token = id(self.window) if self.window is not None else 0
+        if token == getattr(self, "_pin_surface", None) and getattr(self, "_pin_applied", None) == bool(self.pin_on_top):
+            return
+        self._apply_pin()
+
+    def _draw_header_chrome(self, screen) -> None:
+        label = self.font_sm.render("Тёмная тема", True, INK_DIM)
+        text_y = self.theme_label_rect.centery - label.get_height() // 2
+        screen.blit(label, (self.theme_label_rect.x, text_y))
+        self._draw_theme_switch(screen, self.theme_switch_rect)
+        hover = self.pin_rect.collidepoint(self._mouse())
+        fill, stroke = self._pin_colors(hover)
+        _blit_paperclip(screen, self.pin_rect, fill, stroke)
+
+    def _pin_colors(self, hover: bool) -> tuple:
+        if self.pin_on_top:
+            return (PEACH_SOFT if hover else PEACH), _scheme_rgb("knob")
+        plate = "pin_plate_hot" if hover else "pin_plate"
+        return _scheme_rgb(plate), tuple(int(c) for c in INK_DIM)
+
+    def _draw_theme_switch(self, screen, rect) -> None:
+        """Pill track and a round knob. Knob on the right when the theme is dark."""
+        import pygame
+
+        on = theme_name() == "dark"
+        fill = PEACH if on else _scheme_rgb("switch_off")
+        radius = max(1, rect.h // 2)
+        pygame.draw.rect(screen, fill, rect, border_radius=radius)
+        knob_r = 7
+        cx = rect.x + (rect.w - radius if on else radius)
+        cy = rect.y + radius
+        pygame.draw.circle(screen, _scheme_rgb("knob"), (int(cx), int(cy)), knob_r)
+
+    def _draw_pin_tip(self, screen) -> None:
+        import pygame
+
+        from .window_pin import PIN_TIP
+
+        self._pin_tip_rect = None
+        rect = getattr(self, "pin_rect", None)
+        if rect is None or rect.w < 8 or not rect.collidepoint(self._mouse()):
+            return
+        text = self.font_tiny.render(PIN_TIP, True, _scheme_rgb("pin_tip_ink"))
+        pad_x, pad_y = 8, 3
+        box = pygame.Rect(0, 0, text.get_width() + pad_x * 2, text.get_height() + pad_y * 2)
+        box.top = rect.bottom + 4
+        box.right = min(WIN_W - 4, max(rect.right, box.w + 4))
+        if box.left < 4:
+            box.left = 4
+        pygame.draw.rect(screen, _scheme_rgb("pin_tip"), box, border_radius=4)
+        screen.blit(text, (box.x + pad_x, box.y + pad_y))
+        self._pin_tip_rect = box
 
     def _draw_blocks(self, screen, view: MonitorView) -> None:
         titles = dict(BLOCK_TITLES)

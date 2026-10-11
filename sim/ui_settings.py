@@ -132,6 +132,7 @@ def default_settings() -> dict:
         "layout": None,
         "go2_control_exe": "",
         "go2_server_exe": "",
+        "pin_on_top": False,
     }
 
 
@@ -147,6 +148,7 @@ def load_settings() -> dict:
     data.update({k: raw[k] for k in data if k in raw})
     if raw.get("layout"):
         data["layout"] = raw["layout"]
+    data["pin_on_top"] = _pinned_flag(data.get("pin_on_top"))
     return data
 
 

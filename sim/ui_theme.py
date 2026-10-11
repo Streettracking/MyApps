@@ -32,6 +32,13 @@ LIGHT = {
     "estop_edge": (255, 228, 224),
     "key_badge": (132, 132, 134),
     "key_badge_ink": (255, 255, 255),
+    # Pill switch and the idle paperclip plate. Same values as the Go2 control.
+    "switch_off": (207, 201, 193),
+    "knob": (255, 255, 255),
+    "pin_plate": (236, 232, 226),
+    "pin_plate_hot": (225, 220, 212),
+    "pin_tip": (43, 43, 43),
+    "pin_tip_ink": (248, 248, 248),
 }
 
 DARK = {
@@ -61,6 +68,12 @@ DARK = {
     "estop_edge": (255, 210, 204),
     "key_badge": (88, 90, 96),
     "key_badge_ink": (255, 255, 255),
+    "switch_off": (74, 77, 83),
+    "knob": (248, 248, 248),
+    "pin_plate": (58, 61, 67),
+    "pin_plate_hot": (71, 74, 81),
+    "pin_tip": (43, 43, 43),
+    "pin_tip_ink": (248, 248, 248),
 }
 
 THEMES = {"light": LIGHT, "dark": DARK}
