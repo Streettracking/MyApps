@@ -132,6 +132,7 @@ def default_settings() -> dict:
         "layout": None,
         "go2_control_exe": "",
         "go2_server_exe": "",
+        "pinned": False,
     }
 
 
@@ -145,6 +146,7 @@ def load_settings() -> dict:
     if not isinstance(raw, dict):
         return data
     data.update({k: raw[k] for k in data if k in raw})
+    data["pinned"] = _pinned_flag(data.get("pinned"))
     if raw.get("layout"):
         data["layout"] = raw["layout"]
     return data

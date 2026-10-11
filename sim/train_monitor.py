@@ -654,6 +654,7 @@ class TrainMonitor:
         self._persist = persist_enabled()
         self._settings = load_settings() if self._persist else default_settings()
         apply_theme(self._settings.get("theme") if self._persist else "light")
+        self._pinned = bool(self._settings.get("pinned"))
         self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
         self.menu_open = False
         self.help_id = None
@@ -701,6 +702,7 @@ class TrainMonitor:
         self._open_display()
         if self._maximized and not self.fullscreen:
             self._try_maximize()
+            self._reapply_pin()
         self._font_need = None
         self._ensure_fonts(1.0)
         self._bg = None
@@ -780,18 +782,24 @@ class TrainMonitor:
                 cursor += rw + gap_b
             return out
 
+        self.view_rect = pygame.Rect(8, 4, 52, 24)
+        dog_w = self.font_sm.size("DoggiBOT")[0] + 28
+        self.doggibot_rect = pygame.Rect(self.view_rect.right + 8, 4, dog_w, 24)
+        right = WIN_W - 12
+        self.theme_switch_rect = pygame.Rect(right - 40, 7, 40, 18)
+        label_w = self.font_sm.size("Тёмная тема")[0]
+        self.theme_label_rect = pygame.Rect(self.theme_switch_rect.x - 8 - label_w, 4, label_w, 24)
+        self.pin_rect = pygame.Rect(self.theme_label_rect.x - 8 - 22, 5, 22, 22)
+        limit = self.pin_rect.x - 8
         go2_w = self._go2_button_width()
         header_items = [("go2", go2_w), ("brain", 168), ("teacher", 280), ("record", 250)]
         header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
-        header_x = WIN_W - 16 - header_total
-        buttons = row(header_items, header_x, 4, 24, WIN_W - 16)
+        header_x = max(self.doggibot_rect.right + 8, limit - header_total)
+        buttons = row(header_items, header_x, 4, 24, limit)
         self.go2_rect = buttons["go2"]
         self.brain_rect = buttons["brain"]
         self.teacher_rect = buttons["teacher"]
         self.record_rect = buttons["record"]
-        self.view_rect = pygame.Rect(8, 4, 52, 24)
-        dog_w = self.font_sm.size("DoggiBOT")[0] + 28
-        self.doggibot_rect = pygame.Rect(self.view_rect.right + 8, 4, dog_w, 24)
         self.help_bar_rect = pygame.Rect(self.go2_rect.x - 36, 4, 28, 24)
 
         leaf = self._dock_leaves.get("controls")
@@ -896,6 +904,7 @@ class TrainMonitor:
         data = default_settings()
         data.update(self._settings)
         data["theme"] = theme_name()
+        data["pinned"] = bool(getattr(self, "_pinned", False))
         data["fullscreen"] = bool(self.fullscreen)
         data["maximized"] = bool(getattr(self, "_maximized", False))
         data["layout"] = self.dock.to_dict()
@@ -948,6 +957,21 @@ class TrainMonitor:
     def _set_theme(self, name: str) -> None:
         apply_theme(name)
         self._drop_surface_caches()
+        self._save_ui()
+
+    def _reapply_pin(self) -> None:
+        """One topmost call after the display exists. Resize does not come here."""
+        if not getattr(self, "_pinned", False):
+            return
+        from .window_pin import set_always_on_top
+
+        set_always_on_top(True)
+
+    def _toggle_pin(self) -> None:
+        from .window_pin import set_always_on_top
+
+        self._pinned = not bool(getattr(self, "_pinned", False))
+        set_always_on_top(self._pinned)
         self._save_ui()
 
     def _reset_layout(self) -> None:
@@ -1036,6 +1060,7 @@ class TrainMonitor:
         self._minimized = False
         pygame.event.clear()
         install_cursors()
+        self._reapply_pin()
 
     def toggle_fullscreen(self) -> bool:
         """F11. Leaving fullscreen restores the window size from before it."""
@@ -1169,6 +1194,7 @@ class TrainMonitor:
 
     def _sync_canvas(self, ww: int, wh: int) -> None:
         scale, logical_w, logical_h, _cw, _ch = fit_window(ww, wh)
+        previous_need = getattr(self, "_font_need", None)
         self._ensure_fonts(scale)
         self._clamp_scroll(ww, wh)
         if self.screen is None or self.screen.get_size() != (logical_w, logical_h):
@@ -1176,6 +1202,8 @@ class TrainMonitor:
 
             self._drop_surface_caches()
             self.screen = pygame.Surface((logical_w, logical_h))
+            self._apply_layout(logical_h)
+        elif previous_need != self._font_need:
             self._apply_layout(logical_h)
 
     def _present(self) -> None:
@@ -1505,6 +1533,12 @@ class TrainMonitor:
             if panel is not None and panel.collidepoint(pos):
                 return
             self.menu_open = False
+        if self.pin_rect.collidepoint(pos):
+            self._toggle_pin()
+            return
+        if self.theme_switch_rect.collidepoint(pos) or self.theme_label_rect.collidepoint(pos):
+            self._set_theme("light" if theme_name() == "dark" else "dark")
+            return
         kind, arg = self._chrome_at(pos)
         if kind == "collapse":
             leaf = find_leaf(self.dock, arg)
@@ -1842,6 +1876,40 @@ class TrainMonitor:
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
         self._record_button(screen, view)
+        self._draw_pin(screen)
+        self._draw_theme_label(screen)
+        self._draw_theme_switch(screen)
+
+    def _draw_pin(self, screen) -> None:
+        from .window_pin import draw_clip
+
+        if self.pin_rect.w < 8:
+            return
+        hover = self.pin_rect.collidepoint(self._mouse())
+        draw_clip(screen, self.pin_rect, bool(self._pinned), hover=hover)
+
+    def _draw_theme_label(self, screen) -> None:
+        label = self.font_sm.render("Тёмная тема", True, LABEL)
+        rect = self.theme_label_rect
+        screen.blit(label, (rect.x, rect.centery - label.get_height() // 2))
+
+    def _draw_theme_switch(self, screen) -> None:
+        """Pill and thumb, drawn large and smoothed so the edge stays soft."""
+        import pygame
+
+        rect = self.theme_switch_rect
+        if rect.w < 8 or rect.h < 8:
+            return
+        on = theme_name() == "dark"
+        scale = 4
+        big = pygame.Surface((rect.w * scale, rect.h * scale), pygame.SRCALPHA)
+        track = big.get_rect()
+        pygame.draw.rect(big, PEACH if on else RING, track, border_radius=track.h // 2)
+        pad = scale * 2
+        thumb_d = track.h - pad * 2
+        cx = (track.right - pad - thumb_d // 2) if on else (track.left + pad + thumb_d // 2)
+        pygame.draw.circle(big, KEY_BADGE_INK, (cx, track.centery), max(1, thumb_d // 2))
+        screen.blit(pygame.transform.smoothscale(big, rect.size), rect.topleft)
 
     def _draw_blocks(self, screen, view: MonitorView) -> None:
         titles = dict(BLOCK_TITLES)
