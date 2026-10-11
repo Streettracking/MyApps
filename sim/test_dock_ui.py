@@ -969,3 +969,28 @@ class PaletteTests(unittest.TestCase):
                 continue
             found.append(nums)
         self.assertEqual(found, [])
+
+
+class FontFloorTests(unittest.TestCase):
+    def test_scaled_font_stays_at_least_13px(self):
+        import pygame
+
+        from sim.train_monitor import MIN_FONT_PX, MIN_SCALE, MonitorView, TrainMonitor, font_px
+
+        self.assertGreaterEqual(font_px(11, 1.0), MIN_FONT_PX)
+        self.assertGreaterEqual(font_px(11, MIN_SCALE) * MIN_SCALE, MIN_FONT_PX)
+        self.assertGreaterEqual(font_px(14, MIN_SCALE) * MIN_SCALE, MIN_FONT_PX)
+        self.assertGreater(font_px(11, MIN_SCALE), 11)
+        pygame.init()
+        mon = TrainMonitor("fontfloor")
+        try:
+            mon._on_resize(1920, 1080)
+            mon.draw(MonitorView(learner="mb", title="recognition training"))
+            full = mon.font_tiny.get_height()
+            self.assertGreaterEqual(mon._font_need, MIN_FONT_PX)
+            mon._on_resize(1000, 700)
+            mon.draw(MonitorView(learner="mb", title="recognition training"))
+            self.assertGreaterEqual(mon._font_need * MIN_SCALE, MIN_FONT_PX)
+            self.assertGreater(mon.font_tiny.get_height(), full)
+        finally:
+            pygame.quit()

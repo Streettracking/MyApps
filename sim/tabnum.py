@@ -80,6 +80,15 @@ def reset_fonts() -> None:
     _FONTS.clear()
 
 
+_MIN_PX = 0
+
+
+def set_min_px(px: int) -> None:
+    """Smallest monospace size the trainer will open. ``0`` leaves the request alone."""
+    global _MIN_PX
+    _MIN_PX = max(0, int(px))
+
+
 def load_font(size: int = 14):
     import pygame
 
@@ -88,6 +97,7 @@ def load_font(size: int = 14):
     require_main_thread()
     if not pygame.font.get_init():
         pygame.font.init()
+    size = max(int(size), _MIN_PX)
     cached = _FONTS.get(int(size))
     if cached is not None:
         return cached

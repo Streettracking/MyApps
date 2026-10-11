@@ -104,6 +104,7 @@ WIN_W = 1920
 WIN_H = 1080
 MIN_SCALE = 0.75
 MIN_CONTENT_W = int(round(WIN_W * MIN_SCALE))  # 1440
+MIN_FONT_PX = 13
 SCROLL_BAR = 8
 MENU_H = 32
 FOOTER_H = 56
@@ -284,6 +285,14 @@ def fit_window(ww: int, wh: int) -> tuple:
         content_h = min_content_h
         logical_h = WIN_H
     return scale, WIN_W, logical_h, content_w, content_h
+
+
+def font_px(requested: int, scale: float) -> int:
+    """Logical font size whose on-screen size is at least ``MIN_FONT_PX``."""
+    import math
+
+    need = int(math.ceil(float(MIN_FONT_PX) / max(float(scale), 1e-6)))
+    return max(int(requested), need)
 
 
 def scroll_limits(ww: int, wh: int) -> tuple:
@@ -679,12 +688,8 @@ class TrainMonitor:
         self._open_display()
         if self._maximized and not self.fullscreen:
             self._try_maximize()
-        self.font = _ui_font(15)
-
-        self.font_sm = _ui_font(14)
-        self.font_tiny = _ui_font(11)
-        self.font_big = _ui_font(26)
-        self.font_ind = _ui_font(18)
+        self._font_need = None
+        self._ensure_fonts(1.0)
         self._bg = None
         self._win_bg = None
         self._content = (0, 0, WIN_W, WIN_H)
@@ -1122,8 +1127,24 @@ class TrainMonitor:
         if previous is not None and previous is not live:
             self._drop_surface_caches()
 
+    def _ensure_fonts(self, scale: float) -> None:
+        """Rebuild UI fonts when the window scale changes. Screen size stays ≥ 13 px."""
+        from .tabnum import set_min_px
+
+        need = font_px(MIN_FONT_PX, scale)
+        if getattr(self, "_font_need", None) == need and self.font is not None:
+            return
+        self._font_need = need
+        set_min_px(need)
+        self.font = _ui_font(font_px(15, scale))
+        self.font_sm = _ui_font(font_px(14, scale))
+        self.font_tiny = _ui_font(font_px(11, scale))
+        self.font_big = _ui_font(font_px(26, scale))
+        self.font_ind = _ui_font(font_px(18, scale))
+
     def _sync_canvas(self, ww: int, wh: int) -> None:
-        _scale, logical_w, logical_h, _cw, _ch = fit_window(ww, wh)
+        scale, logical_w, logical_h, _cw, _ch = fit_window(ww, wh)
+        self._ensure_fonts(scale)
         self._clamp_scroll(ww, wh)
         if self.screen is None or self.screen.get_size() != (logical_w, logical_h):
             import pygame
