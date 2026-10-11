@@ -756,7 +756,7 @@ class TrainMonitor:
                 cursor += rw + gap_b
             return out
 
-        go2_w = self.font_sm.size("УПРАВЛЕНИЕ")[0] + 60
+        go2_w = self._go2_button_width()
         header_items = [("go2", go2_w), ("brain", 168), ("teacher", 280), ("record", 250)]
         header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
         header_x = WIN_W - 16 - header_total
@@ -2598,6 +2598,13 @@ class TrainMonitor:
                 key="K",
             )
 
+    def _go2_button_width(self) -> int:
+        """Lamp, tiny caption, lamp, tiny caption, then the title."""
+        server = self.font_tiny.size("сервер")[0]
+        panel = self.font_tiny.size("панель")[0]
+        title = self.font_sm.size("УПРАВЛЕНИЕ")[0]
+        return 12 + 10 + 4 + server + 10 + 10 + 4 + panel + 8 + title + 12
+
     def _go2_button(self, screen) -> None:
         missing = bool(getattr(self, "go2_missing", False))
         self._button(
@@ -2608,13 +2615,26 @@ class TrainMonitor:
             self.go2_rect.collidepoint(self._mouse()) and not missing,
         )
         if self.go2_rect.w < 8 or self.go2_rect.h < 8:
+            self.go2_server_lamp = (0, 0)
+            self.go2_panel_lamp = (0, 0)
             return
         server_on = bool(getattr(self, "go2_server_open", False))
         panel_on = bool(self.go2_open) and not missing
-        self._lamp(screen, (self.go2_rect.x + 16, self.go2_rect.centery), PEACH if server_on else LAMP_OFF, 5)
-        self._lamp(screen, (self.go2_rect.x + 32, self.go2_rect.centery), PEACH if panel_on else LAMP_OFF, 5)
+        ink = INK_DIM if missing else LABEL
+        x = self.go2_rect.x + 14
+        cy = self.go2_rect.centery
+        self.go2_server_lamp = (x, cy)
+        self._lamp(screen, self.go2_server_lamp, PEACH if server_on else LAMP_OFF, 5)
+        server = self.font_tiny.render("сервер", True, ink)
+        screen.blit(server, (x + 8, cy - server.get_height() // 2))
+        x = x + 8 + server.get_width() + 12
+        self.go2_panel_lamp = (x, cy)
+        self._lamp(screen, self.go2_panel_lamp, PEACH if panel_on else LAMP_OFF, 5)
+        panel = self.font_tiny.render("панель", True, ink)
+        screen.blit(panel, (x + 8, cy - panel.get_height() // 2))
+        x = x + 8 + panel.get_width() + 8
         label = self.font_sm.render("УПРАВЛЕНИЕ", True, INK_DIM if missing else VALUE)
-        screen.blit(label, (self.go2_rect.x + 44, self.go2_rect.centery - label.get_height() // 2))
+        screen.blit(label, (x, cy - label.get_height() // 2))
 
     def _brain_button(self, screen, view: MonitorView) -> None:
         if view.learner != "mb":

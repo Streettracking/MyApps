@@ -406,15 +406,16 @@ class Go2ControlTests(unittest.TestCase):
             mon.go2_server_open = True
             mon.go2_open = True
             mon.draw(view)
-            self.assertTrue(_lamp_peach(mon, mon.go2_rect.x + 16))
-            self.assertTrue(_lamp_peach(mon, mon.go2_rect.x + 32))
+            self.assertTrue(_lamp_peach(mon, mon.go2_server_lamp[0]))
+            self.assertTrue(_lamp_peach(mon, mon.go2_panel_lamp[0]))
+            self.assertLess(mon.go2_server_lamp[0], mon.go2_panel_lamp[0])
             _save_bar(mon, out / "go2_control_button.png")
             mon.go2_open = False
             mon.go2_server_open = False
             mon.go2_missing = True
             mon.draw(view)
-            self.assertFalse(_lamp_peach(mon, mon.go2_rect.x + 16))
-            self.assertFalse(_lamp_peach(mon, mon.go2_rect.x + 32))
+            self.assertFalse(_lamp_peach(mon, mon.go2_server_lamp[0]))
+            self.assertFalse(_lamp_peach(mon, mon.go2_panel_lamp[0]))
             _save_bar(mon, out / "go2_control_missing.png")
         finally:
             os.environ.pop("RECOGNIZER_UI_CONFIG", None)
