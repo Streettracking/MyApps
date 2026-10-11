@@ -12,6 +12,11 @@ SPLIT = 6
 CONTROLS_H = 96
 ROBOT_H = 96
 MIN_BLOCK = 48
+# Tall enough for the fresh-lidar button and the fly table (муха L/R, Δ, z,
+# вектор) at the 13px font floor. Measured against the 1080 canvas: a taller
+# column still gives the extra pixels to the lidar, and this floor is what a
+# shorter canvas is not allowed to undercut.
+LIDAR_MIN_H = 184
 
 BLOCKS = ("camera", "lidar", "brain", "journal", "controls", "robot")
 BLOCK_TITLES = {
@@ -186,11 +191,52 @@ def _preferred_height(node, width: int, height: int) -> int | None:
     return min(height, pref_a + SPLIT + pref_b)
 
 
+def _min_height(node, width: int) -> int:
+    """Smallest block height that still draws this node readably."""
+    if isinstance(node, Leaf):
+        if not node.visible:
+            return 0
+        if node.collapsed:
+            return HEADER
+        if node.block == "lidar":
+            return LIDAR_MIN_H
+        if node.block == "camera":
+            return HEADER + 80
+        if node.block == "controls":
+            return CONTROLS_H
+        if node.block == "robot":
+            return ROBOT_H
+        return HEADER + 36
+    if not _takes_space(node.a):
+        return _min_height(node.b, width)
+    if not _takes_space(node.b):
+        return _min_height(node.a, width)
+    if node.orient == "h":
+        half = max(1, int(width) // 2)
+        return max(_min_height(node.a, half), _min_height(node.b, half))
+    return _min_height(node.a, width) + SPLIT + _min_height(node.b, width)
+
+
+def _clamp_share(top: int, avail: int, min_a: int, min_b: int) -> int:
+    """Keep both sides above their minimum. Scale the minimums when both cannot fit."""
+    avail = max(0, int(avail))
+    min_a = max(0, int(min_a))
+    min_b = max(0, int(min_b))
+    top = int(top)
+    if min_a + min_b <= avail:
+        return max(min_a, min(top, avail - min_b))
+    if min_a + min_b <= 0:
+        return max(0, min(top, avail))
+    return int(round(avail * min_a / float(min_a + min_b)))
+
+
 def layout_dock(node, x: int, y: int, w: int, h: int) -> dict:
     """Map each visible block to ``(x, y, w, h)`` and list splitter grips.
 
-    The camera preference is 16:9 of its column until that split is locked
-    by a drag. Hidden leaves take no space.
+    An unlocked camera keeps a 16:9 preference while its sibling stays above
+    a readable minimum. When that preference no longer fits, the saved ratio
+    scales both sides and the minimum still wins. A locked split always
+    scales by its ratio, then the same minimums. Hidden leaves take no space.
     """
     blocks: dict = {}
     splitters: list = []
@@ -219,21 +265,29 @@ def layout_dock(node, x: int, y: int, w: int, h: int) -> dict:
             splitters.append({"rect": grip, "node": current, "axis": "x", "bounds": (rx, ry, rw, rh)})
             place(current.b, rx + left + SPLIT, ry, rw - left - SPLIT, rh)
             return
+        avail = max(0, rh - SPLIT)
         ratio = min(0.9, max(0.1, current.ratio))
         if current.locked:
-            top = int(round((rh - SPLIT) * ratio))
+            top = int(round(avail * ratio))
         else:
             pref = _preferred_height(current.a, rw, rh)
             other = _preferred_height(current.b, rw, rh)
             if pref is None and other is None:
-                top = int(round((rh - SPLIT) * ratio))
+                top = int(round(avail * ratio))
             elif pref is None:
-                top = rh - SPLIT - int(other or 0)
-            else:
+                top = avail - int(other or 0)
+            elif other is None:
                 top = int(pref)
-        top = max(0, min(int(top), rh - SPLIT))
-        if top < HEADER and _takes_space(current.a):
-            top = min(rh - SPLIT, HEADER)
+                leftover = avail - top
+                min_b = _min_height(current.b, rw)
+                if leftover < min_b:
+                    ratio_bottom = avail - int(round(avail * ratio))
+                    top = avail - max(min_b, ratio_bottom)
+            elif int(pref) + int(other) <= avail:
+                top = int(pref)
+            else:
+                top = int(round(avail * int(pref) / float(int(pref) + int(other))))
+        top = _clamp_share(top, avail, _min_height(current.a, rw), _min_height(current.b, rw))
         place(current.a, rx, ry, rw, top)
         grip = (rx, ry + top, rw, SPLIT)
         splitters.append({"rect": grip, "node": current, "axis": "y", "bounds": (rx, ry, rw, rh)})

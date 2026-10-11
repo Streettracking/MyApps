@@ -130,6 +130,17 @@ def _ink_span(text: str):
     return start, count
 
 
+def baseline_shift(ui_font, mono_font) -> tuple:
+    """Drop each font so a label and a number share one baseline.
+
+    Top-aligning them leaves the shorter ascent sitting about half a line high.
+    """
+    ui_ascent = int(ui_font.get_ascent())
+    mono_ascent = int(mono_font.get_ascent())
+    baseline = max(ui_ascent, mono_ascent)
+    return baseline - ui_ascent, baseline - mono_ascent
+
+
 def blit_cells(screen, text: str, x: int, y: int, color, size: int = 14, rows=None, glyphs=None) -> int:
     """Draw ``text`` so each character occupies one cell. Spaces stay empty."""
     import pygame
@@ -196,6 +207,7 @@ def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=Non
     cursor = int(x)
     yy = int(y)
     edge = None if limit is None else int(limit)
+    ui_dy, mono_dy = baseline_shift(ui_font, load_font(14))
     for slot in slots:
         kind = slot[0]
         if kind == "ui":
@@ -205,9 +217,9 @@ def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=Non
                 break
             if anchors is not None:
                 anchors.append((kind, cursor, yy))
-            screen.blit(glyph, (cursor, yy))
+            screen.blit(glyph, (cursor, yy + ui_dy))
             if glyphs is not None and width > 0:
-                glyphs.append(pygame.Rect(cursor, yy, width, int(glyph.get_height())))
+                glyphs.append(pygame.Rect(cursor, yy + ui_dy, width, int(glyph.get_height())))
             cursor += width + SLOT_GAP
             continue
         if kind in ("num", "mono"):
@@ -217,7 +229,7 @@ def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=Non
                 break
             if anchors is not None:
                 anchors.append((kind, cursor, yy))
-            blit_cells(screen, text, cursor, yy, value_color, size=14, rows=rows, glyphs=glyphs)
+            blit_cells(screen, text, cursor, yy + mono_dy, value_color, size=14, rows=rows, glyphs=glyphs)
             cursor += width + SLOT_GAP
             continue
         if kind == "status":
@@ -233,11 +245,11 @@ def paint_slots(screen, x, y, slots, ui_font, value_color, label_color, rows=Non
             glyph = ui_font.render(text, True, value_color)
             clip = pygame.Surface((max(field, 1), max(glyph.get_height(), 1)), pygame.SRCALPHA)
             clip.blit(glyph, (0, 0))
-            screen.blit(clip, (cursor, yy))
+            screen.blit(clip, (cursor, yy + ui_dy))
             if glyphs is not None and text:
                 ink = min(int(glyph.get_width()), int(field))
                 if ink > 0:
-                    glyphs.append(pygame.Rect(cursor, yy, ink, int(glyph.get_height())))
+                    glyphs.append(pygame.Rect(cursor, yy + ui_dy, ink, int(glyph.get_height())))
             cursor += field + SLOT_GAP
             continue
         raise ValueError(kind)

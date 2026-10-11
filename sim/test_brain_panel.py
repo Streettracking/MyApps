@@ -396,5 +396,40 @@ class BrainPanelTests(unittest.TestCase):
                 os.environ["RECOGNIZER_UI_CONFIG"] = previous
 
 
+    def test_numbers_share_a_baseline_with_their_labels(self):
+        import pygame
+
+        from sim.tabnum import baseline_shift, load_font, paint_slots
+        from sim.train_monitor import TrainMonitor
+
+        pygame.init()
+        mon = TrainMonitor("baseline")
+        try:
+            mon._on_resize(1920, 1017)
+            mon.draw(_populated_view())
+            mono = load_font(14)
+            ui_dy, mono_dy = baseline_shift(mon.font_sm, mono)
+            glyphs = []
+            surf = pygame.Surface((480, 48), pygame.SRCALPHA)
+            paint_slots(
+                surf,
+                8,
+                6,
+                [("ui", "PAM"), ("num", "+142"), ("ui", "R_L"), ("num", "+353")],
+                mon.font_sm,
+                (255, 255, 255),
+                (220, 220, 220),
+                glyphs=glyphs,
+            )
+            self.assertGreaterEqual(len(glyphs), 2)
+            label = glyphs[0]
+            number = glyphs[1]
+            self.assertEqual(label.y, 6 + ui_dy)
+            self.assertEqual(number.y, 6 + mono_dy)
+            self.assertEqual(label.y + mon.font_sm.get_ascent(), number.y + mono.get_ascent())
+        finally:
+            pygame.quit()
+
+
 if __name__ == "__main__":
     unittest.main()

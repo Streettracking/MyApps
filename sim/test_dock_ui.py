@@ -1230,3 +1230,126 @@ class FooterClearanceTests(unittest.TestCase):
         x0, y0 = window_from_logical((rect.x, rect.y), ww, wh, scroll, footer_h=footer_h, canvas_h=canvas_h)
         x1, y1 = window_from_logical((rect.right, rect.bottom), ww, wh, scroll, footer_h=footer_h, canvas_h=canvas_h)
         return pygame.Rect(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+
+
+class CardButtonTests(unittest.TestCase):
+    def test_buttons_sit_under_the_card_header_and_accept_clicks(self):
+        import pygame
+
+        from sim.dock_layout import find_leaf
+        from sim.train_monitor import ESTOP, MonitorView, TrainMonitor, window_from_logical
+
+        pygame.init()
+        mon = TrainMonitor("card-buttons")
+        view = MonitorView(learner="mb", title="recognition training", onboard=True)
+        try:
+            mon._on_resize(1920, 1017)
+            mon.draw(view)
+            controls = mon._content_of("controls")
+            robot = mon._content_of("robot")
+            self.assertIsNotNone(controls)
+            self.assertIsNotNone(robot)
+            for name in ("learn_rect", "auto_rect", "take_rect", "steer_rect", "treat_rect", "estop_rect"):
+                rect = getattr(mon, name)
+                self.assertTrue(controls.contains(rect), (name, rect, controls))
+                self.assertEqual(rect.y, controls.y, name)
+            for name in ("stand_up_rect", "stand_down_rect", "recovery_rect", "lidar_reset_rect"):
+                rect = getattr(mon, name)
+                self.assertTrue(robot.contains(rect), (name, rect, robot))
+                self.assertEqual(rect.y, robot.y, name)
+            self.assertLess(mon.estop_bar_rect.w, 8)
+
+            wx, wy = window_from_logical(
+                mon.learn_rect.center,
+                1920,
+                1017,
+                (0, 0),
+                footer_h=int(mon._footer_h),
+                canvas_h=mon.screen.get_height(),
+            )
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(wx), int(wy)), button=1))
+            hit = mon.pump()
+            self.assertTrue(hit.pause_learn)
+
+            leaf = find_leaf(mon.dock, "controls")
+            leaf.collapsed = True
+            mon._apply_layout(mon.screen.get_height())
+            self.assertLess(mon.estop_rect.w, 8)
+            self.assertGreaterEqual(mon.estop_bar_rect.w, 8)
+            self.assertLess(mon.estop_bar_rect.bottom, 32)
+            bx, by = window_from_logical(
+                mon.estop_bar_rect.center,
+                1920,
+                1017,
+                (0, 0),
+                footer_h=int(mon._footer_h),
+                canvas_h=mon.screen.get_height(),
+            )
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(bx), int(by)), button=1))
+            stopped = mon.pump()
+            self.assertTrue(stopped.estop)
+
+            leaf.collapsed = False
+            leaf.visible = False
+            mon._apply_layout(mon.screen.get_height())
+            self.assertLess(mon.estop_rect.w, 8)
+            self.assertGreaterEqual(mon.estop_bar_rect.w, 8)
+
+            leaf.visible = True
+            mon._on_resize(1920, 280)
+            mon.scroll_x = 0
+            mon.scroll_y = 0
+            mon.draw(view)
+            self.assertGreaterEqual(mon.estop_bar_rect.w, 8)
+            frame = mon.present_into((1920, 280))
+            sample = frame.get_at((mon.estop_bar_rect.x + 8, mon.estop_bar_rect.centery))
+            self.assertLess(abs(sample.r - ESTOP[0]), 30, sample)
+            self.assertLess(abs(sample.g - ESTOP[1]), 40, sample)
+        finally:
+            pygame.quit()
+
+    def test_saved_1440_layout_keeps_a_readable_lidar_when_maximized(self):
+        import pygame
+
+        from sim.dock_layout import HEADER, LIDAR_MIN_H, default_tree, layout_dock, tree_from_dict
+        from sim.hemifield import format_fly_line
+        from sim.pilot import format_range_line
+        from sim.tabnum import load_font
+        from sim.train_monitor import FOOTER_H, MENU_H, WIN_W, MonitorView, TrainMonitor
+
+        area = 1080 - MENU_H - FOOTER_H
+        blocks = layout_dock(default_tree(), 12, MENU_H, WIN_W - 24, area)["blocks"]
+        cam_w, cam_h = blocks["camera"][2], blocks["camera"][3]
+        self.assertEqual(cam_h, HEADER + int(round(cam_w * 9 / 16)))
+        self.assertGreaterEqual(blocks["lidar"][3], LIDAR_MIN_H)
+
+        pygame.init()
+        mon = TrainMonitor("lidar-floor")
+        view = MonitorView(
+            learner="mb",
+            title="тренировка узнавания",
+            fly_line=format_fly_line(142, 353, 211, 0.4, "bilateral"),
+            range_line=format_range_line(2.07, 1.4, 0, 8, {"window": 8, "votes": 0}),
+        )
+        try:
+            mon._on_resize(1440, 900)
+            mon.draw(view)
+            saved = mon.dock.to_dict()
+            self.assertFalse(saved["a"]["a"]["locked"])
+            wide = mon.lid_rect.h
+            mon.dock = tree_from_dict(saved)
+            mon._on_resize(1920, 1017)
+            mon.draw(view)
+            self.assertGreaterEqual(mon.lid_rect.h, LIDAR_MIN_H)
+            pref = HEADER + int(round(mon.cam_rect.w * 9 / 16))
+            self.assertLess(mon.cam_rect.h, pref)
+            column = mon.cam_rect.h + 6 + mon.lid_rect.h
+            self.assertAlmostEqual(mon.cam_rect.h / float(column), float(saved["a"]["a"]["r"]), delta=0.04)
+            self.assertGreater(wide, mon.lid_rect.h)
+            step = max(mon.font_sm.get_height(), load_font(14).get_height())
+            room = mon.lidar_column_rect.bottom - (mon.lidar_fresh_rect.bottom + 6)
+            self.assertGreaterEqual(room // step, 5, (room, step, mon.lid_rect))
+            labels = [rect for rect, group in mon._glyph_rects if group == "lidar"]
+            self.assertGreaterEqual(len(labels), 5)
+        finally:
+            pygame.quit()

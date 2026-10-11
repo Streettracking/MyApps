@@ -31,6 +31,7 @@ from .dock_layout import (
     BLOCK_TITLES,
     BLOCKS,
     HEADER as DOCK_HEADER,
+    LIDAR_MIN_H,
     SPLIT as DOCK_SPLIT,
     content_rect as dock_content,
     default_tree,
@@ -729,6 +730,7 @@ class TrainMonitor:
         self._show_theme_label = True
         self._header_short = False
         self._client_size = (WIN_W, WIN_H)
+        self.estop_bar_rect = pygame.Rect(0, 0, 0, 0)
         self._pin_surface = None
         self._pin_applied = None
         self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
@@ -859,8 +861,6 @@ class TrainMonitor:
                 cursor += rw + gap_b
             return out
 
-        self._place_header()
-
         leaf = self._dock_leaves.get("controls")
         inner = None
         if controls.w > 8 and leaf is not None and leaf.visible and not leaf.collapsed:
@@ -871,7 +871,7 @@ class TrainMonitor:
             row_h = min(44, inner.h)
             estop_h = min(inner.h, max(row_h + 16, 60))
             estop_w = min(260, max(160, inner.w // 4))
-            estop_rect = pygame.Rect(inner.right - estop_w, inner.bottom - estop_h, estop_w, estop_h)
+            estop_rect = pygame.Rect(inner.right - estop_w, inner.y, estop_w, estop_h)
             placed_row = row(
                 [
                     ("learn", 220),
@@ -881,7 +881,7 @@ class TrainMonitor:
                     ("treat", 190),
                 ],
                 inner.x,
-                inner.bottom - row_h,
+                inner.y,
                 row_h,
                 estop_rect.x - 8,
             )
@@ -923,6 +923,7 @@ class TrainMonitor:
             self.lidar_plot_rect = self._zero()
             self.lidar_column_rect = self._zero()
             self.lidar_fresh_rect = self._zero()
+        self._place_header()
         self.layout = {
             "footer_y": footer_y,
             "controls_y": controls.y,
@@ -1626,7 +1627,10 @@ class TrainMonitor:
         if header:
             self._block_drag = header
             return
-        if self.estop_rect.collidepoint(pos):
+        bar = getattr(self, "estop_bar_rect", None)
+        if bar is not None and bar.w >= 8 and bar.collidepoint(pos):
+            inp.estop = True
+        elif self.estop_rect.collidepoint(pos):
             inp.estop = True
         elif self.treat_rect.collidepoint(pos):
             inp.treat = True
@@ -1945,6 +1949,7 @@ class TrainMonitor:
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
         self._record_button(screen, view)
+        self._draw_estop_bar(screen)
         self._draw_header_chrome(screen)
 
     def _view_size(self) -> tuple:
@@ -2002,6 +2007,17 @@ class TrainMonitor:
                 continue
             inner = dock_content(rect, False)
             if inner is None or inner[2] < 48 or inner[3] < 40:
+                return False
+        cam = blocks.get("camera")
+        cam_leaf = next((leaf for leaf in _iter_leaves(self.dock) if leaf.block == "camera"), None)
+        if cam is not None and cam_leaf is not None and cam_leaf.visible and not cam_leaf.collapsed:
+            pref = DOCK_HEADER + max(80, int(round(cam[2] * 9 / 16)))
+            if cam[3] < int(round(pref * 0.80)):
+                return False
+        lid = blocks.get("lidar")
+        lid_leaf = next((leaf for leaf in _iter_leaves(self.dock) if leaf.block == "lidar"), None)
+        if lid is not None and lid_leaf is not None and lid_leaf.visible and not lid_leaf.collapsed:
+            if lid[3] < LIDAR_MIN_H:
                 return False
         return True
 
@@ -2099,21 +2115,30 @@ class TrainMonitor:
             else:
                 label = pygame.Rect(switch.x, 0, 0, 0)
                 pin = pygame.Rect(switch.x - 8 - pin_w, (MENU_H - pin_h) // 2, pin_w, pin_h)
-            header_limit = pin.x - 8
+            show_bar = self._estop_needs_bar()
+            if show_bar:
+                bar_w = self._estop_bar_width()
+                bar = pygame.Rect(pin.x - 8 - bar_w, 4, bar_w, 24)
+                header_limit = bar.x - 8
+            else:
+                bar = pygame.Rect(pin.x, 0, 0, 0)
+                header_limit = pin.x - 8
             header_x = max(min_help + 36, header_limit - total)
             buttons = self._header_row(items, header_x, header_limit)
             help_rect = pygame.Rect(buttons["go2"].x - 36, 4, 28, 24)
+            stop = bar.x - 4 if bar.w >= 8 else pin.x - 4
             fits = (
                 switch.right <= limit - 4
                 and pin.x >= help_rect.right + 4
-                and buttons["record"].right <= pin.x - 4
+                and buttons["record"].right <= stop
+                and (bar.w < 8 or bar.x >= buttons["record"].right + 4)
                 and help_rect.x >= min_help
             )
-            placed = (pin, label, switch, buttons, help_rect)
+            placed = (pin, label, switch, buttons, help_rect, bar)
             chosen = (show_label, short)
             if fits:
                 break
-        pin, label, switch, buttons, help_rect = placed
+        pin, label, switch, buttons, help_rect, bar = placed
         self.pin_rect = pin
         self.theme_label_rect = label
         self.theme_switch_rect = switch
@@ -2122,8 +2147,60 @@ class TrainMonitor:
         self.teacher_rect = buttons["teacher"]
         self.record_rect = buttons["record"]
         self.help_bar_rect = help_rect
+        self.estop_bar_rect = bar
         self._show_theme_label = bool(chosen[0])
         self._header_short = bool(chosen[1])
+
+    def _estop_bar_width(self) -> int:
+        return self.font_sm.size("E-STOP")[0] + 64
+
+    def _window_box(self, rect):
+        """Logical rect → window pixels, including scroll and the pinned chrome."""
+        import pygame
+
+        ww, wh = self._view_size()
+        canvas_h = self.screen.get_height() if self.screen is not None else None
+        footer_h = int(getattr(self, "_footer_h", FOOTER_H))
+        scroll = (int(getattr(self, "scroll_x", 0)), int(getattr(self, "scroll_y", 0)))
+        x0, y0 = window_from_logical((rect.x, rect.y), ww, wh, scroll, footer_h=footer_h, canvas_h=canvas_h)
+        x1, y1 = window_from_logical((rect.right, rect.bottom), ww, wh, scroll, footer_h=footer_h, canvas_h=canvas_h)
+        return pygame.Rect(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+
+    def _estop_needs_bar(self) -> bool:
+        """Header copy of E-STOP when the card button is closed, collapsed, or off screen."""
+        rect = getattr(self, "estop_rect", None)
+        if rect is None or rect.w < 8 or rect.h < 8:
+            return True
+        ww, wh = self._view_size()
+        box = self._window_box(rect)
+        if box.w < 8 or box.h < 12:
+            return True
+        scale, _lw, logical_h, _cw, content_h = fit_window(ww, wh)
+        canvas_h = self.screen.get_height() if self.screen is not None else logical_h
+        content_h = max(1, int(round(int(canvas_h) * scale)))
+        bands = _chrome_bands(scale, wh, content_h, footer_h=int(getattr(self, "_footer_h", FOOTER_H)))
+        top = bands["menu_px"] if bands["pinned"] else 0
+        bottom = wh - bands["footer_px"] if bands["pinned"] else wh
+        if box.x < -1 or box.y < top - 1:
+            return True
+        if box.right > ww + 1 or box.bottom > bottom + 1:
+            return True
+        return False
+
+    def _draw_estop_bar(self, screen) -> None:
+        rect = getattr(self, "estop_bar_rect", None)
+        if rect is None or rect.w < 8:
+            return
+        self._button(
+            screen,
+            rect,
+            "E-STOP",
+            None,
+            rect.collidepoint(self._mouse()),
+            label_color=ESTOP_LABEL,
+            fill=ESTOP,
+            key="E",
+        )
 
     def _header_items(self, short: bool) -> list:
         if not short:
@@ -2458,7 +2535,7 @@ class TrainMonitor:
         total = sum(widths) + gap * (len(widths) - 1)
         scale = min(1.0, inner.w / float(max(total, 1)))
         row_h = min(40, inner.h)
-        y = inner.y + max(0, (inner.h - row_h) // 2)
+        y = inner.y
         x = inner.x
         rects = {}
         for (name, _text, _keyed), width in zip(specs, widths):
@@ -2520,9 +2597,11 @@ class TrainMonitor:
             widest = max(widest, (unit_x + unit_w) - column.x)
         if widest > column.w or unit_x > column.right:
             return
-        from .tabnum import load_font
+        from .tabnum import baseline_shift, load_font
 
-        step = max(self.font_sm.get_height(), load_font(14).get_height())
+        mono = load_font(14)
+        ui_dy, mono_dy = baseline_shift(self.font_sm, mono)
+        step = max(ui_dy + self.font_sm.get_height(), mono_dy + mono.get_height())
         room = int(bottom) - int(top)
         fit = room // step if step else 0
         if fit <= 0:
@@ -2538,11 +2617,11 @@ class TrainMonitor:
             for label, number, unit in shown:
                 if y + self.font_sm.get_height() > bottom:
                     break
-                self._plain_glyph(screen, label, column.x, y, LABEL)
+                self._plain_glyph(screen, label, column.x, y + ui_dy, LABEL)
                 if number:
-                    self._cells(screen, number.rjust(num_chars), num_x, y, VALUE)
+                    self._cells(screen, number.rjust(num_chars), num_x, y + mono_dy, VALUE)
                 if unit:
-                    self._plain_glyph(screen, unit, unit_x, y, LABEL)
+                    self._plain_glyph(screen, unit, unit_x, y + ui_dy, LABEL)
                 y += step
         finally:
             screen.set_clip(previous)
@@ -2802,9 +2881,12 @@ class TrainMonitor:
         self._keep_glyphs(glyphs)
 
     def _brain_row_h(self) -> int:
-        from .tabnum import load_font
+        from .tabnum import baseline_shift, load_font
 
-        return max(int(self.font_sm.get_height()), int(load_font(14).get_height())) + 4
+        mono = load_font(14)
+        ui_dy, mono_dy = baseline_shift(self.font_sm, mono)
+        bottom = max(ui_dy + int(self.font_sm.get_height()), mono_dy + int(mono.get_height()))
+        return bottom + 4
 
     def _note_brain_row(self, rect, tag: str) -> None:
         import pygame
@@ -3461,14 +3543,17 @@ class TrainMonitor:
                 self._eye_lamp_color(view.eye_r_recognized, view.eye_r_ready, view.eye_r_confidence),
                 5,
             )
-            screen.blit(self.font_sm.render("П", True, PEACH), (rx + 20, y))
+            from .tabnum import baseline_shift, load_font
+
+            ui_dy, _mono_dy = baseline_shift(self.font_sm, load_font(14))
+            screen.blit(self.font_sm.render("П", True, PEACH), (rx + 20, y + ui_dy))
             self._lamp(
                 screen,
                 (rx + 52, cy),
                 self._eye_lamp_color(view.eye_l_recognized, view.eye_l_ready, view.eye_l_confidence),
                 5,
             )
-            screen.blit(self.font_sm.render("Л", True, PEACH), (rx + 62, y))
+            screen.blit(self.font_sm.render("Л", True, PEACH), (rx + 62, y + ui_dy))
             if view.eyes_line:
                 self._mixed(
                     screen,

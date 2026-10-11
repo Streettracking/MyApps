@@ -177,6 +177,7 @@ class HeaderChromeTests(unittest.TestCase):
             mon.brain_rect,
             mon.teacher_rect,
             mon.record_rect,
+            mon.estop_bar_rect,
             mon.pin_rect,
             mon.theme_label_rect,
             mon.theme_switch_rect,
@@ -191,11 +192,12 @@ class HeaderChromeTests(unittest.TestCase):
             mon.brain_rect,
             mon.teacher_rect,
             mon.record_rect,
+            mon.estop_bar_rect,
             mon.pin_rect,
             mon.theme_label_rect,
             mon.theme_switch_rect,
         )
-        ordered = tuple(rect for rect in ordered if rect.w > 0)
+        ordered = tuple(rect for rect in ordered if rect is not None and rect.w > 0)
         if mon.window is not None and mon.window.get_width() >= MIN_CONTENT_W:
             self.assertGreater(mon.theme_label_rect.w, 0)
         for rect in self._header_rects(mon):
@@ -205,7 +207,7 @@ class HeaderChromeTests(unittest.TestCase):
             self.assertLessEqual(rect.bottom, MENU_H)
         for left, right in zip(ordered, ordered[1:]):
             self.assertLessEqual(left.right + 4, right.left, (left, right))
-        rects = self._header_rects(mon)
+        rects = tuple(rect for rect in self._header_rects(mon) if rect is not None and rect.w > 0)
         for index, left in enumerate(rects):
             for right in rects[index + 1 :]:
                 self.assertFalse(left.colliderect(right), (left, right))
@@ -233,10 +235,11 @@ class HeaderChromeTests(unittest.TestCase):
             mon.brain_rect,
             mon.teacher_rect,
             mon.record_rect,
+            mon.estop_bar_rect,
             mon.pin_rect,
             mon.theme_label_rect,
             mon.theme_switch_rect,
-        )]
+        ) if rect.w > 0]
         for left, right in zip(ordered, ordered[1:]):
             self.assertLess(left.right, right.left, (left, right))
             self.assertFalse(left.colliderect(right))
