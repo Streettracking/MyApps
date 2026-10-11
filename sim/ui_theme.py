@@ -19,6 +19,11 @@ LIGHT = {
     "scroll_thumb": (142, 142, 142),
     "menu": (250, 249, 247),
     "inset": (255, 255, 255),
+    # Pill switch and the idle paperclip plate. Same values as the Go2 control.
+    "switch_off": (207, 201, 193),
+    "knob": (255, 255, 255),
+    "pin_plate": (236, 232, 226),
+    "pin_plate_hot": (225, 220, 212),
 }
 
 DARK = {
@@ -34,6 +39,10 @@ DARK = {
     "scroll_thumb": (132, 132, 134),
     "menu": (36, 37, 40),
     "inset": (30, 31, 34),
+    "switch_off": (74, 77, 83),
+    "knob": (248, 248, 248),
+    "pin_plate": (58, 61, 67),
+    "pin_plate_hot": (71, 74, 81),
 }
 
 THEMES = {"light": LIGHT, "dark": DARK}
