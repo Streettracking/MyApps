@@ -2629,20 +2629,30 @@ class TrainMonitor:
         )
 
     def _teacher_button(self, screen, view: MonitorView) -> None:
+        """Title stays «УЧИТЕЛЬ». The state slot is as wide as «смотрит»."""
         if view.learner != "mb":
             return
-        import pygame
-
         state = view.yolo_state or "выкл (нет обучения)"
         if state == "учит":
-            lamp, label = PEACH, "учит"
+            lamp, status, ink = PEACH, "учит", VALUE
         elif state == "смотрит":
-            lamp, label = TEACHER, "смотрит"
+            lamp, status, ink = TEACHER, "смотрит", VALUE
         elif state == "учитель не запущен":
-            lamp, label = AMBER, "учитель не запущен"
+            lamp, status, ink = AMBER, "выкл", AMBER
         else:
-            lamp, label = LAMP_OFF, "выкл (нет обучения)"
-        self._button(screen, self.teacher_rect, label, lamp, self.teacher_rect.collidepoint(self._mouse()), key="Y")
+            lamp, status, ink = LAMP_OFF, "выкл", INK_DIM
+        rect = self.teacher_rect
+        hot = rect.collidepoint(self._mouse())
+        self._button(screen, rect, "", lamp, hot)
+        if rect.w < 8 or rect.h < 8:
+            return
+        badge = self._draw_key_badge(screen, rect, "Y")
+        title = self.font_sm.render("УЧИТЕЛЬ", True, VALUE)
+        screen.blit(title, (rect.x + 32, rect.centery - title.get_height() // 2))
+        slot = self.font_sm.size("смотрит")[0]
+        glyph = self.font_sm.render(status, True, ink)
+        right = badge.left - 8 if badge is not None else rect.right - 8
+        screen.blit(glyph, (right - slot, rect.centery - glyph.get_height() // 2))
 
     def _draw_det_boxes(self, screen, inner, boxes) -> None:
         """Screen-only YOLO frames. The camera array is not written."""
