@@ -108,6 +108,8 @@ TEACHER_SOFT = (156, 208, 230)  # #9CD0E6
 ESTOP = (184, 40, 36)
 ESTOP_LABEL = (255, 246, 244)
 ESTOP_EDGE = (255, 228, 224)
+KEY_BADGE = (132, 132, 134)
+KEY_BADGE_INK = (255, 255, 255)
 AMBER = (214, 154, 52)  # #D69A34 warning
 AMBER_SOFT = (240, 206, 140)  # #F0CE8C
 RING = (176, 174, 170)
@@ -2176,6 +2178,7 @@ class TrainMonitor:
             self.estop_rect.collidepoint(self._mouse()),
             label_color=ESTOP_LABEL,
             fill=ESTOP,
+            key="E",
         )
 
     def _keep_glyphs(self, glyphs) -> None:
@@ -2454,7 +2457,24 @@ class TrainMonitor:
         disc.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
         screen.blit(disc, (x - radius, y - radius))
 
-    def _button(self, screen, rect, text: str, lamp, hot: bool, label_color=None, fill=None) -> None:
+    def _draw_key_badge(self, screen, rect, key: str):
+        """Small gray plaque at the button's right edge. The key itself is unchanged."""
+        import pygame
+
+        from .tabnum import load_font
+
+        if not key or rect.w < 28 or rect.h < 12:
+            return None
+        glyph = load_font(13).render(str(key), True, KEY_BADGE_INK)
+        pad_x = 4
+        badge = pygame.Rect(0, 0, max(16, glyph.get_width() + pad_x * 2), max(14, min(rect.h - 8, glyph.get_height() + 2)))
+        badge.centery = rect.centery
+        badge.right = rect.right - 6
+        pygame.draw.rect(screen, KEY_BADGE, badge, border_radius=4)
+        screen.blit(glyph, (badge.centerx - glyph.get_width() // 2, badge.centery - glyph.get_height() // 2))
+        return badge
+
+    def _button(self, screen, rect, text: str, lamp, hot: bool, label_color=None, fill=None, key: str = "") -> None:
         import pygame
 
         if rect.w < 8 or rect.h < 8:
@@ -2477,8 +2497,10 @@ class TrainMonitor:
         label = self.font_sm.render(text, True, label_color or VALUE)
         if fill is not None:
             screen.blit(label, (rect.centerx - label.get_width() // 2, rect.centery - label.get_height() // 2))
-            return
-        screen.blit(label, (x, rect.centery - label.get_height() // 2))
+        else:
+            screen.blit(label, (x, rect.centery - label.get_height() // 2))
+        if key:
+            self._draw_key_badge(screen, rect, key)
 
     def _link_color(self, view: MonitorView):
         text = view.udp_status or ""
@@ -2544,32 +2566,36 @@ class TrainMonitor:
         self._button(
             screen,
             self.learn_rect,
-            "СТОП ОБУЧЕНИЯ P" if learn_on else "СТАРТ ОБУЧЕНИЯ P",
+            "СТОП ОБУЧЕНИЯ" if learn_on else "СТАРТ ОБУЧЕНИЯ",
             PEACH if learn_on else LAMP_OFF,
             self.learn_rect.collidepoint(mouse),
+            key="P",
         )
         self._button(
             screen,
             self.auto_rect,
-            "СТОП АВТО A" if auto_on else "СТАРТ АВТО A",
+            "СТОП АВТО" if auto_on else "СТАРТ АВТО",
             PEACH if auto_on else LAMP_OFF,
             self.auto_rect.collidepoint(mouse),
+            key="A",
         )
         self._button(
             screen,
             self.take_rect,
-            "ПЕРЕХВАТ M",
+            "ПЕРЕХВАТ",
             PEACH if grabbed else LAMP_OFF,
             self.take_rect.collidepoint(mouse),
+            key="M",
         )
         if view.learner == "mb":
             bilateral = view.steer != "sectors"
             self._button(
                 screen,
                 self.steer_rect,
-                "БИЛАТЕРАЛЬНО K" if bilateral else "СЕКТОРЫ K",
+                "БИЛАТЕРАЛЬНО" if bilateral else "СЕКТОРЫ",
                 None,
                 self.steer_rect.collidepoint(mouse),
+                key="K",
             )
 
     def _go2_button(self, screen) -> None:
@@ -2596,9 +2622,10 @@ class TrainMonitor:
         self._button(
             screen,
             self.brain_rect,
-            "МОЗГ 3D  J",
+            "МОЗГ 3D",
             PEACH if self.brain_open else LAMP_OFF,
             self.brain_rect.collidepoint(self._mouse()),
+            key="J",
         )
 
     def _teacher_button(self, screen, view: MonitorView) -> None:
@@ -2608,14 +2635,14 @@ class TrainMonitor:
 
         state = view.yolo_state or "выкл (нет обучения)"
         if state == "учит":
-            lamp, label = PEACH, "учит  Y"
+            lamp, label = PEACH, "учит"
         elif state == "смотрит":
-            lamp, label = TEACHER, "смотрит  Y"
+            lamp, label = TEACHER, "смотрит"
         elif state == "учитель не запущен":
             lamp, label = AMBER, "учитель не запущен"
         else:
             lamp, label = LAMP_OFF, "выкл (нет обучения)"
-        self._button(screen, self.teacher_rect, label, lamp, self.teacher_rect.collidepoint(self._mouse()))
+        self._button(screen, self.teacher_rect, label, lamp, self.teacher_rect.collidepoint(self._mouse()), key="Y")
 
     def _draw_det_boxes(self, screen, inner, boxes) -> None:
         """Screen-only YOLO frames. The camera array is not written."""
@@ -2647,8 +2674,8 @@ class TrainMonitor:
         import pygame
 
         mouse = self._mouse()
-        self._button(screen, self.stand_up_rect, "ВСТАТЬ +", None, self.stand_up_rect.collidepoint(mouse))
-        self._button(screen, self.stand_down_rect, "ЛЕЧЬ −", None, self.stand_down_rect.collidepoint(mouse))
+        self._button(screen, self.stand_up_rect, "ВСТАТЬ", None, self.stand_up_rect.collidepoint(mouse), key="+")
+        self._button(screen, self.stand_down_rect, "ЛЕЧЬ", None, self.stand_down_rect.collidepoint(mouse), key="-")
         self._button(screen, self.recovery_rect, "ПОДЪЁМ", None, self.recovery_rect.collidepoint(mouse))
 
     def _record_button(self, screen, view: MonitorView) -> None:
@@ -2664,11 +2691,12 @@ class TrainMonitor:
                 text,
                 self.record_rect.x + 32,
                 self.record_rect.centery - 8,
-                "ЗАПИСЬ {5} {10} U",
+                "ЗАПИСЬ {5} {10}",
                 VALUE,
             )
+            self._draw_key_badge(screen, self.record_rect, "U")
         else:
-            self._button(screen, self.record_rect, "ЗАПИСЬ КАДРОВ  U", LAMP_OFF, hot)
+            self._button(screen, self.record_rect, "ЗАПИСЬ КАДРОВ", LAMP_OFF, hot, key="U")
 
     def _ensure_audio(self) -> bool:
         if self.audio_ok is not None:
@@ -2710,7 +2738,7 @@ class TrainMonitor:
 
     def _treat_button(self, screen, view: MonitorView, mouse) -> None:
         lamp = GREEN if view.treat_flash else GREEN
-        self._button(screen, self.treat_rect, "ЛАКОМСТВО  T", lamp, self.treat_rect.collidepoint(mouse))
+        self._button(screen, self.treat_rect, "ЛАКОМСТВО", lamp, self.treat_rect.collidepoint(mouse), key="T")
         if view.treat_flash:
             self._lamp(screen, (self.treat_rect.x + 16, self.treat_rect.centery), GREEN, 9)
 
@@ -2718,7 +2746,7 @@ class TrainMonitor:
         import pygame
 
         hot = self.lidar_reset_rect.collidepoint(self._mouse())
-        self._button(screen, self.lidar_reset_rect, "СБРОС ЛИДАРА  C", None, hot)
+        self._button(screen, self.lidar_reset_rect, "СБРОС ЛИДАРА", None, hot, key="C")
 
     def _lidar_fresh_button(self, screen, view: MonitorView) -> None:
         import pygame
@@ -2731,24 +2759,13 @@ class TrainMonitor:
             caption = view.lidar_mode or "лидар копится"
             lamp = LAMP_OFF
         self._button(screen, self.lidar_fresh_rect, "", lamp, hot)
-        from .tabnum import SLOT_GAP, cell_px
-
         cap_x = self.lidar_fresh_rect.x + 32
         cap_y = self.lidar_fresh_rect.centery - 8
         if view.lidar_fresh_on:
             self._mixed(screen, caption, cap_x, cap_y, "свежий лидар {5} с", VALUE)
         else:
             screen.blit(self.font_sm.render(caption.strip(), True, VALUE), (cap_x, cap_y))
-        v_x = (
-            cap_x
-            + self.font_sm.size("свежий лидар")[0]
-            + SLOT_GAP
-            + 5 * cell_px(14)
-            + SLOT_GAP
-            + self.font_sm.size("с")[0]
-            + SLOT_GAP
-        )
-        screen.blit(self.font_sm.render("V", True, VALUE), (v_x, cap_y))
+        self._draw_key_badge(screen, self.lidar_fresh_rect, "V")
 
     def _draw_marks(self, screen, inner, marks) -> None:
         import pygame

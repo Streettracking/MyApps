@@ -599,7 +599,7 @@ def format_record(saved, nbytes: int, idle: bool) -> str:
     from .frame_record import format_disk
 
     mid = phrase("жми T/X", 10) if idle else fit(format_disk(nbytes), 10, "right")
-    return "ЗАПИСЬ %s %s U" % (signed(saved, 5), mid)
+    return "ЗАПИСЬ %s %s" % (signed(saved, 5), mid)
 
 
 def format_overlap(frac: float) -> str:
