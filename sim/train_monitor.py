@@ -95,17 +95,19 @@ SCROLL_BAR = 8
 MENU_H = 32
 FOOTER_H = 56
 
-# Light warm chrome is the default. Peach, green, red, and teacher blue stay semantic.
+# Light warm chrome is the default. Status colours stay semantic in both themes.
+# Peach is on. Amber is a warning. Red is an error, E-STOP, or PPL1.
 CARD_ALPHA = 217  # ~0.85
 INK = VALUE
-PEACH = (201, 120, 91)  # #C9785B
+PEACH = (201, 120, 91)  # #C9785B actively on
 PEACH_SOFT = (227, 164, 135)  # #E3A487
 GREEN = (141, 181, 150)  # #8DB596 узнаю / PAM
-RED = (217, 136, 128)  # #D98880 PPL1
+RED = (217, 136, 128)  # #D98880 PPL1 and errors
 TEACHER = (46, 154, 206)  # #2E9ACE teacher watch, same in both themes
 TEACHER_SOFT = (156, 208, 230)  # #9CD0E6
 ESTOP = (184, 40, 36)
-AMBER = PEACH
+AMBER = (214, 154, 52)  # #D69A34 warning
+AMBER_SOFT = (240, 206, 140)  # #F0CE8C
 RING = (176, 174, 170)
 LAMP_OFF = ("off",)
 PANEL = CARD
@@ -1991,7 +1993,7 @@ class TrainMonitor:
         if self.show_stand or view.onboard:
             top = self.recovery_rect.bottom + 6
         if view.lidar_warning and top + 18 <= content.bottom:
-            warn = self.font_sm.render(view.lidar_warning[:42], True, PEACH)
+            warn = self.font_sm.render(view.lidar_warning[:42], True, AMBER)
             if column.x + warn.get_width() <= content.right:
                 screen.blit(warn, (column.x, top))
                 top += warn.get_height() + 4
@@ -2421,6 +2423,8 @@ class TrainMonitor:
             return
         if color == PEACH:
             top, bottom = PEACH_SOFT, PEACH
+        elif color == AMBER:
+            top, bottom = AMBER_SOFT, AMBER
         elif color == TEACHER:
             top, bottom = TEACHER_SOFT, TEACHER
         elif color == GREEN:
@@ -2460,23 +2464,26 @@ class TrainMonitor:
     def _link_color(self, view: MonitorView):
         text = view.udp_status or ""
         low = text.lower()
-        if "нет связи" in text or "error" in low:
+        if "error" in low or "ошиб" in low:
             return RED
+        if "нет связи" in text:
+            return AMBER
         if " ok" in low or low.endswith("ok"):
             return PEACH
         if view.onboard:
-            return RED
+            return AMBER
         return LAMP_OFF
 
     def _link_lamp(self, screen, view: MonitorView, x: int = 400) -> None:
-        label = self.font_sm.render("борт", True, PEACH)
+        color = self._link_color(view)
+        ink = INK_DIM if color == LAMP_OFF else color
+        label = self.font_sm.render("борт", True, ink)
         stop = self.brain_rect.x - 16
         bar = getattr(self, "help_bar_rect", None)
         if bar is not None and bar.w > 0:
             stop = min(stop, bar.x - 8)
         if x + 14 + label.get_width() > stop:
             return
-        color = self._link_color(view)
         self._lamp(screen, (x, 22), color, 6)
         screen.blit(label, (x + 14, 12))
 
@@ -2586,7 +2593,7 @@ class TrainMonitor:
         elif state == "смотрит":
             lamp, label = TEACHER, "смотрит  Y"
         elif state == "учитель не запущен":
-            lamp, label = PEACH, "учитель не запущен"
+            lamp, label = AMBER, "учитель не запущен"
         else:
             lamp, label = LAMP_OFF, "выкл (нет обучения)"
         self._button(screen, self.teacher_rect, label, lamp, self.teacher_rect.collidepoint(self._mouse()))
@@ -2773,7 +2780,7 @@ class TrainMonitor:
         if recognized:
             return GREEN
         if ready and float(percent) > 0.0:
-            return PEACH
+            return AMBER
         return LAMP_OFF
 
     def _teacher_sees(self, view: MonitorView) -> tuple:
@@ -2942,7 +2949,7 @@ class TrainMonitor:
         y = nxt
         if view.pilot_hint:
             def hint() -> None:
-                screen.blit(self.font_sm.render(view.pilot_hint, True, PEACH), (rx, y))
+                screen.blit(self.font_sm.render(view.pilot_hint, True, AMBER), (rx, y))
 
             nxt = self._paint_line(screen, panel, y, "hint", hint)
             if nxt is None:

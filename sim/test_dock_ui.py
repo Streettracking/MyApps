@@ -891,3 +891,27 @@ class CursorTests(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
             self.assertIn("ok", proc.stdout)
+
+
+class StatusColorTests(unittest.TestCase):
+    def test_warnings_are_amber_and_peach_is_only_on(self):
+        from sim.train_monitor import AMBER, GREEN, LAMP_OFF, PEACH, RED, MonitorView, TrainMonitor
+
+        self.assertNotEqual(AMBER, PEACH)
+        self.assertNotEqual(AMBER, RED)
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        import pygame
+
+        pygame.init()
+        mon = TrainMonitor("colors")
+        try:
+            self.assertEqual(mon._eye_lamp_color(True, True, 90), GREEN)
+            self.assertEqual(mon._eye_lamp_color(False, True, 40), AMBER)
+            self.assertEqual(mon._eye_lamp_color(False, False, 0), LAMP_OFF)
+            self.assertEqual(mon._link_color(MonitorView(udp_status="udp 127.0.0.1:5451 ok")), PEACH)
+            self.assertEqual(mon._link_color(MonitorView(udp_status="нет связи")), AMBER)
+            self.assertEqual(mon._link_color(MonitorView(udp_status="link error")), RED)
+            self.assertEqual(mon._link_color(MonitorView(onboard="192.168.35.213", udp_status="")), AMBER)
+        finally:
+            pygame.quit()
