@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from sim.yolo_teacher import (
     BOXES_KEY,
@@ -810,6 +812,106 @@ class FixedColumnTests(unittest.TestCase):
                 block_b = second[x0 : x0 + cell, ya : ya + height]
                 np.testing.assert_array_equal(block_a, block_b)
         pygame.quit()
+
+
+class QuietLaunchTests(unittest.TestCase):
+    def test_owned_teacher_stops_only_its_own_process(self):
+        from sim.yolo_teacher import OwnedTeacher
+
+        stopped = []
+
+        class Proc:
+            def poll(self):
+                return None
+
+            def terminate(self):
+                stopped.append("term")
+
+            def wait(self, timeout=1):
+                return 0
+
+            def kill(self):
+                stopped.append("kill")
+
+        owned = OwnedTeacher()
+        owned.proc = Proc()
+        owned.owned = True
+        owned.close()
+        self.assertEqual(stopped, ["term"])
+        self.assertFalse(owned.owned)
+
+        foreign = OwnedTeacher()
+        foreign.proc = Proc()
+        foreign.owned = False
+        foreign.close()
+        self.assertEqual(stopped, ["term"])
+
+    def test_dummy_driver_does_not_spawn_and_a_missing_venv_is_reported(self):
+        from sim.yolo_teacher import OwnedTeacher, teacher_argv
+
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
+        os.environ.pop("RECOGNIZER_START_TEACHER", None)
+        self.assertEqual(OwnedTeacher().start("http://127.0.0.1:8091"), "")
+        os.environ["RECOGNIZER_START_TEACHER"] = "1"
+        try:
+            note = OwnedTeacher().start("http://127.0.0.1:9")
+            self.assertIn("нет файла", note)
+            self.assertIsNone(teacher_argv("http://127.0.0.1:8091", home=Path("/tmp/no-such-home")))
+        finally:
+            os.environ.pop("RECOGNIZER_START_TEACHER", None)
+
+    def test_teacher_argv_prefers_pythonw_beside_the_venv(self):
+        from sim.yolo_teacher import teacher_argv
+
+        root = Path(tempfile.mkdtemp())
+        desktop = root / "Desktop" / "FlyWire-Go2"
+        scripts = desktop / "yolo" / "venv" / "Scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "python.exe").write_text("", encoding="utf-8")
+        (scripts / "pythonw.exe").write_text("", encoding="utf-8")
+        weights = desktop / "yolo" / "runs" / "go2_mix_v2" / "weights" / "best.pt"
+        weights.parent.mkdir(parents=True)
+        weights.write_bytes(b"pt")
+        serve = desktop / "tools" / "yolo_teacher" / "serve.py"
+        serve.parent.mkdir(parents=True)
+        serve.write_text("print('serve')\n", encoding="utf-8")
+        argv = teacher_argv("http://127.0.0.1:8091", home=root)
+        self.assertIsNotNone(argv)
+        self.assertTrue(str(argv[0]).endswith("pythonw.exe"))
+        self.assertEqual(argv[-1], "8091")
+        self.assertIn("--weights", argv)
+
+    def test_launchers_hide_the_console_and_keep_the_cmd_files(self):
+        from pathlib import Path as RepoPath
+
+        root = RepoPath(__file__).resolve().parents[1]
+        names = (
+            "DogRecognizeTrainer_sim",
+            "DogRecognizeTrainer_robot",
+            "DogRecognizeTrainer_onboard",
+        )
+        for name in names:
+            cmd = (root / "launchers" / ("%s.cmd" % name)).read_text(encoding="utf-8")
+            vbs = (root / "launchers" / ("%s.vbs" % name)).read_text(encoding="utf-8")
+            lnk = (root / "launchers" / ("%s.lnk" % name)).read_bytes()
+            self.assertIn("DogRecognizeTrainer.exe", cmd)
+            self.assertIn("pause", cmd)
+            self.assertIn("sh.Run cmd, 0, False", vbs)
+            self.assertIn("wscript", vbs.lower())
+            self.assertIn((name + ".vbs").encode("utf-16-le"), lnk)
+            self.assertIn(b"wscript.exe", lnk)
+        teacher_cmd = (root / "tools" / "yolo_teacher" / "start_teacher.cmd").read_text(encoding="utf-8")
+        teacher_vbs = (root / "tools" / "yolo_teacher" / "start_teacher.vbs").read_text(encoding="utf-8")
+        self.assertIn("pause", teacher_cmd)
+        self.assertIn("python.exe", teacher_cmd)
+        self.assertIn("pythonw.exe", teacher_vbs)
+        self.assertIn(", 0, False", teacher_vbs)
+        quiet = (root / "sim" / "quiet_proc.py").read_text(encoding="utf-8")
+        self.assertIn("CREATE_NO_WINDOW", quiet)
+        self.assertNotIn("from_display_module", quiet)
+        go2 = (root / "sim" / "go2_control.py").read_text(encoding="utf-8")
+        self.assertNotIn(".terminate", go2)
+        self.assertNotIn(".kill(", go2)
 
 
 if __name__ == "__main__":

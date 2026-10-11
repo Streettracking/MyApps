@@ -338,6 +338,34 @@ class BrainPanelTests(unittest.TestCase):
             self.assertTrue(written.is_file())
             self.assertNotIn("_internal", written.parts)
             self.assertTrue(faulthandler.is_enabled())
+            from sim.ui_settings import ensure_stdio, trainer_log_path
+
+            import sys
+
+            old_out, old_err = sys.stdout, sys.stderr
+            sys.stdout = None
+            sys.stderr = None
+            try:
+                log_path = ensure_stdio()
+                self.assertEqual(log_path, trainer_log_path())
+                self.assertEqual(log_path, root / "trainer.log")
+                print("trainer-line")
+                print("err-line", file=sys.stderr)
+                sys.stdout.flush()
+                logged = (root / "trainer.log").read_text(encoding="utf-8")
+                self.assertIn("trainer-line", logged)
+                self.assertIn("err-line", logged)
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+                leaked = getattr(ensure_stdio, "handle", None)
+                if leaked is not None and leaked not in (old_out, old_err):
+                    try:
+                        leaked.close()
+                    except OSError:
+                        pass
+                    ensure_stdio.handle = None
+            bat = Path(__file__).resolve().parents[1].joinpath("rebuild_exe.bat").read_text(encoding="utf-8")
+            self.assertIn("--noconsole", bat)
         finally:
             faulthandler.disable()
             handle = install_crash_log.handle

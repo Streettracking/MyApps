@@ -727,6 +727,13 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
         )
     else:
         session.teacher = None
+    from .yolo_teacher import OwnedTeacher
+
+    session._owned_teacher = OwnedTeacher()
+    if session.teacher is not None:
+        note = session._owned_teacher.start(getattr(session, "teacher_url", "http://127.0.0.1:8091"))
+        if note:
+            session._log(note)
     shot = Path(screenshot_path) if screenshot_path else None
     rec = FrameRecorder(ROOT / "logs" / "yolo_frames", fps=float(getattr(session, "rec_fps", 2.0)))
     marks = OperatorMarks()
@@ -742,6 +749,9 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
         teacher = getattr(session, "teacher", None)
         if teacher is not None:
             teacher.close()
+        owned = getattr(session, "_owned_teacher", None)
+        if owned is not None:
+            owned.close()
         rec.close()
 
 
@@ -1271,6 +1281,9 @@ def compare_steer(seeds: tuple[int, ...] = (1, 2, 3), teach_s: float = 8.0, seek
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .ui_settings import ensure_stdio
+
+    ensure_stdio()
     p = argparse.ArgumentParser(description="Sim recognition training: one learner, no zones, no reward")
     p.add_argument("--agents", type=int, default=3, help="1 learner + the rest are scenery peers")
     p.add_argument("--seconds", type=float, default=0.0, help="0 = until the window closes")

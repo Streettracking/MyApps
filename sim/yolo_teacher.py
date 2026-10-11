@@ -497,3 +497,146 @@ class TeacherRuntime:
             boxes = self.client.detect(jpeg)
             with self._lock:
                 self._result = (gen, boxes)
+
+
+def _url_port(url: str) -> int:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(str(url or DEFAULT_URL))
+    try:
+        return int(parsed.port or 8091)
+    except (TypeError, ValueError):
+        return 8091
+
+
+def teacher_argv(url: str = DEFAULT_URL, home=None) -> list | None:
+    """pythonw + serve.py + weights, or None when the laptop files are missing.
+
+    The venv and the weights live under Desktop/FlyWire-Go2/yolo, the same
+    place ``start_teacher.cmd`` uses. The trainer exe does not carry torch.
+    """
+    import os
+    from pathlib import Path
+
+    from .doggibot_snap import desktop_flywire
+
+    desktop = desktop_flywire(home)
+    py = os.environ.get("RECOGNIZER_YOLO_PYTHON", "").strip()
+    weights = os.environ.get("RECOGNIZER_YOLO_WEIGHTS", "").strip()
+    serve = os.environ.get("RECOGNIZER_YOLO_SERVE", "").strip()
+    if not py and desktop is not None:
+        scripts = desktop / "yolo" / "venv" / "Scripts"
+        posix = desktop / "yolo" / "venv" / "bin" / "python"
+        for path in (scripts / "pythonw.exe", scripts / "python.exe", posix):
+            if path.is_file():
+                py = str(path)
+                break
+    if not weights and desktop is not None:
+        candidate = desktop / "yolo" / "runs" / "go2_mix_v2" / "weights" / "best.pt"
+        if candidate.is_file():
+            weights = str(candidate)
+    if not serve:
+        here = Path(__file__).resolve().parents[1] / "tools" / "yolo_teacher" / "serve.py"
+        alts = []
+        if desktop is not None:
+            alts.append(desktop / "tools" / "yolo_teacher" / "serve.py")
+            alts.append(desktop / "yolo" / "serve.py")
+        alts.append(here)
+        for path in alts:
+            if path.is_file():
+                serve = str(path)
+                break
+    if not py or not weights or not serve:
+        return None
+    py_path = Path(py)
+    weights_path = Path(weights)
+    serve_path = Path(serve)
+    if not py_path.is_file() or not weights_path.is_file() or not serve_path.is_file():
+        return None
+    if os.name == "nt" and py_path.name.lower() == "python.exe":
+        sibling = py_path.with_name("pythonw.exe")
+        if sibling.is_file():
+            py_path = sibling
+    return [
+        str(py_path),
+        str(serve_path),
+        "--weights",
+        str(weights_path),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(_url_port(url)),
+    ]
+
+
+def _auto_start_allowed() -> bool:
+    import os
+
+    if os.environ.get("RECOGNIZER_START_TEACHER") == "1":
+        return True
+    if os.environ.get("SDL_VIDEODRIVER") == "dummy":
+        return False
+    return True
+
+
+class OwnedTeacher:
+    """The YOLO process this trainer started. A service that was already up is left alone."""
+
+    def __init__(self):
+        self.proc = None
+        self.owned = False
+        self._log = None
+
+    def start(self, url: str = DEFAULT_URL) -> str:
+        """Spawn when /health is down. Empty string means nothing to say."""
+        if not _auto_start_allowed():
+            return ""
+        if YoloClient(url).health():
+            return ""
+        argv = teacher_argv(url)
+        if not argv:
+            return "учитель: нет файла службы YOLO"
+        from .quiet_proc import popen_quiet
+
+        try:
+            self.proc, self._log = popen_quiet(argv, "yolo_teacher.log", cwd=str(__import__("pathlib").Path(argv[1]).parent))
+        except OSError as exc:
+            self.proc = None
+            return "учитель: не запустился (%s)" % exc
+        self.owned = True
+        if self._wait(url, 20.0):
+            return "учитель YOLO запущен"
+        return "учитель YOLO запущен, /health ещё молчит"
+
+    def _wait(self, url: str, seconds: float) -> bool:
+        client = YoloClient(url)
+        deadline = time.monotonic() + float(seconds)
+        while time.monotonic() < deadline:
+            if self.proc is not None and self.proc.poll() is not None:
+                return False
+            if client.health():
+                return True
+            time.sleep(0.25)
+        return client.health()
+
+    def close(self) -> None:
+        """Stop only the process this trainer started."""
+        proc = self.proc if self.owned else None
+        self.owned = False
+        self.proc = None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        handle = self._log
+        self._log = None
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass

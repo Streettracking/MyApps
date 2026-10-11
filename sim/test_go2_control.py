@@ -98,7 +98,15 @@ class _Mon:
 
 class Go2ControlTests(unittest.TestCase):
     def test_default_path_follows_the_launcher_folder(self):
-        from sim.go2_control import default_exe, default_server, resolve_exe, resolve_server, server_creationflags, windows_creationflags
+        from sim.go2_control import (
+            default_exe,
+            default_server,
+            panel_creationflags,
+            resolve_exe,
+            resolve_server,
+            server_creationflags,
+            windows_creationflags,
+        )
 
         root = Path(tempfile.mkdtemp())
         home = root / "home"
@@ -128,6 +136,10 @@ class Go2ControlTests(unittest.TestCase):
         self.assertEqual(hidden & 0x00000008, 0x00000008)
         self.assertEqual(hidden & 0x00000200, 0x00000200)
         self.assertEqual(hidden & 0x08000000, 0x08000000)
+        panel_flags = panel_creationflags()
+        self.assertEqual(panel_flags & 0x00000008, 0x00000008)
+        self.assertEqual(panel_flags & 0x00000200, 0x00000200)
+        self.assertEqual(panel_flags & 0x08000000, 0x08000000)
         source = Path(__file__).resolve().parent.joinpath("go2_control.py").read_text(encoding="utf-8")
         self.assertIn("DETACHED_PROCESS", source)
         self.assertIn("CREATE_NEW_PROCESS_GROUP", source)
@@ -342,6 +354,10 @@ class Go2ControlTests(unittest.TestCase):
         self.assertIn("5452", text)
         self.assertIn("5000", text)
         self.assertIn("нет файла", text)
+        self.assertIn("trainer.log", text)
+        self.assertIn("yolo_teacher.log", text)
+        self.assertIn("go2_server.log", text)
+        self.assertIn("crash.log", text)
         self.assertIn("не занял", text)
         self.assertIn("8090", text)
         self.assertIn("go2_wr_server", text)

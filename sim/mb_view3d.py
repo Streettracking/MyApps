@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import socket
 import subprocess
 import sys
@@ -955,10 +956,20 @@ def demo_packet(cloud: BrainCloud) -> dict:
     }
 
 
+def _gui_interpreter() -> str:
+    """pythonw on Windows so a dev launch has no console. A frozen exe stays itself."""
+    exe = Path(sys.executable)
+    if os.name == "nt" and exe.name.lower() in {"python.exe", "python3.exe"}:
+        sibling = exe.with_name("pythonw.exe")
+        if sibling.is_file():
+            return str(sibling)
+    return str(exe)
+
+
 def viewer_command(port: int = VIEW_PORT) -> list:
     if getattr(sys, "frozen", False):
         return [sys.executable, "--mb-view3d", "--port", str(int(port))]
-    return [sys.executable, "-m", "sim.mb_view3d", "--port", str(int(port))]
+    return [_gui_interpreter(), "-m", "sim.mb_view3d", "--port", str(int(port))]
 
 
 class BrainView:
@@ -967,6 +978,7 @@ class BrainView:
     def __init__(self, port: int = VIEW_PORT):
         self.port = int(port)
         self.proc = None
+        self._stdio = None
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
         self._next = 0.0
@@ -991,6 +1003,13 @@ class BrainView:
             proc.wait(timeout=0.2)
         except subprocess.TimeoutExpired:
             proc.kill()
+        handle = self._stdio
+        self._stdio = None
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
 
     def toggle(self) -> str:
         if self.alive:
@@ -1000,9 +1019,11 @@ class BrainView:
         return "окно мозга открыто"
 
     def spawn(self) -> None:
+        from .quiet_proc import popen_quiet
+
         self._stop_proc()
         self._ensure_sock()
-        self.proc = subprocess.Popen(viewer_command(self.port), stdin=subprocess.DEVNULL)
+        self.proc, self._stdio = popen_quiet(viewer_command(self.port), "brain3d.log")
         self._next = 0.0
 
     def send(self, packet: dict, now: float | None = None, force: bool = False) -> None:
@@ -1400,6 +1421,9 @@ def _keys(orbit: Orbit, event, frames=None) -> None:
 
 
 def main(argv: list | None = None) -> int:
+    from .ui_settings import ensure_stdio
+
+    ensure_stdio()
     parser = argparse.ArgumentParser(description="3D mushroom body window")
     parser.add_argument("--mb-view3d", action="store_true")
     parser.add_argument("--port", type=int, default=VIEW_PORT)

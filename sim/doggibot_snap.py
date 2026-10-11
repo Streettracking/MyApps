@@ -245,8 +245,7 @@ def window_copy() -> bytes:
         return json.dumps(default_settings(), ensure_ascii=False, indent=2).encode("utf-8")
 
 
-def crash_tail() -> bytes | None:
-    path = crash_log_path()
+def _tail_bytes(path: Path) -> bytes | None:
     try:
         data = path.read_bytes()
     except OSError:
@@ -256,6 +255,20 @@ def crash_tail() -> bytes | None:
     if len(data) > CRASH_TAIL:
         data = data[-CRASH_TAIL:]
     return bytes(data)
+
+
+def crash_tail() -> bytes | None:
+    return _tail_bytes(crash_log_path())
+
+
+def child_log_tails() -> dict:
+    """Tails of the teacher and the command server. Missing files are omitted."""
+    files = {}
+    for name in ("yolo_teacher.log", "go2_server.log"):
+        data = _tail_bytes(appdata_root() / name)
+        if data:
+            files[name] = data
+    return files
 
 
 def collect_files(mon, view, *, mode: str, link_ok: bool, teacher, learning: bool) -> dict:
@@ -294,6 +307,7 @@ def collect_files(mon, view, *, mode: str, link_ok: bool, teacher, learning: boo
     tail = crash_tail()
     if tail:
         files["crash.log"] = tail
+    files.update(child_log_tails())
     return files
 
 

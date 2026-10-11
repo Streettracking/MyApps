@@ -21,7 +21,7 @@ from .doggibot_snap import desktop_flywire, exe_launchers
 # Windows process flags. Present here so a Linux test can still see them.
 # DETACHED_PROCESS keeps the child off the trainer console.
 # CREATE_NEW_PROCESS_GROUP lets the trainer exit without delivering a break.
-# CREATE_NO_WINDOW hides the server console. The panel keeps its own window.
+# CREATE_NO_WINDOW hides a console. The panel still opens its own window.
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000
@@ -40,10 +40,16 @@ def server_creationflags() -> int:
     return windows_creationflags() | int(hidden)
 
 
+def panel_creationflags() -> int:
+    """Same detach flags as the server, and no console. The GUI window stays."""
+    hidden = getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)
+    return windows_creationflags() | int(hidden)
+
+
 def panel_detach_kwargs() -> dict:
-    """The control panel gets its own group and keeps a visible window."""
+    """The control panel gets its own group. A console is not allocated."""
     if os.name == "nt":
-        return {"creationflags": windows_creationflags()}
+        return {"creationflags": panel_creationflags()}
     return {"start_new_session": True}
 
 
@@ -243,15 +249,26 @@ class Go2Launch:
         return bool(self._probe_value)
 
     def _spawn(self, path: Path, kind: str):
+        from .quiet_proc import open_log
+
         kwargs = server_detach_kwargs() if kind == "server" else panel_detach_kwargs()
-        return subprocess.Popen(
-            [str(path)],
-            cwd=str(path.parent),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **kwargs,
-        )
+        handle = open_log("go2_server.log" if kind == "server" else "go2_control.log")
+        try:
+            return subprocess.Popen(
+                [str(path)],
+                cwd=str(path.parent),
+                stdin=subprocess.DEVNULL,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                **kwargs,
+            )
+        finally:
+            # The child already has its own handle. Closing this copy is not a kill.
+            if handle is not subprocess.DEVNULL:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
 
     def _wait_port(self) -> bool:
         deadline = time.monotonic() + self.wait_s

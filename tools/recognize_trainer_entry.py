@@ -46,8 +46,9 @@ def main(argv: list[str] | None = None) -> int:
     import multiprocessing
 
     multiprocessing.freeze_support()
-    from sim.ui_settings import install_crash_log
+    from sim.ui_settings import ensure_stdio, install_crash_log
 
+    ensure_stdio()
     install_crash_log()
     args = list(sys.argv[1:] if argv is None else argv)
     if "--mb-view3d" in args:

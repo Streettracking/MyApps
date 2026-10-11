@@ -933,6 +933,13 @@ def run_live_gui(
         )
     else:
         session.teacher = None
+    from .yolo_teacher import OwnedTeacher
+
+    session._owned_teacher = OwnedTeacher()
+    if session.teacher is not None:
+        note = session._owned_teacher.start(getattr(session, "teacher_url", "http://127.0.0.1:8091"))
+        if note:
+            session._log(note)
     rec = FrameRecorder(ROOT / "logs" / "yolo_frames", fps=float(getattr(session, "rec_fps", 2.0)))
     marks = OperatorMarks()
     tele = {
@@ -1126,6 +1133,9 @@ def run_live_gui(
         teacher = getattr(session, "teacher", None)
         if teacher is not None:
             teacher.close()
+        owned = getattr(session, "_owned_teacher", None)
+        if owned is not None:
+            owned.close()
         rec.close()
         try:
             if link is not None:
@@ -1427,6 +1437,9 @@ def try_load_live(session: LiveSession) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .ui_settings import ensure_stdio
+
+    ensure_stdio()
     p = argparse.ArgumentParser(description="Live Go2 recognition trainer (sensors + manual UDP teleop)")
     p.add_argument("--robot-ip", default=DEFAULT_IP)
     p.add_argument("--preview-port", type=int, default=DEFAULT_PREVIEW)

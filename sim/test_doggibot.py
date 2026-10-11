@@ -62,6 +62,8 @@ class DoggiBotSnapshotTests(unittest.TestCase):
         config = root / "window.json"
         config.write_text('{"theme": "light", "w": 1920, "h": 1080}\n', encoding="utf-8")
         (root / "crash.log").write_text("boom\n" * 20, encoding="utf-8")
+        (root / "yolo_teacher.log").write_text("teacher-tail\n", encoding="utf-8")
+        (root / "go2_server.log").write_text("server-tail\n", encoding="utf-8")
         os.environ["RECOGNIZER_UI_CONFIG"] = str(config)
         os.environ["RECOGNIZER_DOGGIBOT_DIR"] = str(root / "to_doggibot")
         pygame.init()
@@ -167,6 +169,8 @@ class DoggiBotSnapshotTests(unittest.TestCase):
             self.assertEqual(status["logical"][0], mon.screen.get_width())
             self.assertIn("theme", (folder / "window.json").read_text(encoding="utf-8"))
             self.assertIn("boom", (folder / "crash.log").read_text(encoding="utf-8"))
+            self.assertIn("teacher-tail", (folder / "yolo_teacher.log").read_text(encoding="utf-8"))
+            self.assertIn("server-tail", (folder / "go2_server.log").read_text(encoding="utf-8"))
             latest = (root / "to_doggibot" / "latest.txt").read_text(encoding="utf-8").strip()
             self.assertEqual(latest, str(folder.resolve()))
             out = Path("/opt/cursor/artifacts")

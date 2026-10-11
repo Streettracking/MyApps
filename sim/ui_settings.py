@@ -13,6 +13,7 @@ from pathlib import Path
 
 FILE_NAME = "window.json"
 CRASH_NAME = "crash.log"
+TRAINER_LOG_NAME = "trainer.log"
 BRAIN_WINDOW_NAME = "brain_window.json"
 APP_DIR = "recognize_trainer"
 
@@ -42,8 +43,57 @@ def crash_log_path() -> Path:
     return settings_path().with_name(CRASH_NAME)
 
 
+def trainer_log_path() -> Path:
+    """Stdout and stderr of a windowed trainer. Same folder as crash.log."""
+    try:
+        from .doggibot_snap import appdata_root
+
+        return appdata_root() / TRAINER_LOG_NAME
+    except Exception:
+        return settings_path().with_name(TRAINER_LOG_NAME)
+
+
+class _Silent:
+    """Stand-in when the log file cannot be opened and the console is missing."""
+
+    def write(self, _data):
+        return 0
+
+    def flush(self):
+        return None
+
+    def isatty(self):
+        return False
+
+
+def ensure_stdio():
+    """A windowed exe has no stdout. Point the holes at trainer.log.
+
+    A normal console is left alone. ``print`` must not raise when both
+    streams are None.
+    """
+    import sys
+
+    if sys.stdout is not None and sys.stderr is not None:
+        return trainer_log_path()
+    path = trainer_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a", encoding="utf-8", errors="replace", buffering=1)
+    except OSError:
+        handle = _Silent()
+    if sys.stdout is None:
+        sys.stdout = handle
+    if sys.stderr is None:
+        sys.stderr = handle
+    ensure_stdio.handle = handle
+    return path
+
+
 def install_crash_log():
     """Enable faulthandler for the exe. The handle stays alive on this function."""
+    import sys
+
     import faulthandler
 
     if getattr(install_crash_log, "handle", None) is not None:
@@ -56,11 +106,18 @@ def install_crash_log():
         install_crash_log.handle = handle
         return path
     except OSError:
-        faulthandler.enable(all_threads=True)
+        err = sys.stderr
+        if err is None:
+            return None
+        try:
+            faulthandler.enable(file=err, all_threads=True)
+        except Exception:
+            return None
         return None
 
 
 install_crash_log.handle = None
+ensure_stdio.handle = None
 
 
 def default_settings() -> dict:
