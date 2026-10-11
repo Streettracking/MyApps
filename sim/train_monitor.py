@@ -2550,10 +2550,11 @@ class TrainMonitor:
         bar = getattr(self, "help_bar_rect", None)
         if bar is not None and bar.w > 0:
             stop = min(stop, bar.x - 8)
-        if x + 14 + label.get_width() > stop:
+        if x + 14 > stop:
             return
         self._lamp(screen, (x, 22), color, 6)
-        screen.blit(label, (x + 14, 12))
+        if x + 14 + label.get_width() <= stop:
+            screen.blit(label, (x + 14, 12))
 
     def show_toast(self, text: str, seconds: float = 3.0) -> None:
         import time

@@ -994,3 +994,32 @@ class FontFloorTests(unittest.TestCase):
             self.assertGreater(mon.font_tiny.get_height(), full)
         finally:
             pygame.quit()
+
+
+class BoardLampTests(unittest.TestCase):
+    def test_board_lamp_stays_when_the_word_does_not_fit(self):
+        import pygame
+
+        from sim.train_monitor import MonitorView, TrainMonitor
+
+        pygame.init()
+        mon = TrainMonitor("board")
+        try:
+            mon._on_resize(1920, 1080)
+            view = MonitorView(udp_status="udp 127.0.0.1:5451 ok")
+            surf = pygame.Surface((800, 40))
+            surf.fill((10, 10, 10))
+            mon.brain_rect = pygame.Rect(700, 0, 160, 24)
+            mon.help_bar_rect = pygame.Rect(430, 4, 28, 24)
+            mon._link_lamp(surf, view, 400)
+            self.assertGreater(max(surf.get_at((400, 22))[:3]), 40)
+            band = pygame.surfarray.array3d(surf)[414:470, 6:30]
+            self.assertTrue((band.max(axis=2) <= 12).all())
+            wide = pygame.Surface((800, 40))
+            wide.fill((10, 10, 10))
+            mon.help_bar_rect = pygame.Rect(700, 4, 28, 24)
+            mon._link_lamp(wide, view, 400)
+            word = pygame.surfarray.array3d(wide)[414:470, 6:30]
+            self.assertGreater(int((word.max(axis=2) > 40).sum()), 8)
+        finally:
+            pygame.quit()
