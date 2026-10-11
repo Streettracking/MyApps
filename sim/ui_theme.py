@@ -19,6 +19,19 @@ LIGHT = {
     "scroll_thumb": (142, 142, 142),
     "menu": (250, 249, 247),
     "inset": (255, 255, 255),
+    "shadow": (140, 120, 100),
+    "peach_soft": (227, 164, 135),
+    "amber_soft": (240, 206, 140),
+    "teacher_soft": (156, 208, 230),
+    "lamp_green_hi": (196, 220, 198),
+    "lamp_red_hi": (236, 196, 190),
+    "lamp_estop_hi": (214, 92, 84),
+    "lamp_wash": (255, 255, 255),
+    "ring": (176, 174, 170),
+    "estop_label": (255, 246, 244),
+    "estop_edge": (255, 228, 224),
+    "key_badge": (132, 132, 134),
+    "key_badge_ink": (255, 255, 255),
 }
 
 DARK = {
@@ -34,6 +47,20 @@ DARK = {
     "scroll_thumb": (132, 132, 134),
     "menu": (36, 37, 40),
     "inset": (30, 31, 34),
+    # Near-black lift. The light theme's warm brown reads as mud on a dark card.
+    "shadow": (8, 7, 6),
+    "peach_soft": (232, 176, 150),
+    "amber_soft": (236, 196, 120),
+    "teacher_soft": (120, 186, 214),
+    "lamp_green_hi": (168, 204, 176),
+    "lamp_red_hi": (214, 160, 154),
+    "lamp_estop_hi": (196, 78, 72),
+    "lamp_wash": (210, 212, 216),
+    "ring": (150, 152, 158),
+    "estop_label": (255, 246, 244),
+    "estop_edge": (255, 210, 204),
+    "key_badge": (88, 90, 96),
+    "key_badge_ink": (255, 255, 255),
 }
 
 THEMES = {"light": LIGHT, "dark": DARK}
@@ -101,3 +128,16 @@ SCROLL_TRACK = ThemeColor("scroll_track", LIGHT["scroll_track"])
 SCROLL_THUMB = ThemeColor("scroll_thumb", LIGHT["scroll_thumb"])
 MENU = ThemeColor("menu", LIGHT["menu"])
 INSET = ThemeColor("inset", LIGHT["inset"])
+SHADOW = ThemeColor("shadow", LIGHT["shadow"])
+PEACH_SOFT = ThemeColor("peach_soft", LIGHT["peach_soft"])
+AMBER_SOFT = ThemeColor("amber_soft", LIGHT["amber_soft"])
+TEACHER_SOFT = ThemeColor("teacher_soft", LIGHT["teacher_soft"])
+LAMP_GREEN_HI = ThemeColor("lamp_green_hi", LIGHT["lamp_green_hi"])
+LAMP_RED_HI = ThemeColor("lamp_red_hi", LIGHT["lamp_red_hi"])
+LAMP_ESTOP_HI = ThemeColor("lamp_estop_hi", LIGHT["lamp_estop_hi"])
+LAMP_WASH = ThemeColor("lamp_wash", LIGHT["lamp_wash"])
+RING = ThemeColor("ring", LIGHT["ring"])
+ESTOP_LABEL = ThemeColor("estop_label", LIGHT["estop_label"])
+ESTOP_EDGE = ThemeColor("estop_edge", LIGHT["estop_edge"])
+KEY_BADGE = ThemeColor("key_badge", LIGHT["key_badge"])
+KEY_BADGE_INK = ThemeColor("key_badge_ink", LIGHT["key_badge_ink"])

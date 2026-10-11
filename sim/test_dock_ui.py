@@ -915,3 +915,57 @@ class StatusColorTests(unittest.TestCase):
             self.assertEqual(mon._link_color(MonitorView(onboard="192.168.35.213", udp_status="")), AMBER)
         finally:
             pygame.quit()
+
+
+class PaletteTests(unittest.TestCase):
+    """Card shadow and lamp rims come from ui_theme. Drawing keeps almost no raw RGB."""
+
+    def test_drawing_has_no_literal_rgb_outside_the_palette(self):
+        import re
+        from pathlib import Path
+
+        from sim.ui_theme import DARK, LIGHT
+
+        themed = (
+            "shadow",
+            "peach_soft",
+            "amber_soft",
+            "teacher_soft",
+            "lamp_green_hi",
+            "lamp_red_hi",
+            "lamp_estop_hi",
+            "lamp_wash",
+            "ring",
+            "estop_label",
+            "estop_edge",
+            "key_badge",
+            "key_badge_ink",
+        )
+        for key in themed:
+            self.assertEqual(len(LIGHT[key]), 3)
+            self.assertEqual(len(DARK[key]), 3)
+        self.assertNotEqual(LIGHT["shadow"], DARK["shadow"])
+        self.assertNotEqual(LIGHT["lamp_green_hi"], DARK["lamp_green_hi"])
+
+        # Fixed status colours. Same in both themes, so they stay plain tuples.
+        allowed_names = {"PEACH", "GREEN", "RED", "TEACHER", "ESTOP", "AMBER"}
+        # The lamp disc is punched with an opaque white mask. It is not a paint colour.
+        exceptions = {(255, 255, 255, 255)}
+        text = Path("/workspace/sim/train_monitor.py").read_text(encoding="utf-8")
+        text = re.sub(r"(?m)#.*$", "", text)
+        kept = []
+        for line in text.splitlines():
+            named = re.match(r"\s*([A-Z][A-Z0-9_]*)\s*=\s*\(", line)
+            if named and named.group(1) in allowed_names:
+                continue
+            kept.append(line)
+        found = []
+        pat = re.compile(r"\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*(\d+))?\)")
+        for match in pat.finditer("\n".join(kept)):
+            nums = tuple(int(group) for group in match.groups() if group is not None)
+            if min(nums[:3]) < 40:
+                continue
+            if nums in exceptions:
+                continue
+            found.append(nums)
+        self.assertEqual(found, [])

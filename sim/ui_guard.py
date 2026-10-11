@@ -173,6 +173,19 @@ def flatten_theme_colors() -> None:
         "SCROLL_THUMB",
         "MENU",
         "INSET",
+        "SHADOW",
+        "PEACH_SOFT",
+        "AMBER_SOFT",
+        "TEACHER_SOFT",
+        "LAMP_GREEN_HI",
+        "LAMP_RED_HI",
+        "LAMP_ESTOP_HI",
+        "LAMP_WASH",
+        "RING",
+        "ESTOP_LABEL",
+        "ESTOP_EDGE",
+        "KEY_BADGE",
+        "KEY_BADGE_INK",
     )
     flats = {}
     for name in names:

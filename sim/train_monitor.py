@@ -44,16 +44,29 @@ from .dock_layout import (
 from .hemifield import DEFAULT_OVERLAP
 from .ui_settings import default_settings, load_settings, persist_enabled, save_settings
 from .ui_theme import (
+    AMBER_SOFT,
     BG_BOT,
     BG_TOP,
     CARD,
+    ESTOP_EDGE,
+    ESTOP_LABEL,
     INK_DIM,
     INSET,
+    KEY_BADGE,
+    KEY_BADGE_INK,
     LABEL,
+    LAMP_ESTOP_HI,
+    LAMP_GREEN_HI,
+    LAMP_RED_HI,
+    LAMP_WASH,
     LINE,
     MENU,
+    PEACH_SOFT,
+    RING,
     SCROLL_THUMB,
     SCROLL_TRACK,
+    SHADOW,
+    TEACHER_SOFT,
     VALUE,
     apply_theme,
     theme_name,
@@ -97,22 +110,15 @@ FOOTER_H = 56
 
 # Light warm chrome is the default. Status colours stay semantic in both themes.
 # Peach is on. Amber is a warning. Red is an error, E-STOP, or PPL1.
+# Lamp rims, the card shadow, and the key plaque live in ui_theme.
 CARD_ALPHA = 217  # ~0.85
 INK = VALUE
 PEACH = (201, 120, 91)  # #C9785B actively on
-PEACH_SOFT = (227, 164, 135)  # #E3A487
 GREEN = (141, 181, 150)  # #8DB596 узнаю / PAM
 RED = (217, 136, 128)  # #D98880 PPL1 and errors
 TEACHER = (46, 154, 206)  # #2E9ACE teacher watch, same in both themes
-TEACHER_SOFT = (156, 208, 230)  # #9CD0E6
 ESTOP = (184, 40, 36)
-ESTOP_LABEL = (255, 246, 244)
-ESTOP_EDGE = (255, 228, 224)
-KEY_BADGE = (132, 132, 134)
-KEY_BADGE_INK = (255, 255, 255)
 AMBER = (214, 154, 52)  # #D69A34 warning
-AMBER_SOFT = (240, 206, 140)  # #F0CE8C
-RING = (176, 174, 170)
 LAMP_OFF = ("off",)
 PANEL = CARD
 BTN = CARD
@@ -2402,7 +2408,7 @@ class TrainMonitor:
             for spread, alpha in ((12, 16), (7, 24), (3, 32)):
                 pygame.draw.rect(
                     sprite,
-                    (140, 120, 100, alpha),
+                    (*SHADOW, alpha),
                     (14 - spread, 16 - spread, rect.w + spread * 2, rect.h + spread * 2),
                     border_radius=radius + 4,
                 )
@@ -2441,13 +2447,13 @@ class TrainMonitor:
         elif color == TEACHER:
             top, bottom = TEACHER_SOFT, TEACHER
         elif color == GREEN:
-            top, bottom = (196, 220, 198), GREEN
+            top, bottom = LAMP_GREEN_HI, GREEN
         elif color == RED:
-            top, bottom = (236, 196, 190), RED
+            top, bottom = LAMP_RED_HI, RED
         elif color == ESTOP:
-            top, bottom = (214, 92, 84), ESTOP
+            top, bottom = LAMP_ESTOP_HI, ESTOP
         else:
-            top, bottom = _mix((255, 255, 255), color, 0.35), color
+            top, bottom = _mix(LAMP_WASH, color, 0.35), color
         diameter = radius * 2
         disc = pygame.Surface((diameter, diameter), pygame.SRCALPHA)
         for row in range(diameter):
@@ -2819,12 +2825,12 @@ class TrainMonitor:
             if mark.kind == "cone":
                 left = pt(mark.nx_l, mark.ny_l)
                 right = pt(mark.nx_r, mark.ny_r)
-                pygame.draw.polygon(overlay, (141, 181, 150, max(alpha // 3, 1)), (origin, left, right))
-                pygame.draw.line(overlay, (141, 181, 150, alpha), origin, tip, 1)
+                pygame.draw.polygon(overlay, (*GREEN, max(alpha // 3, 1)), (origin, left, right))
+                pygame.draw.line(overlay, (*GREEN, alpha), origin, tip, 1)
             else:
-                pygame.draw.line(overlay, (141, 181, 150, alpha), origin, tip, 1)
-                pygame.draw.circle(overlay, (141, 181, 150, alpha), tip, 6)
-                pygame.draw.circle(overlay, (196, 220, 198, alpha), tip, 6, 1)
+                pygame.draw.line(overlay, (*GREEN, alpha), origin, tip, 1)
+                pygame.draw.circle(overlay, (*GREEN, alpha), tip, 6)
+                pygame.draw.circle(overlay, (*LAMP_GREEN_HI, alpha), tip, 6, 1)
             drawn.append((tip, alpha, mark))
         from .tabnum import cell_px, load_font, signed as _signed
 
