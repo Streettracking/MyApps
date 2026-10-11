@@ -41,6 +41,9 @@ _PAM_HOT = (176, 255, 190)
 _PPL_HOT = (255, 148, 158)
 _INK = (214, 216, 222)
 _HINT = (168, 170, 176)
+_ARROW = (214, 218, 224)
+_CLEAR = (0, 0, 0)
+_GL_CLEAR = (0.0, 0.0, 0.0)
 
 _SCENE = None
 _GL = None
@@ -432,7 +435,7 @@ class _GLRenderer:
         self.ctx.disable(self.moderngl.CULL_FACE)
         self.ctx.enable(self.moderngl.BLEND)
         self.ctx.blend_func = self.moderngl.SRC_ALPHA, self.moderngl.ONE_MINUS_SRC_ALPHA
-        self.ctx.clear(0.0, 0.0, 0.0, 1.0)
+        self.ctx.clear(_GL_CLEAR[0], _GL_CLEAR[1], _GL_CLEAR[2], 1.0)
         self._uniforms(self.mesh_prog, yaw, pitch, dist, pan_x, pan_y, w, h)
         self.mesh_prog["rec_l"].value = 1.0 if packet.get("rec_l") else 0.0
         self.mesh_prog["rec_r"].value = 1.0 if packet.get("rec_r") else 0.0
@@ -544,7 +547,7 @@ def _paint_software(surface, scene: FlyScene, packet: dict, yaw, pitch, dist, pa
     require_main_thread()
 
     w, h = surface.get_size()
-    surface.fill((0, 0, 0))
+    surface.fill(_CLEAR)
     cx, cy, fov = _camera(w, h)
     rec_l = bool(packet.get("rec_l"))
     rec_r = bool(packet.get("rec_r"))
@@ -671,7 +674,7 @@ def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool
     px, py, dep = _project(pts, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
     if float(dep[0]) <= 0.35 or float(dep[1]) <= 0.35:
         return
-    color = (214, 218, 224)
+    color = _ARROW
     x0, y0 = int(px[0]), int(py[0])
     x1, y1 = int(px[1]), int(py[1])
     pygame.draw.line(surface, color, (x0, y0), (x1, y1), 1)

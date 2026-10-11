@@ -9,7 +9,7 @@ Stored soma spans on one hemisphere are about 29 × 24 × 1.9 µm, so z is
 ~15× flatter than x. FAFB sections are 40 nm against 4 nm in x/y, and there
 is no skeleton to recover the neuropil. Display scales z by 10, centers each
 hemisphere, and lays calyx, peduncle, and the α/β, α′/β′, γ lobes out from
-the cell type plus those neuropil counts. The trainer window stays light.
+the cell type plus those neuropil counts. The window follows the trainer theme. It has no switch of its own.
 
 The trainer only sends a UDP datagram to 127.0.0.1:5473. B stays the beep;
 this window is J. The view does not spin on its own. T in this window pins
@@ -41,10 +41,13 @@ EDGE_CAP = 80
 _GAMMA = ("KCg-d", "KCg-s1", "KCg-s2", "KCg-s3", "KCg-m")
 _AB = ("KCab-p", "KCab")
 
-# Dark window only. The trainer keeps its light theme.
+# Dark until the trainer's theme arrives. Light uses the same roles.
+_VIEW_THEME = "dark"
 _BG_EDGE = (14, 15, 18)  # #0E0F12
 _BG_CORE = (26, 28, 34)  # #1A1C22
 _INK = (196, 198, 204)
+_HINT = (168, 170, 176)
+_ARROW = (214, 218, 224)
 _KC_IDLE = (148, 150, 156)
 _GLOW_L = (255, 186, 140)
 _GLOW_R = (150, 220, 170)
@@ -496,7 +499,8 @@ def _background(w: int, h: int):
 
     require_main_thread()
     cache = getattr(_background, "_cache", None)
-    if cache is not None and cache.get_size() == (w, h):
+    key = (w, h, _VIEW_THEME)
+    if cache is not None and getattr(_background, "_key", None) == key:
         return cache
     xs = np.linspace(-1.0, 1.0, max(w, 1), dtype=np.float32)
     ys = np.linspace(-1.0, 1.0, max(h, 1), dtype=np.float32)
@@ -507,6 +511,7 @@ def _background(w: int, h: int):
     img = core + (edge - core) * tone[..., None]
     surf = pygame.surfarray.make_surface(img.astype(np.uint8))
     _background._cache = surf
+    _background._key = key
     return surf
 
 
@@ -594,12 +599,57 @@ def _scale(color, k: float):
     return tuple(int(max(0, min(255, round(channel * k)))) for channel in color)
 
 
+def set_view_theme(name: str) -> str:
+    """Light or dark chrome for this process. Unknown names leave the current one."""
+    global _VIEW_THEME, _BG_EDGE, _BG_CORE, _INK, _HINT, _ARROW
+
+    key = str(name or "").strip().lower()
+    if key not in ("light", "dark"):
+        return _VIEW_THEME
+    _VIEW_THEME = key
+    if key == "light":
+        _BG_EDGE = (228, 226, 222)
+        _BG_CORE = (246, 244, 241)
+        _INK = (34, 34, 34)
+        _HINT = (68, 68, 68)
+        _ARROW = (34, 34, 34)
+        fly_ink, fly_hint, fly_arrow = (34, 34, 34), (68, 68, 68), (34, 34, 34)
+        fly_clear = (246, 244, 241)
+        gl_clear = (246 / 255.0, 244 / 255.0, 241 / 255.0)
+    else:
+        _BG_EDGE = (14, 15, 18)
+        _BG_CORE = (26, 28, 34)
+        _INK = (196, 198, 204)
+        _HINT = (168, 170, 176)
+        _ARROW = (214, 218, 224)
+        fly_ink, fly_hint, fly_arrow = (214, 216, 222), (168, 170, 176), (214, 218, 224)
+        fly_clear = (0, 0, 0)
+        gl_clear = (0.0, 0.0, 0.0)
+    _background._cache = None
+    _background._key = None
+    from . import mb_flywire
+
+    mb_flywire._INK = fly_ink
+    mb_flywire._HINT = fly_hint
+    mb_flywire._ARROW = fly_arrow
+    mb_flywire._CLEAR = fly_clear
+    mb_flywire._GL_CLEAR = gl_clear
+    return key
+
+
+def note_packet_theme(packet) -> None:
+    """A trainer datagram carries the header theme. A missing key leaves the window."""
+    if isinstance(packet, dict):
+        set_view_theme(packet.get("theme"))
+
+
 def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None, software_only: bool = False) -> None:
     """Perspective view. FlyWire shell when the cache exists, else the soma cloud."""
     from .mb_flywire import paint_scene
     from .sdl_thread import require_main_thread
 
     require_main_thread()
+    note_packet_theme(packet)
 
     if paint_scene(surface, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast, hint=hint, software_only=software_only):
         return
@@ -618,7 +668,7 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     if frames:
         hint += " вкл"
     tiny = pygame.font.Font(None, 15)
-    surface.blit(tiny.render(hint, True, (168, 170, 176)), (12, h - 20))
+    surface.blit(tiny.render(hint, True, _HINT), (12, h - 20))
     cx, cy, fov = w * 0.50, h * 0.54, min(w, h) * 1.05
     kc_l = _flags(cloud.n_kc, packet.get("kc_l"))
     kc_r = _flags(cloud.n_kc, packet.get("kc_r"))
@@ -889,7 +939,7 @@ def _draw_eyes(surface, cloud, rec_l: bool, rec_r: bool, yaw, pitch, dist, cx, c
     px, py, dep = _project(pts, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
     if dep[0] <= 0.3 or dep[1] <= 0.3:
         return
-    color = (214, 218, 224)
+    color = _ARROW
     x0, y0 = int(px[0]), int(py[0])
     x1, y1 = int(px[1]), int(py[1])
     pygame.draw.line(surface, color, (x0, y0), (x1, y1), 1)
@@ -1149,7 +1199,15 @@ def packet_from_session(session, now: float) -> dict:
         "rec_l": _hemi_recognized(session, "l"),
         "rec_r": _hemi_recognized(session, "r"),
         "edges": edges,
+        "theme": _trainer_theme(),
     }
+
+
+def _trainer_theme() -> str:
+    from .ui_theme import theme_name
+
+    name = theme_name()
+    return name if name in ("light", "dark") else "light"
 
 
 def _hemi_recognized(session, side: str) -> bool:
@@ -1271,6 +1329,9 @@ def run_viewer(port: int = VIEW_PORT) -> int:
     require_main_thread()
     pygame.init()
     pygame.display.set_caption("Грибовидное тело")
+    from .ui_settings import read_saved_theme
+
+    set_view_theme(read_saved_theme() or "light")
     width, height = _saved_viewer_size()
     window = pygame.display.set_mode((width, height), pygame.RESIZABLE)
     from .ui_settings import load_brain_window

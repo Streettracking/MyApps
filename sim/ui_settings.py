@@ -136,6 +136,34 @@ def default_settings() -> dict:
     }
 
 
+def read_saved_theme():
+    """``theme`` from window.json, or None when the file cannot be trusted.
+
+    A UTF-8 BOM is skipped. A missing file and a half-written file return
+    None so a reader keeps the theme it already has.
+    """
+    path = settings_path()
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    name = str(data.get("theme") or "").strip().lower()
+    if name in ("light", "dark"):
+        return name
+    return None
+
+
 def load_settings() -> dict:
     path = settings_path()
     data = default_settings()

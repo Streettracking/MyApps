@@ -1539,8 +1539,6 @@ class TrainMonitor:
         elif kind == "reset":
             self._reset_layout()
             self.menu_open = False
-        elif kind == "theme":
-            self._set_theme("light" if theme_name() == "dark" else "dark")
         elif kind == "doggibot":
             self.menu_open = False
         elif kind == "go2":
@@ -2462,9 +2460,6 @@ class TrainMonitor:
                 blocks.append((("toggle", name), titles[name], "check", name))
         actions = [
             (("reset",), "Сброс раскладки", "button", None),
-            (("theme",), "Тёмная тема", "theme", None),
-            (("doggibot",), "DoggiBOT", "button", None),
-            (("go2",), "УПРАВЛЕНИЕ", "button", None),
         ]
         rows = blocks + actions
         row_h = 28
@@ -2473,11 +2468,8 @@ class TrainMonitor:
         gap = 8
         pad_l = 12
         pad_r = 12
-        switch_w, switch_h = 36, 20
         text_w = max(self.font_sm.size(label)[0] for _action, label, _kind, _arg in rows)
-        theme_w = self.font_sm.size("Тёмная тема")[0]
-        width = pad_l + mark + gap + text_w + pad_r
-        width = max(width, pad_l + mark + gap + theme_w + 10 + switch_w + pad_r, 220)
+        width = max(pad_l + mark + gap + text_w + pad_r, 220)
         x = self.view_rect.x
         y = self.view_rect.bottom + 4
         panel = pygame.Rect(x, y, width, 8 + row_h * len(rows) + rule_h)
@@ -2515,10 +2507,6 @@ class TrainMonitor:
                 caption = INK_DIM
             glyph = self.font_sm.render(label, True, caption)
             screen.blit(glyph, (label_x, row.centery - glyph.get_height() // 2))
-            if kind == "theme":
-                switch = pygame.Rect(row.right - 8 - switch_w, row.centery - switch_h // 2, switch_w, switch_h)
-                self._draw_theme_switch(screen, switch)
-                self._menu_switch_rect = switch
             cursor += row_h
 
         for action, label, kind, arg in blocks:

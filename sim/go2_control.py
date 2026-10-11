@@ -46,6 +46,22 @@ def panel_creationflags() -> int:
     return windows_creationflags() | int(hidden)
 
 
+def panel_argv(path: Path) -> list:
+    """Launch arguments. The panel has no theme switch of its own.
+
+    ``--theme`` is the trainer theme at the moment of the click. The panel
+    then rereads ``theme`` in the trainer's window.json about once a second.
+    A missing BOM and a half-written file are ignored, and the last good
+    theme stays. Those sources are not in this repository.
+    """
+    from .ui_theme import theme_name
+
+    name = theme_name()
+    if name not in ("light", "dark"):
+        name = "light"
+    return [str(Path(path)), "--theme", name]
+
+
 def panel_detach_kwargs() -> dict:
     """The control panel gets its own group. A console is not allocated."""
     if os.name == "nt":
@@ -253,9 +269,10 @@ class Go2Launch:
 
         kwargs = server_detach_kwargs() if kind == "server" else panel_detach_kwargs()
         handle = open_log("go2_server.log" if kind == "server" else "go2_control.log")
+        command = panel_argv(path) if kind == "panel" else [str(path)]
         try:
             return subprocess.Popen(
-                [str(path)],
+                command,
                 cwd=str(path.parent),
                 stdin=subprocess.DEVNULL,
                 stdout=handle,

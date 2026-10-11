@@ -606,6 +606,7 @@ class BrainTests(unittest.TestCase):
         packet = packet_from_session(Sim(), 1.0)
         self.assertTrue(packet["rec_l"])
         self.assertFalse(packet["rec_r"])
+        self.assertIn(packet["theme"], ("light", "dark"))
 
         class Live:
             onboard = True
@@ -1009,6 +1010,60 @@ class WindowPinTests(unittest.TestCase):
             _keys(orbit, _Key(pygame.K_d))
             self.assertAlmostEqual(orbit.pan_x, PAN_KEY)
         finally:
+            pygame.quit()
+
+    def test_brain_window_takes_the_trainer_theme_from_the_packet(self):
+        import json
+        from pathlib import Path
+
+        import pygame
+
+        from sim.mb_view3d import BrainCloud, render_frame, set_view_theme
+        from sim.ui_settings import read_saved_theme
+        from sim.ui_theme import apply_theme
+
+        root = Path("/tmp/recog_theme_file")
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / "window.json"
+        previous = os.environ.get("RECOGNIZER_UI_CONFIG")
+        os.environ["RECOGNIZER_UI_CONFIG"] = str(path)
+        pygame.init()
+        try:
+            path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"theme": "dark"}).encode("utf-8"))
+            self.assertEqual(read_saved_theme(), "dark")
+            path.write_text('{"theme": "lig', encoding="utf-8")
+            self.assertIsNone(read_saved_theme())
+            path.write_text('{"theme": "light", "w": 1}\n', encoding="utf-8")
+            self.assertEqual(read_saved_theme(), "light")
+
+            cloud = BrainCloud()
+            packet = {"r_l": 0.0, "r_r": 0.0, "kc_l": [], "kc_r": [], "flash_l": "", "flash_r": "", "rec_l": False, "rec_r": False, "edges": [], "theme": "light"}
+            light = render_frame(cloud, packet, size=(160, 120))
+            corner = pygame.surfarray.array3d(light)[2, 2].astype(int)
+            self.assertGreater(int(corner.mean()), 180)
+            packet["theme"] = "dark"
+            dark = render_frame(cloud, packet, size=(160, 120))
+            corner = pygame.surfarray.array3d(dark)[2, 2].astype(int)
+            self.assertLess(int(corner.mean()), 40)
+            out = Path("/opt/cursor/artifacts")
+            out.mkdir(parents=True, exist_ok=True)
+            pygame.image.save(pygame.transform.scale(light, (320, 240)), str(out / "brain3d_theme_light.png"))
+            pygame.image.save(pygame.transform.scale(dark, (320, 240)), str(out / "brain3d_theme_dark.png"))
+            apply_theme("dark")
+            from sim.mb_view3d import packet_from_session
+
+            class _Session:
+                onboard = False
+                mb = None
+
+            self.assertEqual(packet_from_session(_Session(), 1.0)["theme"], "dark")
+        finally:
+            set_view_theme("dark")
+            apply_theme("light")
+            if previous is None:
+                os.environ.pop("RECOGNIZER_UI_CONFIG", None)
+            else:
+                os.environ["RECOGNIZER_UI_CONFIG"] = previous
             pygame.quit()
 
     def test_clip_is_peach_when_pinned_and_gray_when_not(self):

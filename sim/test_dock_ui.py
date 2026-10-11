@@ -221,7 +221,7 @@ class TrainerDockTests(unittest.TestCase):
             self.assertFalse(find_leaf(mon.dock, "journal").visible)
             self.assertTrue(mon.menu_open)
             themes = [action for _rect, action in mon._menu_hits if action[0] == "theme"]
-            self.assertEqual(themes, [("theme",)])
+            self.assertEqual(themes, [])
             find_leaf(mon.dock, "journal").visible = True
 
             mon._set_theme("dark")
@@ -305,13 +305,14 @@ class TrainerDockTests(unittest.TestCase):
             self.assertTrue(find_leaf(mon.dock, "controls").visible)
             mon.draw(view)
             self._assert_menu_checks(mon, on_theme="light")
+            self.assertIsNone(mon._menu_switch_rect)
+            self.assertNotIn("Тёмная тема", mon._menu_captions.values())
 
-            themed = self._click_menu(mon, ("theme",))
-            self.assertFalse(themed.quit)
-            self.assertTrue(mon.menu_open)
+            mon._set_theme("dark")
             self.assertEqual(theme_name(), "dark")
             saved = json.loads(__import__("pathlib").Path(self._path).read_text(encoding="utf-8"))
             self.assertEqual(saved["theme"], "dark")
+            mon.menu_open = True
             mon.draw(view)
             self._assert_menu_checks(mon, on_theme="dark")
             self._save_menu(mon, "/opt/cursor/artifacts/view_menu_dark.png")
@@ -471,13 +472,10 @@ class TrainerDockTests(unittest.TestCase):
                 ("toggle", "robot"),
                 ("locked", "controls"),
                 ("reset",),
-                ("theme",),
-                ("doggibot",),
-                ("go2",),
             ],
         )
         self.assertEqual(
-            [mon._menu_captions[action] for action in order[:8]],
+            [mon._menu_captions[action] for action in order],
             [
                 "Камера",
                 "Лидар",
@@ -486,13 +484,12 @@ class TrainerDockTests(unittest.TestCase):
                 "Робот",
                 "Кнопки (E-STOP)",
                 "Сброс раскладки",
-                "Тёмная тема",
             ],
         )
-        self.assertEqual(len([action for action in order if action[0] == "theme"]), 1)
-        self.assertNotIn(("theme", "light"), order)
-        self.assertNotIn(("theme", "dark"), order)
-        self.assertEqual((mon._menu_switch_rect.w, mon._menu_switch_rect.h), (36, 20))
+        self.assertNotIn(("theme",), order)
+        self.assertNotIn(("doggibot",), order)
+        self.assertNotIn(("go2",), order)
+        self.assertIsNone(mon._menu_switch_rect)
         slot_x = None
         for _rect, action in mon._menu_hits:
             slot = mon._menu_marks[action]
@@ -514,7 +511,6 @@ class TrainerDockTests(unittest.TestCase):
                 self._assert_gray_mark(frame, slot)
             else:
                 self._assert_empty_slot(frame, slot)
-        self._assert_menu_switch(frame, mon._menu_switch_rect, on_theme == "dark")
         controls = next(rect for rect, action in mon._menu_hits if action == ("locked", "controls"))
         reset = next(rect for rect, action in mon._menu_hits if action[0] == "reset")
         rule = mon._menu_rule

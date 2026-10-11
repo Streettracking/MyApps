@@ -95,7 +95,7 @@ class DoggiBotSnapshotTests(unittest.TestCase):
             )
             mon.menu_open = True
             mon.draw(view)
-            self.assertIn(("doggibot",), [action for _rect, action in mon._menu_hits])
+            self.assertNotIn(("doggibot",), [action for _rect, action in mon._menu_hits])
             self.assertTrue(mon.doggibot_rect.w > 40)
 
             clicked = self._click(mon, mon.doggibot_rect.center)
@@ -104,13 +104,6 @@ class DoggiBotSnapshotTests(unittest.TestCase):
             pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F9))
             keyed = mon.pump()
             self.assertFalse(keyed.doggibot)
-
-            mon.menu_open = True
-            mon.draw(view)
-            menu = next(rect for rect, action in mon._menu_hits if action[0] == "doggibot")
-            opened = self._click(mon, menu.center)
-            self.assertTrue(opened.doggibot)
-            self.assertFalse(mon.menu_open)
 
             note = reserve_folder()
             lines.append(note.line)

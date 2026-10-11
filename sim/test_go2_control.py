@@ -153,6 +153,14 @@ class Go2ControlTests(unittest.TestCase):
         entry = Path(__file__).resolve().parents[1].joinpath("tools", "recognize_trainer_entry.py").read_text(encoding="utf-8")
         self.assertEqual(entry.count('["--go2-server-exe", args.go2_server_exe]'), 2)
         self.assertEqual(entry.count('["--go2-control-exe", args.go2_control_exe]'), 2)
+        from sim.go2_control import panel_argv
+        from sim.ui_theme import apply_theme
+
+        apply_theme("dark")
+        argv = panel_argv(root / "go2_control.exe")
+        self.assertEqual(argv[-2:], ["--theme", "dark"])
+        apply_theme("light")
+        self.assertEqual(panel_argv(root / "go2_control.exe")[-2:], ["--theme", "light"])
 
     def test_window_json_field_overrides_the_launcher_folder(self):
         from sim.go2_control import configured_exe, configured_server, remember_exe, remember_paths
@@ -390,15 +398,8 @@ class Go2ControlTests(unittest.TestCase):
             mon.menu_open = True
             mon.draw(view)
             actions = [action for _rect, action in mon._menu_hits]
-            self.assertIn(("go2",), actions)
-            self.assertNotIn(("toggle", "go2"), actions)
-            rect = next(hit for hit, action in mon._menu_hits if action == ("go2",))
-            wx, wy = window_from_logical(rect.center, 1920, 1080)
-            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(wx), int(wy)), button=1))
-            menu = mon.pump()
-            self.assertTrue(menu.go2_control)
-            self.assertFalse(menu.doggibot)
-            self.assertFalse(mon.menu_open)
+            self.assertNotIn(("go2",), actions)
+            self.assertNotIn(("theme",), actions)
             out = Path("/opt/cursor/artifacts")
             out.mkdir(parents=True, exist_ok=True)
             mon.menu_open = False
