@@ -346,6 +346,216 @@ class TrainerDockTests(unittest.TestCase):
         pygame.image.save(pygame.transform.scale(shot, (crop.w * 2, crop.h * 2)), path)
 
 
+class HelpPopoverTests(unittest.TestCase):
+    def setUp(self):
+        self._fd, self._path = tempfile.mkstemp(suffix=".json")
+        os.close(self._fd)
+        os.environ["RECOGNIZER_UI_CONFIG"] = self._path
+
+    def tearDown(self):
+        os.environ.pop("RECOGNIZER_UI_CONFIG", None)
+        from sim.ui_theme import apply_theme
+
+        apply_theme("light")
+        try:
+            os.remove(self._path)
+        except OSError:
+            pass
+
+    def test_pages_name_the_readouts(self):
+        from sim.ui_help import PAGES, page
+
+        self.assertEqual(PAGES, ("camera", "lidar", "brain", "journal", "controls", "bar"))
+        chunks = []
+        for name in PAGES:
+            title, blocks = page(name)
+            chunks.append(title)
+            for kind, text in blocks:
+                self.assertIn(kind, ("h", "p"))
+                chunks.append(text)
+        text = "\n".join(chunks)
+        for needle in (
+            "R_L",
+            "R_R",
+            "сырой MBON",
+            "дрейф KC→MBON",
+            "D−N",
+            "активность KC",
+            "PAM_L",
+            "PAM_R",
+            "PPL1_L",
+            "PPL1_R",
+            "ложных узнаваний без наказания",
+            "перекрытие",
+            "Л+П",
+            "УЗНАЮ",
+            "уч PAM",
+            "YOLO",
+            "дальн",
+            "вперёд",
+            "1.5",
+            "билатерально",
+            "секторы",
+            "вектор",
+            "собака в кадре",
+            "нет собаки",
+            "Шкала DAN",
+            "РУЧНОЕ",
+            "АВТОНОМИЯ",
+            "ведёт",
+            "борт",
+            "Esc",
+        ):
+            self.assertIn(needle, text)
+
+    def test_one_popover_toggles_scrolls_and_stays_inside(self):
+        import pygame
+        import numpy as np
+
+        from sim.dock_layout import find_leaf
+        from sim.train_monitor import MonitorView, TrainMonitor, window_from_logical
+        from sim.ui_theme import apply_theme
+
+        pygame.init()
+        point = [8, 8]
+        real_pos = pygame.mouse.get_pos
+        pygame.mouse.get_pos = lambda: (int(point[0]), int(point[1]))
+        try:
+            mon = TrainMonitor("help")
+            mon._on_resize(1920, 1080)
+            view = MonitorView(
+                title="recognition training",
+                learner="mb",
+                learning_on=True,
+                camera=np.zeros((90, 160, 3), dtype=np.uint8),
+                lidar=np.zeros((64, 64, 3), dtype=np.uint8),
+                log_lines=["строка журнала"],
+                keys_hint="A авто  J мозг",
+            )
+            mon.draw(view)
+            infos = {arg: rect for rect, kind, arg in mon._chrome if kind == "info"}
+            self.assertEqual(set(infos), {"camera", "lidar", "brain", "journal", "controls"})
+            for name, rect in infos.items():
+                collapse = next(hit for hit, kind, arg in mon._chrome if kind == "collapse" and arg == name)
+                close = next(hit for hit, kind, arg in mon._chrome if kind == "close" and arg == name)
+                self.assertEqual((rect.w, rect.h), (20, 20))
+                self.assertLess(rect.right, collapse.x)
+                self.assertLess(collapse.right, close.x)
+            self.assertEqual((mon.help_bar_rect.w, mon.help_bar_rect.h), (28, 24))
+            self.assertLess(mon.help_bar_rect.right, mon.brain_rect.x)
+
+            self._click(mon, infos["camera"].center, point)
+            self.assertEqual(mon.help_id, "camera")
+            mon.draw(view)
+            self.assertIsNotNone(mon._help_rect)
+            self._click(mon, infos["camera"].center, point)
+            self.assertIsNone(mon.help_id)
+
+            self._click(mon, infos["camera"].center, point)
+            self._click(mon, infos["brain"].center, point)
+            self.assertEqual(mon.help_id, "brain")
+            mon.draw(view)
+            self.assertIsNotNone(mon._help_body)
+            inside = mon._help_body.center
+            self.assertTrue(mon._help_rect.collidepoint(inside))
+            self.assertFalse(infos["brain"].collidepoint(inside))
+            self._click(mon, inside, point)
+            self.assertEqual(mon.help_id, "brain")
+
+            outside = (24, mon.layout["footer_y"] + 8)
+            self.assertFalse(mon._help_rect.collidepoint(outside))
+            clicked = self._click(mon, outside, point)
+            self.assertIsNone(mon.help_id)
+            self.assertFalse(clicked.quit)
+
+            self._click(mon, mon.help_bar_rect.center, point)
+            self.assertEqual(mon.help_id, "bar")
+            mon.menu_open = True
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE))
+            escaped = mon.pump()
+            self.assertFalse(escaped.quit)
+            self.assertIsNone(mon.help_id)
+            self.assertTrue(mon.menu_open)
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE))
+            menu_off = mon.pump()
+            self.assertFalse(menu_off.quit)
+            self.assertFalse(mon.menu_open)
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE))
+            quit_key = mon.pump()
+            self.assertTrue(quit_key.quit)
+
+            mon._on_resize(1920, 800)
+            mon.draw(view)
+            brain = next(rect for rect, kind, arg in mon._chrome if kind == "info" and arg == "brain")
+            self._click(mon, brain.center, point)
+            mon.draw(view)
+            self.assertGreater(len(mon._help_lines), 8)
+            held = mon.scroll_y
+            self._aim(mon, mon._help_body.center, point)
+            pygame.event.post(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-1))
+            mon.pump()
+            self.assertGreater(mon.help_scroll, 0)
+            self.assertEqual(mon.scroll_y, held)
+            mon.draw(view)
+            self.assertGreater(mon.help_scroll, 0)
+            frozen = mon.help_scroll
+            self._aim(mon, (8, 8), point)
+            self.assertFalse(mon._help_rect.collidepoint(mon._mouse()))
+            pygame.event.post(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-1))
+            mon.pump()
+            self.assertEqual(mon.help_scroll, frozen)
+            self.assertGreater(mon.scroll_y, held)
+
+            find_leaf(mon.dock, "journal").visible = False
+            mon._apply_layout(mon.screen.get_height())
+            mon.help_id = "journal"
+            mon.draw(view)
+            self.assertIsNone(mon.help_id)
+
+            find_leaf(mon.dock, "journal").visible = True
+            mon._apply_layout(mon.screen.get_height())
+            out = __import__("pathlib").Path("/opt/cursor/artifacts")
+            out.mkdir(parents=True, exist_ok=True)
+            for theme, block in (("dark", "camera"), ("dark", "brain"), ("light", "lidar")):
+                apply_theme(theme)
+                mon._on_resize(1920, 1080)
+                mon.draw(view)
+                info = next(rect for rect, kind, arg in mon._chrome if kind == "info" and arg == block)
+                mon.help_id = block
+                mon.help_scroll = 0
+                mon.draw(view)
+                self._assert_help_ink(mon)
+                pygame.image.save(mon.present_into((1920, 1080)), str(out / ("help_%s_%s.png" % (block, theme))))
+                crop = mon.screen.subsurface(mon._help_rect).copy()
+                pygame.image.save(crop, str(out / ("help_%s_%s_panel.png" % (block, theme))))
+                self.assertFalse(info.collidepoint(mon._help_body.center))
+        finally:
+            pygame.mouse.get_pos = real_pos
+            pygame.quit()
+
+    def _aim(self, mon, logical, point) -> None:
+        from sim.train_monitor import window_from_logical
+
+        wx, wy = window_from_logical(logical, mon.window.get_width(), mon.window.get_height(), (mon.scroll_x, mon.scroll_y))
+        point[0], point[1] = int(wx), int(wy)
+
+    def _click(self, mon, logical, point):
+        import pygame
+
+        self._aim(mon, logical, point)
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(point[0]), int(point[1])), button=1))
+        return mon.pump()
+
+    def _assert_help_ink(self, mon) -> None:
+        body = mon._help_body
+        self.assertTrue(mon._help_rect.contains(body))
+        self.assertGreater(len(mon._help_lines), 4)
+        for index, rect in enumerate(mon._help_lines):
+            self.assertTrue(body.contains(rect), rect)
+            for other in mon._help_lines[index + 1 :]:
+                self.assertFalse(rect.colliderect(other), (rect, other))
+
+
 class ResizeGuardTests(unittest.TestCase):
     def test_trainer_does_not_call_the_suspect_apis(self):
         import re

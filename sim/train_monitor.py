@@ -566,6 +566,11 @@ class TrainMonitor:
         apply_theme(self._settings.get("theme") if self._persist else "light")
         self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
         self.menu_open = False
+        self.help_id = None
+        self.help_scroll = 0
+        self._help_rect = None
+        self._help_body = None
+        self._help_lines = []
         self._menu_hits: list = []
         self._menu_panel = None
         self._chrome: list = []
@@ -690,6 +695,7 @@ class TrainMonitor:
         self.view_rect = pygame.Rect(8, 4, 52, 24)
         dog_w = self.font_sm.size("DoggiBOT")[0] + 28
         self.doggibot_rect = pygame.Rect(self.view_rect.right + 8, 4, dog_w, 24)
+        self.help_bar_rect = pygame.Rect(self.brain_rect.x - 36, 4, 28, 24)
 
         leaf = self._dock_leaves.get("controls")
         inner = None
@@ -1078,16 +1084,143 @@ class TrainMonitor:
         shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
         dx = int(getattr(event, "x", 0) or 0)
         dy = int(getattr(event, "y", 0) or 0)
+        if self._help_wheel(dy):
+            return
         if shift:
             self._scroll_by(-dy * step - dx * step, 0)
         else:
             self._scroll_by(-dx * step, -dy * step)
+
+    def _help_wheel(self, dy: int) -> bool:
+        panel = getattr(self, "_help_rect", None)
+        if not self.help_id or panel is None:
+            return False
+        if not panel.collidepoint(self._mouse()):
+            return False
+        self.help_scroll = max(0, int(self.help_scroll) - int(dy) * 28)
+        return True
+
+    def _toggle_help(self, name: str) -> None:
+        if self.help_id == name:
+            self.help_id = None
+            return
+        self.help_id = name
+        self.help_scroll = 0
 
     def _chrome_at(self, pos):
         for rect, kind, arg in self._chrome:
             if rect.collidepoint(pos):
                 return kind, arg
         return None, None
+
+    def _help_hit(self, pos) -> bool:
+        """Toggle or dismiss the one explanation. A click outside still falls through."""
+        if getattr(self, "help_bar_rect", None) is not None and self.help_bar_rect.collidepoint(pos):
+            self._toggle_help("bar")
+            return True
+        kind, arg = self._chrome_at(pos)
+        if kind == "info":
+            self._toggle_help(arg)
+            return True
+        panel = getattr(self, "_help_rect", None)
+        if self.help_id and panel is not None and panel.collidepoint(pos):
+            return True
+        if self.help_id:
+            self.help_id = None
+        return False
+
+    def _help_anchor(self):
+        if self.help_id == "bar":
+            rect = getattr(self, "help_bar_rect", None)
+            if rect is not None and rect.w > 0:
+                return rect
+            return None
+        for rect, kind, arg in self._chrome:
+            if kind == "info" and arg == self.help_id:
+                return rect
+        return None
+
+    def _draw_help(self, screen) -> None:
+        """One explanation over the block. Long text scrolls inside the panel."""
+        import pygame
+
+        from .ui_help import layout_page, page
+
+        if not self.help_id:
+            self._help_rect = None
+            self._help_body = None
+            self._help_lines = []
+            return
+        try:
+            title, _blocks = page(self.help_id)
+        except KeyError:
+            self.help_id = None
+            self._help_rect = None
+            self._help_body = None
+            self._help_lines = []
+            return
+        anchor = self._help_anchor()
+        if anchor is None:
+            self.help_id = None
+            self._help_rect = None
+            self._help_body = None
+            self._help_lines = []
+            return
+        sw, sh = screen.get_size()
+        width = min(440, max(160, sw - 16))
+        height = min(520, max(120, sh - 80))
+        x = int(anchor.x)
+        y = int(anchor.bottom) + 6
+        if y + height > sh - 8:
+            y = int(anchor.y) - 6 - height
+        x = max(8, min(x, sw - 8 - width))
+        y = max(8, min(y, sh - 8 - height))
+        panel = pygame.Rect(x, y, width, height)
+        self._help_rect = panel
+        pygame.draw.rect(screen, MENU, panel)
+        self._card(screen, panel, radius=10)
+        pygame.draw.rect(screen, LINE, panel, 1, border_radius=10)
+        title_clip = pygame.Rect(panel.x + 12, panel.y + 4, panel.w - 24, 24)
+        previous = screen.get_clip()
+        screen.set_clip(title_clip if previous is None else title_clip.clip(previous))
+        try:
+            label = self.font_sm.render(title, True, PEACH)
+            screen.blit(label, (panel.x + 12, panel.y + 6))
+        finally:
+            screen.set_clip(previous)
+        pygame.draw.line(screen, LINE, (panel.x + 10, panel.y + 30), (panel.right - 10, panel.y + 30), 1)
+        gutter = 16
+        body = pygame.Rect(panel.x + 12, panel.y + 36, panel.w - 24 - gutter, panel.h - 48)
+        self._help_body = body
+        pygame.draw.rect(screen, INSET, body)
+        line_h = int(self.font_sm.get_height()) + 6
+        rows, total = layout_page(self.help_id, lambda text: self.font_sm.size(text)[0], body.w - 8, line_h)
+        max_scroll = max(0, int(total) - body.h)
+        self.help_scroll = max(0, min(int(self.help_scroll), max_scroll))
+        self._help_lines = []
+        screen.set_clip(body if previous is None else body.clip(previous))
+        try:
+            for top, kind, line in rows:
+                ink_y = body.y + int(top) - int(self.help_scroll)
+                if ink_y + line_h <= body.y or ink_y >= body.bottom:
+                    continue
+                color = PEACH if kind == "h" else LABEL
+                glyph = self.font_sm.render(line, True, color)
+                screen.blit(glyph, (body.x + 4, ink_y))
+                ink = pygame.Rect(body.x + 4, ink_y, glyph.get_width(), glyph.get_height()).clip(body)
+                if ink.w > 0 and ink.h > 0:
+                    self._help_lines.append(ink)
+        finally:
+            screen.set_clip(previous)
+        if max_scroll <= 0:
+            return
+        track = pygame.Rect(panel.right - 14, body.y, 6, body.h)
+        pygame.draw.rect(screen, SCROLL_TRACK, track, border_radius=3)
+        thumb_h = max(18, int(body.h * body.h / float(max(total, 1))))
+        thumb_h = min(thumb_h, body.h)
+        travel = max(1, body.h - thumb_h)
+        thumb_y = body.y + int(round(self.help_scroll / float(max_scroll) * travel))
+        pygame.draw.rect(screen, SCROLL_THUMB, pygame.Rect(track.x, thumb_y, 6, thumb_h), border_radius=3)
 
     def _menu_at(self, pos):
         for rect, action in self._menu_hits:
@@ -1152,6 +1285,8 @@ class TrainMonitor:
             return
         pos = self._logical_pos(win_pos)
         if pos[0] < 0:
+            return
+        if self._help_hit(pos):
             return
         if self.view_rect.collidepoint(pos):
             self.menu_open = not self.menu_open
@@ -1282,7 +1417,9 @@ class TrainMonitor:
                 inp.quit = True
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    if self.menu_open:
+                    if self.help_id:
+                        self.help_id = None
+                    elif self.menu_open:
                         self.menu_open = False
                     else:
                         inp.quit = True
@@ -1467,6 +1604,7 @@ class TrainMonitor:
         if self.menu_open:
             self._draw_menu(screen)
         self._draw_toast(screen)
+        self._draw_help(screen)
         self._present()
         self.clock.tick(20)
 
@@ -1479,6 +1617,7 @@ class TrainMonitor:
         self._button(screen, self.view_rect, "View", None, hot)
         dog_hot = self.doggibot_rect.collidepoint(self._mouse())
         self._button(screen, self.doggibot_rect, "DoggiBOT", None, dog_hot)
+        self._mini_glyph(screen, self.help_bar_rect, "i")
         title = self.font.render(view.title, True, LABEL)
         title_x = self.doggibot_rect.right + 12
         screen.blit(title, (title_x, 6))
@@ -1523,12 +1662,21 @@ class TrainMonitor:
         bar = header_controls((rect.x, rect.y, rect.w, rect.h))
         pygame.draw.rect(screen, MENU, pygame.Rect(*bar["bar"]))
         pygame.draw.line(screen, LINE, (rect.x + 8, rect.y + DOCK_HEADER - 1), (rect.right - 8, rect.y + DOCK_HEADER - 1), 1)
+        info = pygame.Rect(*bar["info"])
         label = self.font_sm.render(title, True, LABEL)
-        screen.blit(label, (rect.x + 12, rect.y + 4))
+        title_clip = pygame.Rect(rect.x + 12, rect.y, max(1, info.x - rect.x - 16), min(DOCK_HEADER, rect.h))
+        previous = screen.get_clip()
+        screen.set_clip(title_clip if previous is None else title_clip.clip(previous))
+        try:
+            screen.blit(label, (rect.x + 12, rect.y + 4))
+        finally:
+            screen.set_clip(previous)
         collapse = pygame.Rect(*bar["collapse"])
         close = pygame.Rect(*bar["close"])
+        self._chrome.append((info, "info", name))
         self._chrome.append((collapse, "collapse", name))
         self._chrome.append((close, "close", name))
+        self._mini_glyph(screen, info, "i")
         self._mini_glyph(screen, collapse, "–" if not collapsed else "+")
         self._mini_glyph(screen, close, "×")
 
@@ -2072,12 +2220,16 @@ class TrainMonitor:
         return LAMP_OFF
 
     def _link_lamp(self, screen, view: MonitorView, x: int = 400) -> None:
-        right_limit = self.brain_rect.x - 80
-        if x > right_limit:
+        label = self.font_sm.render("борт", True, PEACH)
+        stop = self.brain_rect.x - 16
+        bar = getattr(self, "help_bar_rect", None)
+        if bar is not None and bar.w > 0:
+            stop = min(stop, bar.x - 8)
+        if x + 14 + label.get_width() > stop:
             return
         color = self._link_color(view)
         self._lamp(screen, (x, 22), color, 6)
-        screen.blit(self.font_sm.render("борт", True, PEACH), (x + 14, 12))
+        screen.blit(label, (x + 14, 12))
 
     def show_toast(self, text: str, seconds: float = 3.0) -> None:
         import time

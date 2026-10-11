@@ -225,6 +225,7 @@ def header_controls(block_rect: tuple) -> dict:
     hy = y + 2
     return {
         "bar": (x, y, w, min(HEADER, h)),
+        "info": (x + w - 68, hy, 20, 20),
         "collapse": (x + w - 46, hy, 20, 20),
         "close": (x + w - 24, hy, 20, 20),
     }
