@@ -321,20 +321,25 @@ class TrainerDockTests(unittest.TestCase):
             else:
                 self.assertLess(int(interior.max()) - int(interior.min()), 8)
         reset = next(rect for rect, action in mon._menu_hits if action[0] == "reset")
+        dog = next(rect for rect, action in mon._menu_hits if action[0] == "doggibot")
         stroke = frame[box_x, toggles[0][0].centery]
-        bare = frame[box_x, reset.centery]
         if on_theme == "light":
             self.assertLess(int(stroke.max()), 90)
-            self.assertGreater(int(bare.min()), 180)
+            for row in (reset, dog):
+                self.assertGreater(int(frame[box_x, row.centery].min()), 180)
         else:
             self.assertGreater(int(stroke.min()), 200)
-            self.assertLess(int(bare.max()), 120)
+            for row in (reset, dog):
+                self.assertLess(int(frame[box_x, row.centery].max()), 120)
 
     def _save_menu(self, mon, path: str) -> None:
         import pygame
 
         panel = mon._menu_panel
-        crop = pygame.Rect(panel.x - 6, mon.view_rect.y - 4, panel.w + 28, panel.bottom - mon.view_rect.y + 18)
+        left = min(panel.x, mon.view_rect.x) - 6
+        title_end = mon.doggibot_rect.right + 12 + mon.font.size("recognition training")[0]
+        right = max(panel.right, title_end) + 16
+        crop = pygame.Rect(left, mon.view_rect.y - 4, right - left, panel.bottom - mon.view_rect.y + 18)
         crop = crop.clamp(mon.screen.get_rect())
         shot = pygame.Surface((crop.w, crop.h))
         shot.blit(mon.screen, (0, 0), area=crop)

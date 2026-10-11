@@ -81,7 +81,7 @@ class RecognizeTrainSim:
         self.peer_curve: list[tuple[float, float]] = []
         self.other_curve: list[tuple[float, float]] = []
         self.metric_curve: list[dict] = []
-        self.log: deque[str] = deque(maxlen=24)
+        self.log: deque[str] = deque(maxlen=200)
         self._prev_like = 0.0
         self._last_spike_t = -10.0
         self.last_like = 0.0
@@ -796,6 +796,13 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
                 session.load()
             except FileNotFoundError:
                 session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
+        snap = None
+        if inp.doggibot:
+            from .doggibot_snap import reserve_folder
+
+            snap = reserve_folder()
+            session._log(snap.line)
+            mon.show_toast("снимок DoggiBOT")
         steer_x, steer_z, rate, command_name = _drive_sim(session, inp, float(session.world.t))
         teach = session.teach_pulse.poll(
             float(session.world.t),
@@ -846,6 +853,18 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         drive_brain(session, inp, float(session.world.t), mon)
         _gui_stress(mon, session)
         mon.draw(view)
+        if snap is not None:
+            from .doggibot_snap import commit
+
+            commit(
+                mon,
+                view,
+                snap,
+                mode="sim",
+                link_ok=False,
+                teacher=getattr(session, "teacher", None),
+                learning=bool(session.learn),
+            )
         if inp.screenshot:
             dest = ROOT / "logs" / "monitor_shot.png"
             dest.parent.mkdir(parents=True, exist_ok=True)

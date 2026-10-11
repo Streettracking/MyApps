@@ -140,6 +140,7 @@ class MonitorInput:
     brain_toggle: bool = False
     fullscreen_toggle: bool = False
     record_toggle: bool = False
+    doggibot: bool = False
     takeover: bool = False
     treat_down: bool = False
     punish_down: bool = False
@@ -615,6 +616,11 @@ class TrainMonitor:
         self._fixed_rows: list = []
         self._anchors: list = []
         self.clock = pygame.time.Clock()
+        import time
+
+        self._booted = time.monotonic()
+        self._toast_text = ""
+        self._toast_until = 0.0
         self._apply_layout()
         self.show_stand = False
         self.beep_on = False
@@ -681,6 +687,8 @@ class TrainMonitor:
         self.teacher_rect = buttons["teacher"]
         self.record_rect = buttons["record"]
         self.view_rect = pygame.Rect(8, 4, 52, 24)
+        dog_w = self.font_sm.size("DoggiBOT")[0] + 28
+        self.doggibot_rect = pygame.Rect(self.view_rect.right + 8, 4, dog_w, 24)
 
         leaf = self._dock_leaves.get("controls")
         inner = None
@@ -1099,6 +1107,8 @@ class TrainMonitor:
             self.menu_open = False
         elif kind == "theme":
             self._set_theme("light" if theme_name() == "dark" else "dark")
+        elif kind == "doggibot":
+            self.menu_open = False
 
     def _drag_splitter(self, win_pos) -> None:
         if not self._split_drag:
@@ -1145,10 +1155,16 @@ class TrainMonitor:
         if self.view_rect.collidepoint(pos):
             self.menu_open = not self.menu_open
             return
+        if self.doggibot_rect.collidepoint(pos):
+            self.menu_open = False
+            inp.doggibot = True
+            return
         if self.menu_open:
             action = self._menu_at(pos)
             if action is not None:
                 self._run_menu(action)
+                if action[0] == "doggibot":
+                    inp.doggibot = True
                 return
             panel = self._menu_panel
             if panel is not None and panel.collidepoint(pos):
@@ -1447,6 +1463,7 @@ class TrainMonitor:
             self._prev_rec = False
         if self.menu_open:
             self._draw_menu(screen)
+        self._draw_toast(screen)
         self._present()
         self.clock.tick(20)
 
@@ -1457,8 +1474,12 @@ class TrainMonitor:
         pygame.draw.line(screen, LINE, (0, MENU_H - 1), (WIN_W, MENU_H - 1), 1)
         hot = self.view_rect.collidepoint(self._mouse()) or self.menu_open
         self._button(screen, self.view_rect, "View", None, hot)
-        screen.blit(self.font.render(view.title, True, LABEL), (68, 6))
-        self._link_lamp(screen, view)
+        dog_hot = self.doggibot_rect.collidepoint(self._mouse())
+        self._button(screen, self.doggibot_rect, "DoggiBOT", None, dog_hot)
+        title = self.font.render(view.title, True, LABEL)
+        title_x = self.doggibot_rect.right + 12
+        screen.blit(title, (title_x, 6))
+        self._link_lamp(screen, view, title_x + title.get_width() + 18)
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
         self._record_button(screen, view)
@@ -1552,6 +1573,7 @@ class TrainMonitor:
         rows = [(("toggle", name), BLOCK_TITLES[name], "check", name) for name in BLOCKS]
         rows.append((("reset",), "Сброс раскладки", "button", None))
         rows.append((("theme",), "Тёмная тема", "theme", None))
+        rows.append((("doggibot",), "DoggiBOT", "button", None))
         row_h = 28
         text_w = max(self.font_sm.size(label)[0] for _action, label, _kind, _arg in rows)
         width = max(220, 12 + 14 + 10 + text_w + 16)
@@ -1924,10 +1946,41 @@ class TrainMonitor:
             return RED
         return LAMP_OFF
 
-    def _link_lamp(self, screen, view: MonitorView) -> None:
+    def _link_lamp(self, screen, view: MonitorView, x: int = 400) -> None:
+        right_limit = self.brain_rect.x - 80
+        if x > right_limit:
+            return
         color = self._link_color(view)
-        self._lamp(screen, (400, 22), color, 6)
-        screen.blit(self.font_sm.render("борт", True, PEACH), (414, 12))
+        self._lamp(screen, (x, 22), color, 6)
+        screen.blit(self.font_sm.render("борт", True, PEACH), (x + 14, 12))
+
+    def show_toast(self, text: str, seconds: float = 3.0) -> None:
+        import time
+
+        self._toast_text = str(text)
+        self._toast_until = time.monotonic() + float(seconds)
+
+    def uptime_s(self) -> float:
+        import time
+
+        return max(0.0, time.monotonic() - float(getattr(self, "_booted", time.monotonic())))
+
+    def _draw_toast(self, screen) -> None:
+        import time
+
+        import pygame
+
+        text = getattr(self, "_toast_text", "")
+        if not text or time.monotonic() > float(getattr(self, "_toast_until", 0.0)):
+            return
+        label = self.font_sm.render(text, True, VALUE)
+        pad = 10
+        rect = pygame.Rect(0, 0, label.get_width() + pad * 2, label.get_height() + 8)
+        rect.centerx = WIN_W // 2
+        rect.y = MENU_H + 10
+        pygame.draw.rect(screen, CARD, rect, border_radius=8)
+        pygame.draw.rect(screen, LABEL, rect, 1, border_radius=8)
+        screen.blit(label, (rect.x + pad, rect.centery - label.get_height() // 2))
 
     def _mode_buttons(self, screen, view: MonitorView) -> None:
         import pygame

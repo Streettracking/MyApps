@@ -264,7 +264,7 @@ class LiveSession:
         self.peer_curve: list[tuple[float, float]] = []
         self.other_curve: list[tuple[float, float]] = []
         self.metric_curve: list[dict] = []
-        self.log: deque[str] = deque(maxlen=24)
+        self.log: deque[str] = deque(maxlen=200)
         self.t0 = time.monotonic()
         self.last_like = 0.0
         self.last_match = 0.0
@@ -1046,6 +1046,13 @@ def run_live_gui(
             elif teach_now and waiting:
                 session.pending_teach = teach
             _drive_teacher(session, camera_jpeg, frame_id, teacher_state, operator_busy, onboard)
+            snap = None
+            if inp.doggibot:
+                from .doggibot_snap import reserve_folder
+
+                snap = reserve_folder()
+                session._log(snap.line)
+                mon.show_toast("снимок DoggiBOT")
             view = _live_view(session, camera, disp_lidar, error, link, inp.focused, command_name, onboard)
             rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
             labelled = weak_label_now(marks, session.now()) is not None
@@ -1059,6 +1066,24 @@ def run_live_gui(
 
             drive_brain(session, inp, session.now(), mon)
             mon.draw(view)
+            if snap is not None:
+                from .doggibot_snap import commit
+
+                if onboard is not None:
+                    mode, link_ok = "onboard", bool(onboard.ok)
+                elif link is not None:
+                    mode, link_ok = "robot", bool(link.ok)
+                else:
+                    mode, link_ok = "robot", False
+                commit(
+                    mon,
+                    view,
+                    snap,
+                    mode=mode,
+                    link_ok=link_ok,
+                    teacher=getattr(session, "teacher", None),
+                    learning=bool(session.learn),
+                )
             if inp.screenshot:
                 dest = ROOT / "logs" / "monitor_shot.png"
                 dest.parent.mkdir(parents=True, exist_ok=True)
