@@ -282,6 +282,127 @@ class WindowTests(unittest.TestCase):
         pygame.image.save(scroll_frame, str(out / "trainer_window_scroll.png"))
         pygame.quit()
 
+    def test_short_client_pins_the_menu_and_the_keys(self):
+        """A maximized laptop client keeps the top bar and the keys row on screen."""
+        import pygame
+        import numpy as np
+
+        from sim.train_monitor import (
+            FOOTER_H,
+            MENU,
+            MonitorView,
+            TrainMonitor,
+            scroll_limits,
+            scrollbar_geom,
+            window_from_logical,
+        )
+
+        pygame.init()
+        mon = TrainMonitor("client")
+        view = MonitorView(
+            title="recognition training",
+            udp_status="симулятор  команда сценарий",
+            keys_hint="T/X учить A авто",
+            learner="mb",
+        )
+        out = __import__("pathlib").Path("/opt/cursor/artifacts")
+        out.mkdir(parents=True, exist_ok=True)
+        menu = np.array(tuple(MENU), dtype=int)
+        try:
+            for ww, wh in ((1920, 1017), (1536, 801)):
+                mon._on_resize(ww, wh)
+                self.assertEqual(mon.window.get_size(), (ww, wh))
+                max_x, max_y = scroll_limits(ww, wh)
+                self.assertGreater(max_y, 0, (ww, wh))
+                self.assertIsNotNone(scrollbar_geom(ww, wh, 0, 0)["thumb_y"])
+                for scroll_y in (0, max_y):
+                    mon.scroll_x = 0
+                    mon.scroll_y = scroll_y
+                    mon.draw(view)
+                    fy = int(mon.layout["footer_y"])
+                    self.assertEqual(window_from_logical((0, 0), ww, wh, (0, scroll_y))[1], 0)
+                    for ly in (fy + 6, fy + 26, fy + 40, fy + FOOTER_H - 1):
+                        _wx, wy = window_from_logical((16, ly), ww, wh, (0, scroll_y))
+                        self.assertGreaterEqual(wy, 0, (ww, wh, scroll_y, ly))
+                        self.assertLess(wy, wh, (ww, wh, scroll_y, ly))
+                    frame = mon.present_into((ww, wh))
+                    self.assertEqual(frame.get_size(), (ww, wh))
+                    bar_x = window_from_logical((480, 0), ww, wh, (0, scroll_y))[0]
+                    top = np.array(frame.get_at((bar_x, 0))[:3], dtype=int)
+                    self.assertLess(int(np.abs(top - menu).max()), 5, (ww, wh, scroll_y))
+                    row0 = pygame.surfarray.array3d(frame)[:, 0].max(axis=1)
+                    self.assertGreater(int((row0 > 200).sum()), ww // 2, (ww, wh, scroll_y))
+                    shown = pygame.surfarray.array3d(frame)
+                    footer_px = wh - window_from_logical((16, fy), ww, wh, (0, scroll_y))[1]
+                    band = shown[16:420, wh - max(1, footer_px) : wh]
+                    ink = (band[:, :, 0] < 80) & (band[:, :, 1] < 80) & (band[:, :, 2] < 80)
+                    self.assertGreater(int(ink.sum()), 12, (ww, wh, scroll_y))
+                pygame.image.save(frame, str(out / ("trainer_client_%dx%d.png" % (ww, wh))))
+        finally:
+            pygame.quit()
+
+    def test_maximize_trusts_the_live_surface(self):
+        import pygame
+
+        from sim.train_monitor import TrainMonitor
+
+        pygame.init()
+        mon = TrainMonitor("max")
+        mon._on_resize(1280, 720)
+        live = mon.window.get_size()
+        calls = []
+        real = pygame.display.set_mode
+
+        def spy(size, flags=0):
+            calls.append(tuple(size))
+            return real(size, flags)
+
+        pygame.display.set_mode = spy
+        try:
+            pygame.event.clear()
+            pygame.event.post(pygame.event.Event(pygame.VIDEORESIZE, w=1920, h=1080, size=(1920, 1080)))
+            pygame.event.post(pygame.event.Event(pygame.WINDOWMAXIMIZED))
+            mon.pump()
+            self.assertEqual(calls, [])
+            self.assertEqual(mon.window.get_size(), live)
+            self.assertTrue(mon._maximized)
+            self.assertIs(mon.window, pygame.display.get_surface())
+        finally:
+            pygame.display.set_mode = real
+            pygame.quit()
+
+
+class ClientChromeTests(unittest.TestCase):
+    def test_saved_geometry_is_clipped_and_dpi_is_set_before_the_window(self):
+        from pathlib import Path
+
+        from sim.win_dpi import clip_window_box, enable_dpi_awareness, work_area
+
+        self.assertIsNone(work_area())
+        enable_dpi_awareness()
+        area = (0, 0, 1920, 1040)
+        self.assertEqual(clip_window_box(10, 20, 800, 600, area), (10, 20, 800, 600))
+        self.assertEqual(clip_window_box(-40, -10, 800, 600, area), (0, 0, 800, 600))
+        self.assertEqual(clip_window_box(1500, 800, 800, 600, area), (1120, 440, 800, 600))
+        self.assertEqual(clip_window_box(100, 100, 2000, 1200, area), (0, 0, 1920, 1040))
+        self.assertEqual(clip_window_box(None, None, 4000, 3000, area), (None, None, 1920, 1040))
+        self.assertEqual(clip_window_box(10, 20, 100, 50, None), (10, 20, 320, 240))
+
+        dpi = Path("sim/win_dpi.py").read_text(encoding="utf-8")
+        self.assertIn("SetProcessDpiAwareness", dpi)
+        self.assertIn("SetProcessDPIAware", dpi)
+        self.assertIn("SPI_GETWORKAREA", dpi)
+        self.assertNotIn("set_mode", dpi)
+        self.assertNotIn("from_display_module", dpi)
+
+        monitor = Path("sim/train_monitor.py").read_text(encoding="utf-8")
+        self.assertIn("enable_dpi_awareness()", monitor)
+        self.assertLess(monitor.index("enable_dpi_awareness()"), monitor.index("pygame.init()"))
+        self.assertIn("WINDOWSIZECHANGED", monitor)
+        self.assertIn("WINDOWMAXIMIZED", monitor)
+        self.assertIn("get_surface", monitor)
+        self.assertNotIn("from_display_module", monitor)
+
 
 class BrainTests(unittest.TestCase):
     def test_soma_cloud_and_one_frame(self):

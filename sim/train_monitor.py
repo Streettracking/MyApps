@@ -327,6 +327,22 @@ def logical_from_window(pos, ww: int, wh: int, scroll=(0, 0)) -> tuple:
         if bar is not None and bar.collidepoint(px, py):
             return (-1, -1)
     sx, sy = geom["scroll"]
+    bands = _chrome_bands(scale, wh, content_h)
+    if bands["pinned"]:
+        menu_px = bands["menu_px"]
+        footer_px = bands["footer_px"]
+        x = px + sx
+        if py < menu_px:
+            y_logical = py / scale
+        elif py >= wh - footer_px:
+            y_logical = (logical_h - FOOTER_H) + (py - (wh - footer_px)) / scale
+        else:
+            y_logical = MENU_H + (py - menu_px + sy) / scale
+        if x < 0 or x >= content_w or py < 0 or py >= wh:
+            return (-1, -1)
+        lx = int(round(x / scale))
+        ly = int(round(y_logical))
+        return (max(0, min(logical_w - 1, lx)), max(0, min(logical_h - 1, ly)))
     x = px + sx
     y = py + sy
     if x < 0 or y < 0 or x >= content_w or y >= content_h:
@@ -337,13 +353,45 @@ def logical_from_window(pos, ww: int, wh: int, scroll=(0, 0)) -> tuple:
 
 
 def window_from_logical(pos, ww: int, wh: int, scroll=(0, 0)) -> tuple:
-    """Canvas pixels → window pixels. Scroll shifts the point toward the origin."""
-    scale, _lw, _lh, _cw, _ch = fit_window(ww, wh)
+    """Canvas pixels → window pixels. Scroll shifts the point toward the origin.
+
+    When the canvas is taller than the client, the menu stays at y=0 and the
+    footer stays on the bottom edge. Only the blocks between them scroll.
+    """
+    scale, _lw, logical_h, _cw, content_h = fit_window(ww, wh)
     geom = scrollbar_geom(ww, wh, scroll[0], scroll[1])
     sx, sy = geom["scroll"]
-    wx = int(round(float(pos[0]) * scale)) - sx
-    wy = int(round(float(pos[1]) * scale)) - sy
+    lx = float(pos[0])
+    ly = float(pos[1])
+    wx = int(round(lx * scale)) - sx
+    bands = _chrome_bands(scale, wh, content_h)
+    if not bands["pinned"]:
+        wy = int(round(ly * scale)) - sy
+        return wx, wy
+    menu_px = bands["menu_px"]
+    footer_px = bands["footer_px"]
+    if ly < MENU_H:
+        wy = int(round(ly * scale))
+    elif ly >= logical_h - FOOTER_H:
+        wy = (wh - footer_px) + int(round((ly - (logical_h - FOOTER_H)) * scale))
+    else:
+        wy = menu_px + int(round((ly - MENU_H) * scale)) - sy
     return wx, wy
+
+
+def _chrome_bands(scale: float, wh: int, content_h: int) -> dict:
+    """Menu and footer heights in window pixels. ``pinned`` when the canvas is taller."""
+    menu_px = max(1, int(round(MENU_H * scale)))
+    footer_px = max(1, int(round(FOOTER_H * scale)))
+    if menu_px + footer_px >= int(wh):
+        room = max(2, int(wh))
+        menu_px = max(1, int(round(room * MENU_H / float(MENU_H + FOOTER_H))))
+        footer_px = max(1, room - menu_px)
+    return {
+        "menu_px": menu_px,
+        "footer_px": footer_px,
+        "pinned": int(content_h) > int(wh),
+    }
 
 
 def monitor_layout(w: int, h: int) -> dict:
@@ -555,6 +603,9 @@ class TrainMonitor:
 
         import pygame
 
+        from .win_dpi import clip_window_box, enable_dpi_awareness, work_area
+
+        enable_dpi_awareness()
         pygame.init()
         from .tabnum import reset_fonts
 
@@ -595,17 +646,23 @@ class TrainMonitor:
         self.go2_server_open = False
         self.go2_missing = False
         self.fullscreen = bool(fullscreen) or bool(self._persist and self._settings.get("fullscreen"))
+        self._maximized = bool(self._persist and self._settings.get("maximized"))
         if self._persist and not self.fullscreen:
             saved_w = self._settings.get("w")
             saved_h = self._settings.get("h")
             if saved_w and saved_h:
-                self._window_size = (max(320, int(saved_w)), max(240, int(saved_h)))
-            saved_x = self._settings.get("x")
-            saved_y = self._settings.get("y")
-            if saved_x is not None and saved_y is not None:
-                os.environ["SDL_VIDEO_WINDOW_POS"] = "%d,%d" % (int(saved_x), int(saved_y))
+                saved_x, saved_y, saved_w, saved_h = clip_window_box(
+                    self._settings.get("x"),
+                    self._settings.get("y"),
+                    saved_w,
+                    saved_h,
+                    work_area(),
+                )
+                self._window_size = (int(saved_w), int(saved_h))
+                if saved_x is not None and saved_y is not None:
+                    os.environ["SDL_VIDEO_WINDOW_POS"] = "%d,%d" % (int(saved_x), int(saved_y))
         self._open_display()
-        if self._persist and self._settings.get("maximized") and not self.fullscreen:
+        if self._maximized and not self.fullscreen:
             self._try_maximize()
         self.font = _ui_font(15)
 
@@ -791,9 +848,10 @@ class TrainMonitor:
         data.update(self._settings)
         data["theme"] = theme_name()
         data["fullscreen"] = bool(self.fullscreen)
+        data["maximized"] = bool(getattr(self, "_maximized", False))
         data["layout"] = self.dock.to_dict()
-        # Resize must not build a Window. from_display_module stores that
-        # Python object in the SDL window and does not keep it alive.
+        # Resize must not build a Window. Borrowing the SDL window stores
+        # that Python object on the window and does not keep it alive.
         used_window = False
         if not no_sdl_window() and (sdl_window_on_resize() or not geometry_only):
             used_window = self._apply_window_box(data, borrowed=not sdl_window_on_resize())
@@ -964,7 +1022,6 @@ class TrainMonitor:
         self._minimized = False
         if self.fullscreen:
             return
-        self._window_size = (w, h)
         # Windows frees the window surface inside the resize message, and
         # pygame's event watch points the existing Surface at the new pixels.
         # get_surface() picks that object up. A second set_mode frees it
@@ -978,8 +1035,40 @@ class TrainMonitor:
             self.window = pygame.display.set_mode((w, h), pygame.RESIZABLE)
             self._bind_display()
             pygame.event.clear()
-        self._clamp_scroll(w, h)
+        self._remember_client(w, h)
+
+    def _remember_client(self, w: int | None = None, h: int | None = None) -> None:
+        """Layout and scroll follow the live client, not a stale event size."""
+        self._bind_display()
+        if self.window is not None:
+            got = self.window.get_size()
+            if int(got[0]) >= 64 and int(got[1]) >= 64:
+                w, h = int(got[0]), int(got[1])
+        if w is None or h is None:
+            return
+        self._minimized = False
+        self._window_size = (int(w), int(h))
+        self._clamp_scroll(int(w), int(h))
         self._save_ui(geometry_only=True)
+
+    def _adopt_client(self) -> None:
+        """WINDOWMAXIMIZED / WINDOWSIZECHANGED already resized the surface."""
+        if self.fullscreen:
+            return
+        self._remember_client()
+
+    def _sync_maximized_from_size(self) -> None:
+        """A restore that still fills the work area is still maximized."""
+        from .win_dpi import work_area
+
+        area = work_area()
+        if area is None or self.window is None:
+            self._maximized = False
+        else:
+            w, h = self.window.get_size()
+            self._maximized = int(w) >= int(area[2]) - 8 and int(h) >= int(area[3]) - 8
+        if self._persist:
+            self._settings["maximized"] = bool(self._maximized)
 
     def _clamp_scroll(self, ww: int | None = None, wh: int | None = None) -> None:
         if ww is None or wh is None:
@@ -1062,13 +1151,50 @@ class TrainMonitor:
             scaled = pygame.transform.smoothscale(source, (target_w, target_h))
         else:
             scaled = source
-        if (target_w, target_h) == (ww, wh) and self.scroll_x == 0 and self.scroll_y == 0:
+        bands = _chrome_bands(content_w / float(max(logical_w, 1)), wh, max(content_h, target_h))
+        if bands["pinned"]:
+            out = self._pin_chrome(scaled, ww, wh, logical_h, bands)
+        elif (target_w, target_h) == (ww, wh) and self.scroll_x == 0 and self.scroll_y == 0:
             out = scaled
         else:
             out = pygame.Surface((ww, wh))
             out.fill(BG_BOT)
             out.blit(scaled, (-self.scroll_x, -self.scroll_y))
         return self._paint_scrollbars(out, ww, wh)
+
+    def _pin_chrome(self, scaled, ww: int, wh: int, logical_h: int, bands: dict):
+        """Menu at the top of the client, keys at the bottom, blocks scroll between."""
+        import pygame
+
+        sh = scaled.get_height()
+        sw = scaled.get_width()
+        menu_px = int(bands["menu_px"])
+        footer_px = int(bands["footer_px"])
+        menu_src = max(1, int(round(MENU_H * sh / float(max(logical_h, 1)))))
+        footer_src = max(1, int(round(FOOTER_H * sh / float(max(logical_h, 1)))))
+        if menu_src + footer_src >= sh:
+            menu_src = max(1, sh // 5)
+            footer_src = max(1, sh - menu_src - 1)
+        if menu_px + footer_px > wh:
+            menu_px = menu_src if menu_src + footer_src <= wh else max(1, wh // 3)
+            footer_px = footer_src if menu_px + footer_src <= wh else max(1, wh - menu_px)
+        out = pygame.Surface((ww, wh))
+        out.fill(BG_BOT)
+        out.blit(scaled, (-self.scroll_x, 0), pygame.Rect(0, 0, sw, menu_src))
+        out.blit(
+            scaled,
+            (-self.scroll_x, wh - footer_px),
+            pygame.Rect(0, sh - footer_src, sw, footer_src),
+        )
+        mid_view = max(1, wh - menu_px - footer_px)
+        mid_room = max(1, sh - menu_src - footer_src)
+        src_scroll = min(max(0, int(self.scroll_y)), max(0, mid_room - mid_view))
+        out.blit(
+            scaled,
+            (-self.scroll_x, menu_px),
+            pygame.Rect(0, menu_src + src_scroll, sw, min(mid_view, mid_room - src_scroll)),
+        )
+        return out
 
     def _paint_scrollbars(self, surface, ww: int, wh: int):
         import pygame
@@ -1422,6 +1548,8 @@ class TrainMonitor:
         inp = MonitorInput()
         pending_size = None
         pending_full = False
+        trust_surface = False
+        note_restore = False
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 inp.quit = True
@@ -1509,15 +1637,28 @@ class TrainMonitor:
                 pending_size = (int(event.w), int(event.h))
             elif event.type == getattr(pygame, "WINDOWMINIMIZED", -1):
                 self._minimized = True
-            elif event.type in (
-                getattr(pygame, "WINDOWRESTORED", -2),
-                getattr(pygame, "WINDOWMAXIMIZED", -3),
-                getattr(pygame, "WINDOWSHOWN", -4),
-            ):
+            elif event.type == getattr(pygame, "WINDOWMAXIMIZED", -3):
+                self._minimized = False
+                self._maximized = True
+                if self._persist:
+                    self._settings["maximized"] = True
+                trust_surface = True
+            elif event.type == getattr(pygame, "WINDOWSIZECHANGED", -5):
+                trust_surface = True
+            elif event.type == getattr(pygame, "WINDOWRESTORED", -2):
+                self._minimized = False
+                trust_surface = True
+                note_restore = True
+            elif event.type == getattr(pygame, "WINDOWSHOWN", -4):
                 self._minimized = False
         if pending_full:
             self.toggle_fullscreen()
             inp.fullscreen_toggle = True
+        elif trust_surface:
+            # The surface already has the client size. Do not set_mode.
+            self._adopt_client()
+            if note_restore:
+                self._sync_maximized_from_size()
         elif pending_size is not None:
             self._on_resize(pending_size[0], pending_size[1])
         inp.focused = bool(pygame.key.get_focused())
