@@ -1,11 +1,10 @@
 """Switches for the Windows crash that started with the dock (7518c48).
 
-Set a variable to ``1``. The trainer never calls ``pygame.mouse.set_cursor``,
-``display.set_icon``, ``event.set_grab``, ``event.set_blocked``, ``pygame.scrap``,
-or ``pygame.time.set_timer``.
+Set a variable to ``1``. The trainer does not call ``display.set_icon``,
+``event.set_grab``, ``event.set_blocked``, ``pygame.scrap``, or
+``pygame.time.set_timer``.
 
-- ``RECOGNIZER_NO_CURSOR`` — there is no cursor change to turn off. This is the
-  default (``RECOGNIZER_CURSOR`` is unset). Do not add ``set_cursor``.
+- ``RECOGNIZER_NO_CURSOR`` — do not create cursors and do not call ``set_cursor``.
 - ``RECOGNIZER_NO_CAPTION`` — skip ``display.set_caption``.
 - ``RECOGNIZER_NO_SNAP`` — do not keep the journal or brain-panel Surface caches.
 - ``RECOGNIZER_NO_CARD_CACHE`` — build each card and drop it.
@@ -32,7 +31,63 @@ def enabled(name: str) -> bool:
 
 
 def no_cursor() -> bool:
-    return enabled("RECOGNIZER_NO_CURSOR") or not enabled("RECOGNIZER_CURSOR")
+    return enabled("RECOGNIZER_NO_CURSOR")
+
+
+# One system cursor per kind, for the life of the process. pygame 2 on Windows
+# frees a cursor that is still active if the Python object is collected or if
+# set_cursor runs again with a new cursor. Do not rebuild this dict.
+_CURSORS: dict = {}
+_CURSOR_KIND: str | None = None
+
+
+def install_cursors() -> None:
+    """Build the system cursors once. Call only after ``display.set_mode``."""
+    if _CURSORS or no_cursor():
+        return
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
+    import pygame
+    from pygame.cursors import Cursor
+
+    made = {
+        "arrow": Cursor(pygame.SYSTEM_CURSOR_ARROW),
+        "we": Cursor(pygame.SYSTEM_CURSOR_SIZEWE),
+        "ns": Cursor(pygame.SYSTEM_CURSOR_SIZENS),
+        "hand": Cursor(pygame.SYSTEM_CURSOR_HAND),
+    }
+    _CURSORS.update(made)
+
+
+def apply_cursor(kind: str) -> None:
+    """Switch the OS cursor when ``kind`` changes. Never call this per frame.
+
+    ``kind`` is ``arrow``, ``we`` (vertical splitter), ``ns`` (horizontal
+    splitter), or ``hand``. ``RECOGNIZER_NO_CURSOR`` leaves the cursor alone.
+    A repeat of the same kind does not call SDL.
+    """
+    global _CURSOR_KIND
+
+    if no_cursor() or not _CURSORS:
+        return
+    if kind not in _CURSORS:
+        kind = "arrow"
+    if kind == _CURSOR_KIND:
+        return
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
+    import pygame
+
+    try:
+        pygame.mouse.set_cursor(_CURSORS[kind])
+    except pygame.error:
+        # The dummy driver has no system cursor. Remember the kind so the
+        # next frame does not call SDL again.
+        _CURSOR_KIND = kind
+        return
+    _CURSOR_KIND = kind
 
 
 def no_caption() -> bool:

@@ -213,7 +213,12 @@ class ResizeGuardTests(unittest.TestCase):
             text,
         )
         self.assertEqual(found, [])
-        self.assertTrue(no_cursor())
+        self.assertFalse(no_cursor())
+        os.environ["RECOGNIZER_NO_CURSOR"] = "1"
+        try:
+            self.assertTrue(no_cursor())
+        finally:
+            os.environ.pop("RECOGNIZER_NO_CURSOR", None)
         self.assertFalse(no_caption())
         self.assertFalse(no_snap())
         self.assertFalse(no_present())
@@ -270,3 +275,258 @@ class ResizeGuardTests(unittest.TestCase):
             except OSError:
                 pass
             pygame.quit()
+
+
+class CursorTests(unittest.TestCase):
+    def test_splitters_keep_one_cursor_and_resize_does_not_set_it(self):
+        import threading
+
+        import pygame
+
+        import sim.ui_guard as guard
+        from sim.dock_layout import header_controls
+        from sim.train_monitor import TrainMonitor, scrollbar_geom, window_from_logical
+
+        os.environ.pop("RECOGNIZER_NO_CURSOR", None)
+        os.environ.pop("RECOGNIZER_UI_CONFIG", None)
+        os.environ.pop("RECOGNIZER_FORCE_SETMODE", None)
+        calls = []
+        point = [8, 8]
+        real_set = pygame.mouse.set_cursor
+        real_pos = pygame.mouse.get_pos
+        saved_kind = guard._CURSOR_KIND
+
+        def spy(cursor):
+            calls.append(cursor)
+
+        pygame.mouse.set_cursor = spy
+        pygame.mouse.get_pos = lambda: (int(point[0]), int(point[1]))
+        pygame.init()
+        try:
+            mon = TrainMonitor("cursor")
+            self.assertEqual(calls, [])
+            ids = {name: id(cursor) for name, cursor in guard._CURSORS.items()}
+            self.assertEqual(set(ids), {"arrow", "we", "ns", "hand"})
+            self.assertEqual(guard._CURSORS["we"].data, (pygame.SYSTEM_CURSOR_SIZEWE,))
+            self.assertEqual(guard._CURSORS["ns"].data, (pygame.SYSTEM_CURSOR_SIZENS,))
+            self.assertEqual(guard._CURSORS["hand"].data, (pygame.SYSTEM_CURSOR_HAND,))
+            self.assertEqual(guard._CURSORS["arrow"].data, (pygame.SYSTEM_CURSOR_ARROW,))
+
+            during = []
+            real_resize = mon._on_resize
+
+            def resize(w, h):
+                before = len(calls)
+                real_resize(w, h)
+                during.append(len(calls) - before)
+
+            mon._on_resize = resize
+            mon._on_resize(1920, 1080)
+            guard.install_cursors()
+            self.assertEqual(during, [0])
+            self.assertEqual({name: id(cursor) for name, cursor in guard._CURSORS.items()}, ids)
+            self.assertEqual(mon.window.get_size(), (1920, 1080))
+
+            def place(xy):
+                ww, wh = mon.window.get_size()
+                landed = window_from_logical(xy, ww, wh, (mon.scroll_x, mon.scroll_y))
+                point[0], point[1] = landed
+
+            def expect(kind):
+                before = len(calls)
+                guard._CURSOR_KIND = None
+                mon._sync_cursor()
+                self.assertIs(calls[-1], guard._CURSORS[kind])
+                again = len(calls)
+                mon._sync_cursor()
+                self.assertEqual(len(calls), again)
+                self.assertGreater(again, before)
+
+            guard._CURSOR_KIND = None
+            mon._sync_cursor()
+            self.assertIs(calls[-1], guard._CURSORS["arrow"])
+            frozen = len(calls)
+            mon._sync_cursor()
+            self.assertEqual(len(calls), frozen)
+
+            vertical = next(item for item in mon._dock_splitters if item["axis"] == "x")
+            grip = vertical["rect"]
+            cam = mon._dock_blocks["camera"]
+            place((grip[0] + grip[2] // 2, cam[1] + cam[3] // 2))
+            expect("we")
+            mon._split_drag = (vertical["node"], "x", vertical["bounds"])
+            point[0], point[1] = 8, 8
+            frozen = len(calls)
+            mon._sync_cursor()
+            self.assertEqual(len(calls), frozen)
+            self.assertEqual(mon._cursor_kind(), "we")
+
+            horizontal = next(item for item in mon._dock_splitters if item["axis"] == "y")
+            mon._split_drag = (horizontal["node"], "y", horizontal["bounds"])
+            expect("ns")
+            mon._split_drag = None
+            point[0], point[1] = 8, 8
+            expect("arrow")
+
+            grip = horizontal["rect"]
+            place((grip[0] + max(8, grip[2] // 2), grip[1] + grip[3] // 2))
+            expect("ns")
+
+            bar = header_controls(mon._dock_blocks["journal"])["bar"]
+            place((bar[0] + 20, bar[1] + bar[3] // 2))
+            expect("hand")
+            cam = mon._dock_blocks["camera"]
+            place((cam[0] + cam[2] // 2, cam[1] + cam[3] // 2))
+            expect("arrow")
+
+            mon._scroll_drag = ("y", 0)
+            expect("hand")
+            mon._scroll_drag = None
+            mon._block_drag = "journal"
+            frozen = len(calls)
+            mon._sync_cursor()
+            self.assertEqual(len(calls), frozen)
+            mon._block_drag = None
+
+            mon._on_resize(1920, 700)
+            self.assertEqual(during, [0, 0])
+            track = scrollbar_geom(1920, 700)["track_y"]
+            self.assertIsNotNone(track)
+            point[0], point[1] = track.center
+            expect("hand")
+
+            os.environ["RECOGNIZER_NO_CURSOR"] = "1"
+            frozen = len(calls)
+            place((grip[0] + 8, grip[1] + grip[3] // 2))
+            guard._CURSOR_KIND = None
+            mon._sync_cursor()
+            self.assertEqual(len(calls), frozen)
+            os.environ.pop("RECOGNIZER_NO_CURSOR", None)
+
+            pygame.event.post(pygame.event.Event(pygame.VIDEORESIZE, w=1920, h=1080, size=(1920, 1080)))
+            mon.pump()
+            self.assertEqual(during, [0, 0, 0])
+
+            guard._CURSOR_KIND = None
+            box = []
+
+            def worker():
+                try:
+                    guard.apply_cursor("we")
+                except AssertionError as exc:
+                    box.append(str(exc))
+
+            worker_thread = threading.Thread(target=worker, name="cursor-worker")
+            worker_thread.start()
+            worker_thread.join()
+            self.assertTrue(box)
+            self.assertIsNone(guard._CURSOR_KIND)
+        finally:
+            pygame.mouse.set_cursor = real_set
+            pygame.mouse.get_pos = real_pos
+            guard._CURSOR_KIND = saved_kind
+            os.environ.pop("RECOGNIZER_NO_CURSOR", None)
+            pygame.quit()
+
+    def test_a_rejected_cursor_is_not_retried_every_frame(self):
+        import pygame
+
+        import sim.ui_guard as guard
+
+        os.environ.pop("RECOGNIZER_NO_CURSOR", None)
+        if not guard._CURSORS:
+            pygame.init()
+            pygame.display.set_mode((320, 240))
+            guard.install_cursors()
+        calls = []
+        real_set = pygame.mouse.set_cursor
+        saved_kind = guard._CURSOR_KIND
+
+        def boom(cursor):
+            calls.append(cursor)
+            raise pygame.error("Error while creating system cursor")
+
+        pygame.mouse.set_cursor = boom
+        guard._CURSOR_KIND = None
+        try:
+            guard.apply_cursor("ns")
+            guard.apply_cursor("ns")
+            self.assertEqual(len(calls), 1)
+            self.assertIs(calls[0], guard._CURSORS["ns"])
+            self.assertEqual(guard._CURSOR_KIND, "ns")
+        finally:
+            pygame.mouse.set_cursor = real_set
+            guard._CURSOR_KIND = saved_kind
+
+    def test_cursors_are_born_once_after_set_mode_and_the_flag_skips_them(self):
+        import subprocess
+        import sys
+        import textwrap
+
+        script = textwrap.dedent(
+            """
+            import os, sys
+            os.environ["SDL_VIDEODRIVER"] = "dummy"
+            os.environ["SDL_AUDIODRIVER"] = "dummy"
+            os.environ.pop("RECOGNIZER_UI_CONFIG", None)
+            flag = sys.argv[1] == "off"
+            if flag:
+                os.environ["RECOGNIZER_NO_CURSOR"] = "1"
+            else:
+                os.environ.pop("RECOGNIZER_NO_CURSOR", None)
+            import pygame
+            pygame.init()
+            order = []
+            calls = []
+            real_mode = pygame.display.set_mode
+            def mode(*args, **kwargs):
+                order.append("set_mode")
+                return real_mode(*args, **kwargs)
+            pygame.display.set_mode = mode
+            pygame.mouse.set_cursor = lambda *args, **kwargs: calls.append(args[0])
+            import sim.train_monitor as tm
+            import sim.ui_guard as guard
+            real_install = tm.install_cursors
+            def install():
+                order.append("install")
+                assert pygame.display.get_surface() is not None
+                if not flag:
+                    assert not guard._CURSORS
+                real_install()
+            tm.install_cursors = install
+            mon = tm.TrainMonitor("life")
+            assert order[0] == "set_mode"
+            assert order.count("install") == 1
+            assert order[-1] == "install"
+            if flag:
+                assert guard._CURSORS == {}
+                mon._sync_cursor()
+                assert calls == []
+            else:
+                assert set(guard._CURSORS) == {"arrow", "we", "ns", "hand"}
+                ids = {name: id(cursor) for name, cursor in guard._CURSORS.items()}
+                assert calls == []
+                grown = []
+                real_resize = mon._on_resize
+                def resize(w, h):
+                    before = len(calls)
+                    real_resize(w, h)
+                    grown.append(len(calls) - before)
+                mon._on_resize = resize
+                mon._on_resize(1920, 1080)
+                real_install()
+                assert grown == [0]
+                assert {name: id(cursor) for name, cursor in guard._CURSORS.items()} == ids
+                assert order.count("install") == 1
+            print("ok")
+            """
+        )
+        for mode in ("on", "off"):
+            proc = subprocess.run(
+                [sys.executable, "-X", "dev", "-c", script, mode],
+                cwd="/workspace",
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+            self.assertIn("ok", proc.stdout)

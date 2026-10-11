@@ -13,9 +13,11 @@ import numpy as np
 
 from .sdl_thread import require_main_thread
 from .ui_guard import (
+    apply_cursor,
     borrowed_window,
     flatten_theme_colors,
     force_setmode,
+    install_cursors,
     no_caption,
     no_card_cache,
     no_present,
@@ -906,6 +908,7 @@ class TrainMonitor:
             self.screen = pygame.Surface((WIN_W, WIN_H))
         self._minimized = False
         pygame.event.clear()
+        install_cursors()
 
     def toggle_fullscreen(self) -> bool:
         """F11. Leaving fullscreen restores the window size from before it."""
@@ -1359,7 +1362,36 @@ class TrainMonitor:
                 inp.steer_z -= 1.0
             inp.treat_down = bool(keys[pygame.K_t])
             inp.punish_down = bool(keys[pygame.K_x])
+        self._sync_cursor()
         return inp
+
+    def _cursor_kind(self) -> str:
+        """Which system cursor the pointer is over. A drag keeps its cursor."""
+        import pygame
+
+        if self._split_drag is not None:
+            axis = self._split_drag[1]
+            return "ns" if axis == "y" else "we"
+        if self._scroll_drag is not None or self._block_drag:
+            return "hand"
+        if self.window is None:
+            return "arrow"
+        pos = pygame.mouse.get_pos()
+        logical = self._logical_pos(pos)
+        if logical[0] < 0:
+            return "hand"
+        for splitter in getattr(self, "_dock_splitters", []) or []:
+            rect = pygame.Rect(*splitter["rect"])
+            if rect.collidepoint(logical):
+                return "ns" if splitter["axis"] == "y" else "we"
+        blocks = getattr(self, "_dock_blocks", None) or {}
+        leaves = getattr(self, "_dock_leaves", None) or {}
+        if hit_header(blocks, leaves, logical[0], logical[1]):
+            return "hand"
+        return "arrow"
+
+    def _sync_cursor(self) -> None:
+        apply_cursor(self._cursor_kind())
 
     def save_screenshot(self, path: str) -> None:
         import pygame
