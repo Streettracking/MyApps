@@ -46,22 +46,6 @@ def panel_creationflags() -> int:
     return windows_creationflags() | int(hidden)
 
 
-def panel_argv(path: Path) -> list:
-    """Launch arguments. The panel has no theme switch of its own.
-
-    ``--theme`` is the trainer theme at the moment of the click. The panel
-    then rereads ``theme`` in the trainer's window.json about once a second.
-    A missing BOM and a half-written file are ignored, and the last good
-    theme stays. Those sources are not in this repository.
-    """
-    from .ui_theme import theme_name
-
-    name = theme_name()
-    if name not in ("light", "dark"):
-        name = "light"
-    return [str(Path(path)), "--theme", name]
-
-
 def panel_detach_kwargs() -> dict:
     """The control panel gets its own group. A console is not allocated."""
     if os.name == "nt":
@@ -229,7 +213,14 @@ def raise_process(pid: int) -> bool:
 
 
 class Go2Launch:
-    """The command server and the control panel. Nothing here calls terminate or kill."""
+    """The command server and the control panel. Nothing here calls terminate or kill.
+
+    The panel is started with its path alone. It reads ``theme`` from the
+    trainer ``window.json`` at startup, however it was launched, and rereads
+    that field while it runs. A missing or unreadable file is the light theme.
+    ``theme`` in ``go2_control_ui.json`` is not used. Those sources are not in
+    this repository.
+    """
 
     def __init__(self, panel: Path, server: Path, port: int = SERVER_PORT, wait_s: float = SERVER_WAIT_S):
         self.panel_path = Path(panel)
@@ -269,10 +260,9 @@ class Go2Launch:
 
         kwargs = server_detach_kwargs() if kind == "server" else panel_detach_kwargs()
         handle = open_log("go2_server.log" if kind == "server" else "go2_control.log")
-        command = panel_argv(path) if kind == "panel" else [str(path)]
         try:
             return subprocess.Popen(
-                command,
+                [str(path)],
                 cwd=str(path.parent),
                 stdin=subprocess.DEVNULL,
                 stdout=handle,

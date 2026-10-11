@@ -9,7 +9,9 @@ Stored soma spans on one hemisphere are about 29 × 24 × 1.9 µm, so z is
 ~15× flatter than x. FAFB sections are 40 nm against 4 nm in x/y, and there
 is no skeleton to recover the neuropil. Display scales z by 10, centers each
 hemisphere, and lays calyx, peduncle, and the α/β, α′/β′, γ lobes out from
-the cell type plus those neuropil counts. The window follows the trainer theme. It has no switch of its own.
+the cell type plus those neuropil counts. The window follows the trainer theme
+from ``window.json``. A missing or unreadable file starts it light. It has no
+switch of its own.
 
 The trainer only sends a UDP datagram to 127.0.0.1:5473. B stays the beep;
 this window is J. The view does not spin on its own. T in this window pins
@@ -635,6 +637,14 @@ def set_view_theme(name: str) -> str:
     mb_flywire._CLEAR = fly_clear
     mb_flywire._GL_CLEAR = gl_clear
     return key
+
+
+def saved_view_theme() -> str:
+    """Theme at launch. A missing or unreadable ``window.json`` is light."""
+    from .ui_settings import read_saved_theme
+
+    name = read_saved_theme()
+    return name if name in ("light", "dark") else "light"
 
 
 def note_packet_theme(packet) -> None:
@@ -1329,9 +1339,7 @@ def run_viewer(port: int = VIEW_PORT) -> int:
     require_main_thread()
     pygame.init()
     pygame.display.set_caption("Грибовидное тело")
-    from .ui_settings import read_saved_theme
-
-    set_view_theme(read_saved_theme() or "light")
+    set_view_theme(saved_view_theme())
     width, height = _saved_viewer_size()
     window = pygame.display.set_mode((width, height), pygame.RESIZABLE)
     from .ui_settings import load_brain_window

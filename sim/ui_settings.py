@@ -139,8 +139,8 @@ def default_settings() -> dict:
 def read_saved_theme():
     """``theme`` from window.json, or None when the file cannot be trusted.
 
-    A UTF-8 BOM is skipped. A missing file and a half-written file return
-    None so a reader keeps the theme it already has.
+    A UTF-8 BOM is skipped. A missing file, an empty file, and a half-written
+    file return None. Callers that need a theme then use light.
     """
     path = settings_path()
     try:

@@ -1018,7 +1018,7 @@ class WindowPinTests(unittest.TestCase):
 
         import pygame
 
-        from sim.mb_view3d import BrainCloud, render_frame, set_view_theme
+        from sim.mb_view3d import BrainCloud, render_frame, saved_view_theme, set_view_theme
         from sim.ui_settings import read_saved_theme
         from sim.ui_theme import apply_theme
 
@@ -1031,10 +1031,16 @@ class WindowPinTests(unittest.TestCase):
         try:
             path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"theme": "dark"}).encode("utf-8"))
             self.assertEqual(read_saved_theme(), "dark")
+            self.assertEqual(saved_view_theme(), "dark")
             path.write_text('{"theme": "lig', encoding="utf-8")
             self.assertIsNone(read_saved_theme())
+            self.assertEqual(saved_view_theme(), "light")
+            path.unlink()
+            self.assertIsNone(read_saved_theme())
+            self.assertEqual(saved_view_theme(), "light")
             path.write_text('{"theme": "light", "w": 1}\n', encoding="utf-8")
             self.assertEqual(read_saved_theme(), "light")
+            self.assertEqual(saved_view_theme(), "light")
 
             cloud = BrainCloud()
             packet = {"r_l": 0.0, "r_r": 0.0, "kc_l": [], "kc_r": [], "flash_l": "", "flash_r": "", "rec_l": False, "rec_r": False, "edges": [], "theme": "light"}

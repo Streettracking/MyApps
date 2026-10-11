@@ -153,14 +153,8 @@ class Go2ControlTests(unittest.TestCase):
         entry = Path(__file__).resolve().parents[1].joinpath("tools", "recognize_trainer_entry.py").read_text(encoding="utf-8")
         self.assertEqual(entry.count('["--go2-server-exe", args.go2_server_exe]'), 2)
         self.assertEqual(entry.count('["--go2-control-exe", args.go2_control_exe]'), 2)
-        from sim.go2_control import panel_argv
-        from sim.ui_theme import apply_theme
-
-        apply_theme("dark")
-        argv = panel_argv(root / "go2_control.exe")
-        self.assertEqual(argv[-2:], ["--theme", "dark"])
-        apply_theme("light")
-        self.assertEqual(panel_argv(root / "go2_control.exe")[-2:], ["--theme", "light"])
+        self.assertNotIn("--theme", source)
+        self.assertNotIn("panel_argv", source)
 
     def test_window_json_field_overrides_the_launcher_folder(self):
         from sim.go2_control import configured_exe, configured_server, remember_exe, remember_paths
