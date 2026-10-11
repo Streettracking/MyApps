@@ -742,6 +742,10 @@ class TrainMonitor:
         self._help_lines = []
         self._menu_hits: list = []
         self._menu_panel = None
+        self._menu_marks = {}
+        self._menu_label_x = 0
+        self._menu_rule = None
+        self._menu_switch_rect = None
         self._chrome: list = []
         self._split_drag = None
         self._split_dirty = False
@@ -1906,6 +1910,10 @@ class TrainMonitor:
         self._chrome = []
         self._menu_hits = []
         self._menu_panel = None
+        self._menu_marks = {}
+        self._menu_label_x = 0
+        self._menu_rule = None
+        self._menu_switch_rect = None
         self.cam_inner = None
         self.lid_inner = None
         self.show_stand = bool(view.onboard)
@@ -2395,63 +2403,108 @@ class TrainMonitor:
                 mid = rect.centerx
                 pygame.draw.line(screen, INK_DIM, (mid, rect.centery - 18), (mid, rect.centery + 18), 2)
 
-    def _menu_box(self, screen, x: int, centery: int, on: bool, border=None) -> None:
-        """One checkbox. The same x keeps every square in a single column."""
+    def _blit_menu_check(self, screen, rect, color) -> None:
+        """A smoothed check. Drawn large, then scaled down, in a fixed slot."""
         import pygame
 
-        box = pygame.Rect(int(x), int(centery) - 7, 14, 14)
-        pygame.draw.rect(screen, INSET, box)
-        pygame.draw.rect(screen, LABEL if border is None else border, box, 1)
-        if not on:
-            return
-        pygame.draw.lines(
-            screen,
-            LABEL,
-            False,
-            [(box.x + 3, box.y + 7), (box.x + 6, box.y + 10), (box.x + 11, box.y + 4)],
-            2,
-        )
+        scale = 4
+        big = pygame.Surface((max(1, rect.w) * scale, max(1, rect.h) * scale), pygame.SRCALPHA)
+        ink = tuple(int(c) for c in color)
+
+        def pt(x, y):
+            return (int(round(x * rect.w / 14.0 * scale)), int(round(y * rect.h / 14.0 * scale)))
+
+        pts = [pt(2.2, 7.2), pt(5.6, 11.0), pt(12.2, 2.8)]
+        width = max(2, int(round(2.2 * scale)))
+        pygame.draw.lines(big, ink, False, pts, width)
+        cap = max(1, width // 2)
+        for point in pts:
+            pygame.draw.circle(big, ink, point, cap)
+        screen.blit(pygame.transform.smoothscale(big, (rect.w, rect.h)), rect.topleft)
+
+    def _menu_check_ink(self, pale: bool) -> tuple:
+        """Accent peach, or that peach washed into the card for a locked row."""
+        if not pale:
+            return tuple(int(c) for c in PEACH)
+        ground = _scheme_rgb("card")
+        return tuple(int(PEACH[i] * 0.42 + ground[i] * 0.58) for i in range(3))
 
     def _draw_menu(self, screen) -> None:
         import pygame
 
-        rows = []
+        blocks = []
         for name in BLOCKS:
             if name == "controls":
-                rows.append((("locked", name), BLOCK_TITLES[name], "locked", name))
+                blocks.append((("locked", name), BLOCK_TITLES[name], "locked", name))
             else:
-                rows.append((("toggle", name), BLOCK_TITLES[name], "check", name))
-        rows.append((("reset",), "Сброс раскладки", "button", None))
-        rows.append((("theme",), "Тёмная тема", "theme", None))
-        rows.append((("doggibot",), "DoggiBOT", "button", None))
-        rows.append((("go2",), "УПРАВЛЕНИЕ", "button", None))
+                blocks.append((("toggle", name), BLOCK_TITLES[name], "check", name))
+        actions = [
+            (("reset",), "Сброс раскладки", "button", None),
+            (("theme",), "Тёмная тема", "theme", None),
+            (("doggibot",), "DoggiBOT", "button", None),
+            (("go2",), "УПРАВЛЕНИЕ", "button", None),
+        ]
+        rows = blocks + actions
         row_h = 28
+        rule_h = 9
+        mark = 16
+        gap = 8
+        pad_l = 12
+        pad_r = 12
+        switch_w, switch_h = 36, 20
         text_w = max(self.font_sm.size(label)[0] for _action, label, _kind, _arg in rows)
-        width = max(220, 12 + 14 + 10 + text_w + 16)
+        theme_w = self.font_sm.size("Тёмная тема")[0]
+        width = pad_l + mark + gap + text_w + pad_r
+        width = max(width, pad_l + mark + gap + theme_w + 10 + switch_w + pad_r, 220)
         x = self.view_rect.x
         y = self.view_rect.bottom + 4
-        panel = pygame.Rect(x, y, width, row_h * len(rows) + 8)
+        panel = pygame.Rect(x, y, width, 8 + row_h * len(rows) + rule_h)
         self._menu_panel = panel
         pygame.draw.rect(screen, MENU, panel, border_radius=10)
         self._card(screen, panel, radius=10)
         self._menu_hits = []
+        self._menu_marks = {}
+        self._menu_switch_rect = None
+        label_x = panel.x + pad_l + mark + gap
+        self._menu_label_x = label_x
+        pointer = self._mouse()
         cursor = panel.y + 4
-        box_x = panel.x + 12
-        label_x = box_x + 14 + 10
-        for action, label, kind, arg in rows:
+
+        def paint(action, label, kind, arg) -> None:
+            nonlocal cursor
             row = pygame.Rect(panel.x + 4, cursor, panel.w - 8, row_h)
             self._menu_hits.append((row, action))
+            slot = pygame.Rect(panel.x + pad_l, row.centery - mark // 2, mark, mark)
+            self._menu_marks[action] = slot
+            hot = kind != "locked" and row.collidepoint(pointer)
+            if hot:
+                pygame.draw.rect(screen, _scheme_rgb("pin_plate_hot"), row, border_radius=6)
             caption = LABEL
             if kind == "check":
                 leaf = self._leaf(arg)
-                self._menu_box(screen, box_x, row.centery, leaf is not None and leaf.visible)
+                if leaf is not None and leaf.visible:
+                    self._blit_menu_check(screen, slot, self._menu_check_ink(False))
+                else:
+                    caption = INK_DIM
             elif kind == "locked":
-                self._menu_box(screen, box_x, row.centery, True, INK_DIM)
+                self._blit_menu_check(screen, slot, self._menu_check_ink(True))
                 caption = INK_DIM
-            elif kind == "theme":
-                self._menu_box(screen, box_x, row.centery, theme_name() == "dark")
-            screen.blit(self.font_sm.render(label, True, caption), (label_x, row.centery - 8))
+            glyph = self.font_sm.render(label, True, caption)
+            screen.blit(glyph, (label_x, row.centery - glyph.get_height() // 2))
+            if kind == "theme":
+                switch = pygame.Rect(row.right - 8 - switch_w, row.centery - switch_h // 2, switch_w, switch_h)
+                self._draw_theme_switch(screen, switch)
+                self._menu_switch_rect = switch
             cursor += row_h
+
+        for action, label, kind, arg in blocks:
+            paint(action, label, kind, arg)
+        rule_y = cursor + rule_h // 2
+        self._menu_rule = pygame.Rect(panel.x + 12, rule_y, panel.w - 24, 1)
+        pygame.draw.line(screen, LINE, (panel.x + 12, rule_y), (panel.right - 12, rule_y), 1)
+        cursor += rule_h
+        for action, label, kind, arg in actions:
+            paint(action, label, kind, arg)
 
     def _draw_camera_block(self, screen, view: MonitorView, content) -> None:
         cam_inner = self._frame(screen, content, view.camera, "", view.sensor_error, chrome=False)

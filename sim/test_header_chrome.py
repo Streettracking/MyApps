@@ -281,16 +281,23 @@ class HeaderChromeTests(unittest.TestCase):
         self.assertGreater(len(tones), 3)
 
     def _assert_menu_theme(self, mon, on: bool) -> None:
-        import pygame
-
-        frame = pygame.surfarray.array3d(mon.screen)
-        row = next(rect for rect, action in mon._menu_hits if action == ("theme",))
-        box = pygame.Rect(row.x + 8, row.centery - 7, 14, 14)
-        interior = frame[box.x + 3 : box.x + 11, box.y + 3 : box.y + 11]
+        rect = mon._menu_switch_rect
+        self.assertEqual((rect.w, rect.h), (36, 20))
+        radius = rect.h // 2
+        knob_x = rect.x + (rect.w - radius if on else radius)
+        knob = self._rgb(mon, knob_x, rect.centery)
+        self.assertGreater(knob[0], 220)
+        self.assertGreater(knob[1], 220)
+        self.assertGreater(knob[2], 220)
         if on:
-            self.assertGreater(int(interior.max()) - int(interior.min()), 80)
+            track = self._rgb(mon, rect.x + 4, rect.centery)
+            self.assertGreater(track[0], track[2] + 40)
+            self.assertGreater(track[0], 160)
         else:
-            self.assertLess(int(interior.max()) - int(interior.min()), 8)
+            track = self._rgb(mon, rect.right - 4, rect.centery)
+            self.assertLess(abs(track[0] - track[1]), 30)
+            self.assertGreater(track[0], 140)
+            self.assertLess(track[0], 230)
 
     def _aim(self, mon, logical, point) -> None:
         from sim.train_monitor import window_from_logical
