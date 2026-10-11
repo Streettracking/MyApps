@@ -365,23 +365,25 @@ class BrainPanelTests(unittest.TestCase):
                         pass
                     ensure_stdio.handle = None
             bat = Path(__file__).resolve().parents[1].joinpath("rebuild_exe.bat").read_text(encoding="utf-8")
-            self.assertIn("--windowed", bat)
+            self.assertIn("Desktop\\FlyWire-Go2", bat)
+            self.assertIn("--onedir", bat)
+            self.assertNotIn("--onefile", bat)
             self.assertIn("/XD logs", bat)
-            self.assertIn("кадры", bat)
+            self.assertIn("/XF *.vbs *.lnk *.cmd", bat)
             self.assertIn("launchers\\*.vbs", bat)
-            self.assertIn("install_shortcuts.vbs", bat)
-            self.assertIn("FlyWire-Go2\\tools\\yolo_teacher", bat)
             self.assertIn("serve.py", bat)
             self.assertIn("start_teacher.vbs", bat)
             self.assertIn("start_teacher.cmd", bat)
-            sim_lines = [
-                line
-                for line in bat.splitlines()
-                if "FlyWireGo2Sim" in line and line.strip().startswith("pyinstaller")
-            ]
+            self.assertIn("tools\\gui_exe_entry.py", bat)
+            self.assertIn("tools\\recognize_trainer_entry.py", bat)
+            sim_lines = [line for line in bat.splitlines() if "--name FlyWireGo2Sim" in line]
+            trainer_lines = [line for line in bat.splitlines() if "--name DogRecognizeTrainer" in line]
             self.assertEqual(len(sim_lines), 1)
+            self.assertEqual(len(trainer_lines), 1)
+            self.assertIn("--console", sim_lines[0])
             self.assertNotIn("--windowed", sim_lines[0])
-            self.assertNotIn("--noconsole", sim_lines[0])
+            self.assertIn("--windowed", trainer_lines[0])
+            self.assertNotIn("--console", trainer_lines[0])
         finally:
             faulthandler.disable()
             handle = install_crash_log.handle
