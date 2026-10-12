@@ -13,10 +13,18 @@ from dataclasses import dataclass
 import numpy as np
 
 from .mb_runtime import ACTIONS, MBForward, MushroomBodyRuntime
-from .ui_theme import INSET as _PAPER
-from .ui_theme import LABEL as _LABEL
-from .ui_theme import LINE as _LINE
-from .ui_theme import VALUE as _VALUE
+
+try:
+    from .ui_theme import INSET as _PAPER
+    from .ui_theme import LABEL as _LABEL
+    from .ui_theme import LINE as _LINE
+    from .ui_theme import VALUE as _VALUE
+except ImportError:
+    # The onboard brain starts without ui_theme.py. These are the dark card colours.
+    _PAPER = (30, 31, 34)
+    _LINE = (70, 72, 78)
+    _LABEL = (248, 248, 248)
+    _VALUE = (255, 255, 255)
 
 FADE_S = 1.6
 _REST_ALPHA = 0.20

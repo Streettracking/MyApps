@@ -508,5 +508,97 @@ class DeployArgTests(unittest.TestCase):
             _remote_args(["0.4; rm"])
 
 
+class OnboardThemeTests(unittest.TestCase):
+    def test_app_and_main_import_when_ui_theme_is_missing(self):
+        import ast
+        import importlib
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        sim_dir = root / "sim"
+        onboard = root / "robot" / "flybrain_onboard"
+
+        def imported(path: Path, package: str) -> set:
+            """Modules imported while the file loads. Imports inside functions wait."""
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            found = set()
+
+            class Scan(ast.NodeVisitor):
+                def visit_FunctionDef(self, node):
+                    return
+
+                def visit_AsyncFunctionDef(self, node):
+                    return
+
+                def visit_ImportFrom(self, node):
+                    if not node.module:
+                        return
+                    if package == "sim" and node.level == 1:
+                        found.add(node.module.split(".")[0])
+                    elif node.module == "sim" or node.module.startswith("sim."):
+                        parts = node.module.split(".")
+                        if len(parts) >= 2:
+                            found.add(parts[1])
+
+            Scan().visit(tree)
+            return found
+
+        def closure(start) -> set:
+            pending = list(start)
+            seen = set()
+            while pending:
+                name = pending.pop()
+                if name in seen:
+                    continue
+                seen.add(name)
+                path = sim_dir / ("%s.py" % name)
+                if not path.is_file():
+                    continue
+                for child in imported(path, "sim"):
+                    if child not in seen:
+                        pending.append(child)
+            return seen
+
+        needed = set()
+        for name in ("app", "main", "drive", "sensors"):
+            needed |= imported(onboard / ("%s.py" % name), "onboard")
+        needed |= closure(sorted(needed))
+        from robot.deploy_flybrain import SIM_FILES
+
+        listed = {Path(name).stem for name in SIM_FILES}
+        self.assertNotIn("ui_theme", listed)
+        missing = sorted((needed - {"ui_theme"}) - listed)
+        self.assertEqual(missing, [])
+
+        saved = {}
+        drop = (
+            "sim.learn_flash",
+            "sim.ui_theme",
+            "robot.flybrain_onboard.app",
+            "robot.flybrain_onboard.main",
+        )
+        for name in drop:
+            saved[name] = sys.modules.get(name)
+            sys.modules.pop(name, None)
+        sys.modules["sim.ui_theme"] = None
+        try:
+            app = importlib.import_module("robot.flybrain_onboard.app")
+            main = importlib.import_module("robot.flybrain_onboard.main")
+            self.assertTrue(callable(app.make_brain))
+            self.assertTrue(callable(main.main))
+            flash = importlib.import_module("sim.learn_flash")
+            self.assertEqual(flash._PAPER, (30, 31, 34))
+            self.assertEqual(flash._LINE, (70, 72, 78))
+            self.assertEqual(flash._LABEL, (248, 248, 248))
+            self.assertEqual(flash._VALUE, (255, 255, 255))
+            self.assertIsNone(sys.modules["sim.ui_theme"])
+        finally:
+            for name in drop:
+                sys.modules.pop(name, None)
+            for name, mod in saved.items():
+                if mod is not None:
+                    sys.modules[name] = mod
+
 if __name__ == "__main__":
     unittest.main()
