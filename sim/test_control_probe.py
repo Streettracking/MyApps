@@ -1461,6 +1461,108 @@ class ArrowTakeoverTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_focus_loss_stops_a_held_arrow_at_once(self):
+        """Alt-tab while the arrow is down zeros the dog on that frame, via :8090."""
+        from sim.recognize_train_live import _apply_live_keys, _drive_onboard
+        from sim.train_monitor import MonitorInput
+
+        loop, server, link, session, folder, _moving = self._ready()
+        try:
+            now = 100.0
+            tele = {"poll": now, "bridge": now, "manual": 0.0, "axes": False, "hb": now}
+            held = MonitorInput(arrow_down=True, steer_x=1.0, steer_z=0.0, focused=True)
+            _apply_live_keys(session, held, link)
+            _drive_onboard(session, link, held, tele, now)
+            going = loop.tick(loop.last_hb)
+            self.assertFalse(going.stop)
+            self.assertEqual((going.x, going.z), (0.4, 0.0))
+            stops = int(loop.drive.stops)
+            self.assertIsNone(loop.drive.client)
+            calls = []
+            original = link._request
+
+            def _spy(method, path, payload=None, timeout=0.8):
+                calls.append((method, path, None if payload is None else dict(payload)))
+                return original(method, path, payload, timeout)
+
+            link._request = _spy
+            # The key is still reported down. Focus is what has to kill the axis.
+            stuck = MonitorInput(arrow_down=True, steer_x=1.0, steer_z=0.0, focused=False)
+            _apply_live_keys(session, stuck, link)
+            _drive_onboard(session, link, stuck, tele, now + 0.05)
+            manuals = [row for row in calls if row[1] == "/cmd" and (row[2] or {}).get("op") == "manual"]
+            self.assertEqual([(row[2]["x"], row[2]["z"]) for row in manuals], [(0.0, 0.0)])
+            self.assertTrue(all(row[1] in ("/pause", "/cmd", "/heartbeat", "/status") for row in calls))
+            self.assertTrue(any("окно без фокуса" in line for line in session.log))
+            stopped = loop.tick(loop.last_hb)
+            self.assertTrue(stopped.stop)
+            self.assertEqual((stopped.x, stopped.z), (0.0, 0.0))
+            self.assertGreater(loop.drive.stops, stops)
+            quiet = loop.status()
+            self.assertTrue(quiet["paused"])
+            self.assertTrue(quiet["took_over"])
+            self.assertFalse(quiet["autonomy"])
+            self.assertEqual(quiet["mode"], "manual")
+        finally:
+            folder.cleanup()
+            server.shutdown()
+            server.server_close()
+
+    def test_release_stops_no_later_than_half_a_second(self):
+        """Releasing the arrow stops on that frame, and a stale axis dies by 0.5 s."""
+        from sim.pilot import MANUAL_HOLD_S
+        from sim.recognize_train_live import _apply_live_keys, _drive_onboard
+        from sim.train_monitor import MonitorInput
+
+        self.assertLessEqual(MANUAL_HOLD_S, 0.5)
+        loop, server, link, session, folder, _moving = self._ready()
+        try:
+            now = 110.0
+            tele = {"poll": now, "bridge": now, "manual": 0.0, "axes": False, "hb": now}
+            held = MonitorInput(arrow_down=True, steer_x=1.0, steer_z=0.0, focused=True)
+            _apply_live_keys(session, held, link)
+            _drive_onboard(session, link, held, tele, now)
+            self.assertFalse(loop.tick(loop.last_hb).stop)
+            calls = []
+            original = link._request
+
+            def _spy(method, path, payload=None, timeout=0.8):
+                calls.append((method, path, None if payload is None else dict(payload)))
+                return original(method, path, payload, timeout)
+
+            link._request = _spy
+            stops = int(loop.drive.stops)
+            let_go = MonitorInput(focused=True)
+            _apply_live_keys(session, let_go, link)
+            _drive_onboard(session, link, let_go, tele, now + 0.05)
+            zeros = [row for row in calls if row[1] == "/cmd" and (row[2] or {}).get("op") == "manual"]
+            self.assertEqual([(row[2]["x"], row[2]["z"]) for row in zeros], [(0.0, 0.0)])
+            self.assertTrue(all(row[1] in ("/cmd", "/heartbeat", "/status") for row in calls))
+            stopped = loop.tick(loop.last_hb)
+            self.assertTrue(stopped.stop)
+            self.assertGreater(loop.drive.stops, stops)
+            self.assertIsNone(loop.drive.client)
+
+            # No fresh packet after this axis. Inside the hold the dog still moves.
+            # At 0.5 s the axis is dead and one StopMove has gone out.
+            t = float(loop.last_hb)
+            loop.handle({"op": "manual", "x": 0.4, "z": 0.0}, t)
+            self.assertFalse(loop.tick(t).stop)
+            stops = int(loop.drive.stops)
+            self.assertFalse(loop.tick(t + MANUAL_HOLD_S).stop)
+            self.assertEqual(loop.drive.stops, stops)
+            late = loop.tick(t + 0.5)
+            self.assertTrue(late.stop)
+            self.assertEqual((late.x, late.z), (0.0, 0.0))
+            self.assertGreater(loop.drive.stops, stops)
+            self.assertTrue(loop.status()["paused"])
+            self.assertTrue(loop.status()["took_over"])
+            self.assertFalse(loop.status()["autonomy"])
+        finally:
+            folder.cleanup()
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2068,25 +2068,26 @@ class TrainMonitor:
         elif pending_size is not None:
             self._on_resize(pending_size[0], pending_size[1])
         inp.focused = bool(pygame.key.get_focused())
-        # get_focused() can lag a KEYDOWN the queue already delivered. An arrow
-        # event is enough to read the key; a click never returns before this.
-        # An unfocused window with no arrow event stays at zero.
-        if inp.focused or arrow_event:
+        # An unfocused window drops the arrows even if the key is still down
+        # or a KEYDOWN is sitting in the queue. Otherwise the dog keeps the
+        # last axis after the operator alt-tabs away.
+        if inp.focused:
             keys = pygame.key.get_pressed()
             up = bool(keys[pygame.K_UP])
             down = bool(keys[pygame.K_DOWN])
             left = bool(keys[pygame.K_LEFT])
             right = bool(keys[pygame.K_RIGHT])
             inp.arrow_down = up or down or left or right
-            if inp.focused:
-                # Up and down are forward and back. Left is positive yaw.
-                # WASD stays on its own keys: A is autonomy, S saves, D labels.
-                axis_x, axis_y, hat = _joystick_sample()
-                inp.treat_down = bool(keys[pygame.K_t])
-                inp.punish_down = bool(keys[pygame.K_x])
-            else:
-                axis_x, axis_y, hat = 0.0, 0.0, (0, 0)
+            # Up and down are forward and back. Left is positive yaw.
+            # WASD stays on its own keys: A is autonomy, S saves, D labels.
+            axis_x, axis_y, hat = _joystick_sample()
+            inp.treat_down = bool(keys[pygame.K_t])
+            inp.punish_down = bool(keys[pygame.K_x])
             inp.steer_x, inp.steer_z = drive_axes(axis_x, axis_y, hat, up=up, down=down, left=left, right=right)
+        elif arrow_event:
+            inp.arrow_down = False
+            inp.steer_x = 0.0
+            inp.steer_z = 0.0
         self._sync_cursor()
         return inp
 

@@ -1081,9 +1081,15 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
         session._log("RecoveryStand")
     autonomy = bool(session.remote.get("autonomy"))
     grabbed = bool(session.remote.get("took_over")) and session.remote.get("mode") == "manual"
-    # arrow_down covers a KEYDOWN that arrived while get_focused() was still false.
-    keys_live = bool(inp.focused or getattr(inp, "arrow_down", False))
-    if keys_live and grabbed and not autonomy:
+    if not inp.focused:
+        # Focus left while an arrow was driving. Zero this frame, even if the
+        # key still looks held. This window does not use go2_control for that.
+        if state.get("axes") and grabbed and not autonomy:
+            onboard.post("manual", x=0.0, z=0.0)
+            state["manual"] = now
+            session._log("окно без фокуса, ход ноль")
+        state["axes"] = False
+    elif grabbed and not autonomy:
         ax = float(inp.steer_x)
         az = float(inp.steer_z)
         if abs(ax) + abs(az) > 0:
@@ -1102,7 +1108,7 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
             onboard.post("manual", x=0.0, z=0.0)
             state["manual"] = now
             state["axes"] = False
-    elif state["axes"]:
+    elif state.get("axes"):
         state["axes"] = False
     if autonomy and inp.focused and abs(float(inp.steer_x)) + abs(float(inp.steer_z)) > 0:
         session.pilot.hint = "нажми ПЕРЕХВАТ"

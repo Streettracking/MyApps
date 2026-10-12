@@ -648,7 +648,8 @@ class BrainTests(unittest.TestCase):
             self.assertEqual(seen[0].teacher_conf, 0.91)
             self.assertEqual((clicked.steer_x, clicked.steer_z), (1.0, 1.0))
             self.assertTrue(clicked.arrow_down)
-            # get_focused() can be false while the queue still delivers the arrow.
+            # Focus lost while the key is still down, and a KEYDOWN is queued.
+            # The axis is zero so the dog does not keep that stuck key.
             pygame.event.clear()
             pygame.key.get_focused = lambda: False
             pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_RIGHT: True})
@@ -661,8 +662,8 @@ class BrainTests(unittest.TestCase):
                 pygame.key.get_pressed = pressed
                 pygame.key.get_focused = focused
             self.assertFalse(queued.focused)
-            self.assertTrue(queued.arrow_down)
-            self.assertEqual((queued.steer_x, queued.steer_z), (0.0, -1.0))
+            self.assertFalse(queued.arrow_down)
+            self.assertEqual((queued.steer_x, queued.steer_z), (0.0, 0.0))
         finally:
             pygame.quit()
 
