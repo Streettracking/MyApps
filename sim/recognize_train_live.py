@@ -1035,7 +1035,23 @@ def publish_teacher_aim(session, onboard, now: float, dist_m, forward_m) -> None
         last_r=bool(lead.last_hit_r) and teacher_on,
         yolo_l=_yolo_list(boxes if teacher_on else (), "L", overlap),
         yolo_r=_yolo_list(boxes if teacher_on else (), "R", overlap),
+        **teacher_yolo_state(session),
     )
+
+
+def teacher_yolo_state(session, now: float | None = None) -> dict:
+    """Explicit YOLO state for the dog: four zeros in yolo_l/yolo_r are not a box.
+
+    yolo_fresh: the teacher answered on a fresh frame (a box or a clear «no box»).
+    yolo_box: that fresh answer has a box above the teacher's confidence.
+    """
+    from .teacher_lead import best_box
+
+    boxes, why = lead_boxes_fresh(session, now)
+    fresh = why in ("", "no_box")
+    teacher = getattr(session, "teacher", None)
+    conf = float(getattr(teacher, "conf", 0.5) or 0.5)
+    return {"yolo_fresh": bool(fresh), "yolo_box": bool(fresh and best_box(boxes, conf) is not None)}
 
 
 def blend_local_command(session, cmd, now: float, estop: bool, autonomy: bool, dist_m, forward_m):
