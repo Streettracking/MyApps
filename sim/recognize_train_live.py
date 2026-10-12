@@ -719,6 +719,30 @@ def take_teacher_weight(session, inp) -> None:
     session.teacher_weight = clamp_weight(value)
 
 
+def session_teacher_conf(session) -> float:
+    """The slider value, or the raised default when the session has none yet."""
+    from .yolo_teacher import DEFAULT_CONF, clamp_conf
+
+    raw = getattr(session, "teacher_conf", None)
+    if raw is None:
+        return float(DEFAULT_CONF)
+    return clamp_conf(raw)
+
+
+def take_teacher_conf(session, inp) -> None:
+    """YOLO confidence slider. None means the pointer is not on that track."""
+    value = getattr(inp, "teacher_conf", None)
+    if value is None:
+        return
+    from .yolo_teacher import clamp_conf
+
+    conf = clamp_conf(value)
+    session.teacher_conf = conf
+    teacher = getattr(session, "teacher", None)
+    if teacher is not None:
+        teacher.conf = conf
+
+
 def _lead_of(session):
     from .teacher_lead import TeacherLead
 
@@ -757,7 +781,12 @@ def refresh_teacher_wish(session, now: float, dist_m, forward_m):
     if teacher is not None and boxes:
         from .yolo_teacher import hemisphere_hits
 
-        hit_l, hit_r = hemisphere_hits(boxes, overlap, conf_min=float(getattr(teacher, "conf", 0.5)), center_only=True)
+        hit_l, hit_r = hemisphere_hits(
+            boxes,
+            overlap,
+            conf_min=float(getattr(teacher, "conf", session_teacher_conf(session))),
+            center_only=True,
+        )
     else:
         hit_l, hit_r = False, False
     lead.set_hits(hit_l, hit_r)
@@ -1197,7 +1226,7 @@ def run_live_gui(
     if session.learner_kind == "mb":
         session.teacher = TeacherRuntime(
             getattr(session, "teacher_url", "http://127.0.0.1:8091"),
-            conf=float(getattr(session, "teacher_conf", 0.5)),
+            conf=session_teacher_conf(session),
             rate=float(getattr(session, "teacher_rate", 2.0)),
         )
     else:
@@ -1290,6 +1319,7 @@ def run_live_gui(
                     session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
             now = time.monotonic()
             take_teacher_weight(session, inp)
+            take_teacher_conf(session, inp)
             frame_id, camera, lidar, scan, error, camera_jpeg = pull.latest()
             if session.onboard:
                 disp_lidar = lidar
@@ -1560,6 +1590,7 @@ def _live_view(
         teacher_boxes=list(getattr(session, "teacher_boxes", ()) or ()),
         search_lamp=not bool(getattr(session, "teacher_boxes", None)),
         teacher_weight=float(getattr(session, "teacher_weight", 0.0) or 0.0),
+        teacher_conf=session_teacher_conf(session),
         lead_plaque=_live_lead_plaque(session),
         run_stage=session.run_marker.stage,
         run_side=session.run_marker.side,
@@ -1776,7 +1807,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera.jpg frames per second saved on this laptop.")
     p.add_argument("--fullscreen", action="store_true", help="Open the trainer fullscreen. F11 toggles it.")
     p.add_argument("--teacher-url", default="http://127.0.0.1:8091", help="YOLO service on this laptop.")
-    p.add_argument("--teacher-conf", type=float, default=0.5, help="Box confidence for a hemisphere hit.")
+    from .yolo_teacher import DEFAULT_CONF
+
+    p.add_argument("--teacher-conf", type=float, default=DEFAULT_CONF, help="Box confidence for a hemisphere hit.")
     p.add_argument("--teacher-rate", type=float, default=2.0, help="Max DAN pulses per second on each hemisphere.")
     from .go2_control import add_go2_control_arg
 

@@ -1429,5 +1429,90 @@ class TeacherLeadTests(unittest.TestCase):
         np.testing.assert_array_equal(session.mb.brain.kc_mbon_w, left)
 
 
+class YoloConfSliderTests(unittest.TestCase):
+    def test_default_conf_drops_a_room_object(self):
+        from sim.yolo_teacher import DEFAULT_CONF, DetBox, clamp_conf, hemisphere_hits
+
+        self.assertGreaterEqual(DEFAULT_CONF, 0.75)
+        self.assertEqual(clamp_conf(1.4), 1.0)
+        self.assertEqual(clamp_conf(-0.2), 0.0)
+        weak = DetBox(0.30, 0.2, 0.55, 0.8, 0.55)
+        strong = DetBox(0.30, 0.2, 0.55, 0.8, 0.92)
+        self.assertEqual(hemisphere_hits([weak], 0.4), (False, False))
+        hit_l, hit_r = hemisphere_hits([strong], 0.4)
+        self.assertTrue(hit_l or hit_r)
+
+    def test_slider_sets_the_teacher_and_stays_grey(self):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        import pygame
+
+        from sim.recognize_train_live import take_teacher_conf
+        from sim.train_monitor import PEACH, MonitorInput, MonitorView, TrainMonitor
+        from sim.yolo_teacher import DEFAULT_CONF, TeacherRuntime
+
+        class Session:
+            teacher_conf = None
+            teacher = TeacherRuntime(conf=DEFAULT_CONF)
+
+        session = Session()
+        take_teacher_conf(session, MonitorInput())
+        self.assertIsNone(session.teacher_conf)
+        self.assertAlmostEqual(session.teacher.conf, DEFAULT_CONF)
+        take_teacher_conf(session, MonitorInput(teacher_conf=0.91))
+        self.assertAlmostEqual(session.teacher_conf, 0.91)
+        self.assertAlmostEqual(session.teacher.conf, 0.91)
+        take_teacher_conf(session, MonitorInput(teacher_conf=4.0))
+        self.assertAlmostEqual(session.teacher.conf, 1.0)
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("yolo-conf")
+            mon._on_resize(1920, 1080)
+            mon.draw(MonitorView(learner="mb", learning_on=True, teacher_conf=DEFAULT_CONF, yolo_state="учит"))
+            track = mon.conf_slider_rect
+            self.assertEqual(track.h, 6)
+            self.assertGreater(track.w, 40)
+            filled = self._rgb(mon, track.x + 4, track.centery)
+            self.assertLess(abs(filled[0] - filled[1]), 20)
+            self.assertLess(abs(filled[1] - filled[2]), 20)
+            self.assertNotEqual(filled, PEACH)
+            empty_x = track.x + int(track.w * 0.92)
+            empty = self._rgb(mon, empty_x, track.centery)
+            self.assertNotEqual(empty, PEACH)
+            self.assertGreater(abs(filled[0] - empty[0]) + abs(filled[1] - empty[1]), 20)
+
+            point = [0, 0]
+            from sim.train_monitor import window_from_logical
+
+            logical = (track.x + int(track.w * 0.40), track.centery)
+            wx, wy = window_from_logical(logical, mon.window.get_width(), mon.window.get_height(), (mon.scroll_x, mon.scroll_y))
+            point[0], point[1] = int(wx), int(wy)
+            real = pygame.mouse.get_pos
+            pygame.mouse.get_pos = lambda: (int(point[0]), int(point[1]))
+            try:
+                pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(point[0]), int(point[1])), button=1))
+                inp = mon.pump()
+            finally:
+                pygame.mouse.get_pos = real
+            self.assertIsNotNone(inp.teacher_conf)
+            self.assertAlmostEqual(float(inp.teacher_conf), 0.40, delta=0.03)
+            self.assertIsNone(inp.teacher_weight)
+
+            out = __import__("pathlib").Path("/opt/cursor/artifacts/yolo_conf_slider.png")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            crop = pygame.Rect(max(0, track.x - 210), max(0, track.y - 14), track.w + 226, 40)
+            crop.clamp_ip(mon.screen.get_rect())
+            shot = mon.screen.subsurface(crop).copy()
+            big = pygame.transform.smoothscale(shot, (shot.get_width() * 2, max(1, shot.get_height() * 2)))
+            pygame.image.save(big, str(out))
+        finally:
+            pygame.quit()
+
+    def _rgb(self, mon, x, y):
+        color = mon.screen.get_at((int(x), int(y)))
+        return (color.r, color.g, color.b)
+
+
 if __name__ == "__main__":
     unittest.main()

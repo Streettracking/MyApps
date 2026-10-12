@@ -44,6 +44,7 @@ from .dock_layout import (
     tree_from_dict,
 )
 from .hemifield import DEFAULT_OVERLAP
+from .yolo_teacher import DEFAULT_CONF as YOLO_CONF
 from .ui_settings import default_settings, load_settings, persist_enabled, save_settings
 from .ui_theme import (
     AMBER_SOFT,
@@ -129,6 +130,48 @@ TEACHER = (46, 154, 206)  # #2E9ACE teacher watch, same in both themes
 ESTOP = (184, 40, 36)
 AMBER = (214, 154, 52)  # #D69A34 warning
 LAMP_OFF = ("off",)
+LEARN_BADGE = "обучение вкл"
+BADGE_INK = (32, 22, 18)
+# Phases where the mushroom body is sending a turn or a walk.
+DRIVING_PHASES = ("search", "approach", "align_l", "align_r")
+
+
+def dog_octet() -> str:
+    """Last octet of the lab dog, with the leading dot. ``192.168.35.213`` → ``.213``."""
+    from .recognize_train_live import DEFAULT_IP
+
+    tail = str(DEFAULT_IP).rsplit(".", 1)[-1].strip()
+    return "." + tail if tail else ".213"
+
+
+def dog_badge_label(
+    autonomy_on: bool,
+    phase: str,
+    steer: str = "bilateral",
+    compact: bool = False,
+    octet: str | None = None,
+) -> tuple[str, bool]:
+    """Header dog-mode text and whether the brain is driving.
+
+    Driving is orange: ``.213 · АВТО · поиск`` while searching.
+    Standing is grey: ``.213 · стоит``. Compact drops «АВТО» when the bar is narrow.
+    """
+    host = octet or dog_octet()
+    name = str(phase or "")
+    driving = bool(autonomy_on) and name in DRIVING_PHASES
+    if not driving:
+        return "%s · стоит" % host, False
+    if name == "search":
+        word = "поиск"
+    elif name == "approach" and steer == "sectors":
+        word = "подход"
+    elif name == "approach":
+        word = "иду"
+    else:
+        word = "доворот"
+    if compact:
+        return "%s · %s" % (host, word), True
+    return "%s · АВТО · %s" % (host, word), True
 PANEL = CARD
 BTN = CARD
 BTN_EDGE = LINE
@@ -170,6 +213,7 @@ class MonitorInput:
     punish_down: bool = False
     focused: bool = True
     teacher_weight: float | None = None
+    teacher_conf: float | None = None
     approach_reset: bool = False
     run_stage: str | None = None
     run_side: str | None = None
@@ -272,6 +316,7 @@ class MonitorView:
     eyes_line: str = ""
     recog_line: str = ""
     teacher_weight: float = 0.0
+    teacher_conf: float = YOLO_CONF
     lead_plaque: str = ""
     brain_offline: bool = False
     drive_l: float | None = None
@@ -798,7 +843,12 @@ class TrainMonitor:
         self._client_size = (WIN_W, WIN_H)
         self.estop_bar_rect = pygame.Rect(0, 0, 0, 0)
         self.lead_slider_rect = pygame.Rect(0, 0, 0, 0)
+        self.conf_slider_rect = pygame.Rect(0, 0, 0, 0)
+        self.mode_badge_rect = pygame.Rect(0, 0, 0, 0)
+        self.learn_badge_rect = pygame.Rect(0, 0, 0, 0)
         self._lead_drag = False
+        self._conf_drag = False
+        self._badge_compact = False
         self._pin_surface = None
         self._pin_applied = None
         self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
@@ -1665,6 +1715,9 @@ class TrainMonitor:
         if self._lead_at(win_pos, inp, drag=False):
             self._lead_drag = True
             return
+        if self._conf_at(win_pos, inp, drag=False):
+            self._conf_drag = True
+            return
         approach = getattr(self, "approach_rect", None)
         if approach is not None and approach.w > 8 and approach.collidepoint(pos):
             inp.approach_reset = True
@@ -1884,7 +1937,13 @@ class TrainMonitor:
             elif event.type == pygame.MOUSEWHEEL:
                 self._on_wheel(event)
             elif event.type == pygame.MOUSEMOTION:
-                if self._lead_drag:
+                if self._conf_drag:
+                    buttons = getattr(event, "buttons", (1, 0, 0))
+                    if buttons and buttons[0]:
+                        self._conf_at(event.pos, inp, drag=True)
+                    else:
+                        self._conf_drag = False
+                elif self._lead_drag:
                     buttons = getattr(event, "buttons", (1, 0, 0))
                     if buttons and buttons[0]:
                         self._lead_at(event.pos, inp, drag=True)
@@ -1898,6 +1957,7 @@ class TrainMonitor:
                     self._drag_splitter(event.pos)
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 self._lead_drag = False
+                self._conf_drag = False
                 self._scroll_drag = None
                 self._finish_block_drag(event.pos)
                 self._split_drag = None
@@ -2055,6 +2115,7 @@ class TrainMonitor:
         title_x = self.doggibot_rect.right + 12
         screen.blit(title, (title_x, (MENU_H - title.get_height()) // 2))
         self._link_lamp(screen, view, title_x + title.get_width() + 18)
+        self._draw_dog_badges(screen, view)
         self._go2_button(screen)
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
@@ -2204,7 +2265,7 @@ class TrainMonitor:
         """Pack the menu bar into the visible client. Hide the theme label, then shorten captions."""
         import pygame
 
-        if self.font_sm is None:
+        if self.font_sm is None or self.font is None:
             return
         limit = self._visible_right()
         margin = 12
@@ -2220,11 +2281,27 @@ class TrainMonitor:
             title = view.title
         title_w = max(self.font.size("recognition training")[0], self.font.size(title)[0])
         lamp_w = 14 + self.font_sm.size("борт")[0]
-        min_help = self.doggibot_rect.right + 12 + title_w + 18 + lamp_w + 8
-        variants = ((True, False), (False, False), (False, True))
+        lamp_end = self.doggibot_rect.right + 12 + title_w + 18 + lamp_w
+        learning = bool(view is not None and getattr(view, "learning_on", False))
+        # Full dog-mode and learning badges, then the mode badge alone, then neither.
+        variants = (
+            (True, False, "full"),
+            (True, True, "full"),
+            (False, False, "full"),
+            (False, True, "full"),
+            (False, True, "plain"),
+            (False, True, "off"),
+        )
         chosen = variants[-1]
         placed = None
-        for show_label, short in variants:
+        for show_label, short, badge_mode in variants:
+            mode_w, learn_w = self._badge_reserve(badge_mode, learning)
+            badge_span = 0
+            if mode_w:
+                badge_span = 8 + mode_w
+                if learn_w:
+                    badge_span += 8 + learn_w
+            min_help = lamp_end + badge_span + 8
             items = self._header_items(short)
             total = sum(ww for _name, ww in items) + 8 * (len(items) - 1)
             switch_right = limit - margin
@@ -2253,12 +2330,13 @@ class TrainMonitor:
                 and buttons["record"].right <= stop
                 and (bar.w < 8 or bar.x >= buttons["record"].right + 4)
                 and help_rect.x >= min_help
+                and help_rect.x >= lamp_end + 8
             )
-            placed = (pin, label, switch, buttons, help_rect, bar)
-            chosen = (show_label, short)
+            placed = (pin, label, switch, buttons, help_rect, bar, badge_mode)
+            chosen = (show_label, short, badge_mode)
             if fits:
                 break
-        pin, label, switch, buttons, help_rect, bar = placed
+        pin, label, switch, buttons, help_rect, bar, badge_mode = placed
         self.pin_rect = pin
         self.theme_label_rect = label
         self.theme_switch_rect = switch
@@ -2270,6 +2348,86 @@ class TrainMonitor:
         self.estop_bar_rect = bar
         self._show_theme_label = bool(chosen[0])
         self._header_short = bool(chosen[1])
+        self._badge_mode = str(chosen[2])
+        self._badge_compact = self._badge_mode == "plain"
+        self._place_dog_badges(lamp_end, learning)
+
+    def _badge_reserve(self, mode: str, learning: bool) -> tuple[int, int]:
+        """Widest dog-mode pill, and the learning pill when that mode keeps it."""
+        if mode == "off" or self.font is None:
+            return 0, 0
+        compact = mode == "plain"
+        pad = 24
+        widest = 0
+        for driving, phase, steer in (
+            (True, "search", "bilateral"),
+            (True, "approach", "bilateral"),
+            (True, "approach", "sectors"),
+            (True, "align_l", "bilateral"),
+            (False, "stop", "bilateral"),
+        ):
+            text, _on = dog_badge_label(driving, phase, steer, compact=compact)
+            widest = max(widest, self.font.size(text)[0])
+        mode_w = widest + pad
+        if mode != "full" or not learning:
+            return mode_w, 0
+        return mode_w, self.font.size(LEARN_BADGE)[0] + pad
+
+    def _place_dog_badges(self, lamp_end: int, learning: bool) -> None:
+        import pygame
+
+        self.mode_badge_rect = pygame.Rect(0, 0, 0, 0)
+        self.learn_badge_rect = pygame.Rect(0, 0, 0, 0)
+        if getattr(self, "_badge_mode", "off") == "off" or self.font is None:
+            return
+        view = getattr(self, "_last_view", None)
+        if view is None:
+            return
+        text, _driving = dog_badge_label(
+            bool(getattr(view, "autonomy_on", False)),
+            str(getattr(view, "pilot_phase", "") or ""),
+            str(getattr(view, "steer", "") or "bilateral"),
+            compact=bool(getattr(self, "_badge_compact", False)),
+        )
+        pad = 24
+        height = 26
+        y = (MENU_H - height) // 2
+        mode_w = self.font.size(text)[0] + pad
+        self.mode_badge_rect = pygame.Rect(lamp_end + 8, y, mode_w, height)
+        if learning and getattr(self, "_badge_mode", "") == "full":
+            learn_w = self.font.size(LEARN_BADGE)[0] + pad
+            self.learn_badge_rect = pygame.Rect(self.mode_badge_rect.right + 8, y, learn_w, height)
+
+    def _draw_dog_badges(self, screen, view: MonitorView) -> None:
+        text, driving = dog_badge_label(
+            bool(getattr(view, "autonomy_on", False)),
+            str(getattr(view, "pilot_phase", "") or ""),
+            str(getattr(view, "steer", "") or "bilateral"),
+            compact=bool(getattr(self, "_badge_compact", False)),
+        )
+        if driving:
+            fill, ink = PEACH, BADGE_INK
+        else:
+            fill, ink = KEY_BADGE, KEY_BADGE_INK
+        self._paint_badge(screen, self.mode_badge_rect, text, fill, ink)
+        if bool(getattr(view, "learning_on", False)):
+            self._paint_badge(screen, self.learn_badge_rect, LEARN_BADGE, ESTOP, ESTOP_LABEL)
+
+    def _paint_badge(self, screen, rect, text: str, fill, ink) -> None:
+        import pygame
+
+        if rect is None or rect.w < 8 or rect.h < 8:
+            return
+        radius = max(1, rect.h // 2)
+        pygame.draw.rect(screen, fill, rect, border_radius=radius)
+        pygame.draw.rect(screen, LINE, rect, width=1, border_radius=radius)
+        label = self.font.render(str(text), True, ink)
+        tx = rect.x + max(0, (rect.w - label.get_width()) // 2)
+        ty = rect.y + max(0, (rect.h - label.get_height()) // 2)
+        prev = screen.get_clip()
+        screen.set_clip(rect)
+        screen.blit(label, (tx, ty))
+        screen.set_clip(prev)
 
     def _estop_bar_width(self) -> int:
         return self.font_sm.size("E-STOP")[0] + 64
@@ -3797,12 +3955,15 @@ class TrainMonitor:
 
     def _teacher_sees(self, view: MonitorView) -> tuple:
         """``(sees_L, sees_R)`` from box centres. Image left is Л, image right is П."""
-        from .yolo_teacher import DEFAULT_CONF, hemisphere_hits
+        from .yolo_teacher import hemisphere_hits
 
+        conf = getattr(view, "teacher_conf", None)
+        if conf is None:
+            conf = YOLO_CONF
         return hemisphere_hits(
             view.teacher_boxes,
             view.overlap,
-            conf_min=DEFAULT_CONF,
+            conf_min=float(conf),
             center_only=True,
         )
 
@@ -3993,6 +4154,7 @@ class TrainMonitor:
         import pygame
 
         self.lead_slider_rect = pygame.Rect(0, 0, 0, 0)
+        self.conf_slider_rect = pygame.Rect(0, 0, 0, 0)
         self.approach_rect = pygame.Rect(0, 0, 0, 0)
         self.search_lamp_at = (0, 0)
         sm = self.font_sm
@@ -4078,6 +4240,7 @@ class TrainMonitor:
                 status_samples=SKIP_STATUS,
             )
         y = self._draw_lead_row(screen, view, panel, y)
+        y = self._draw_conf_row(screen, view, panel, y)
         return y
 
     def _lead_at(self, win_pos, inp, drag: bool) -> bool:
@@ -4100,6 +4263,28 @@ class TrainMonitor:
         elif share > 1.0:
             share = 1.0
         inp.teacher_weight = share
+        return True
+
+    def _conf_at(self, win_pos, inp, drag: bool) -> bool:
+        """Map a pointer x onto the YOLO confidence. Drag keeps the track."""
+        import pygame
+
+        rect = getattr(self, "conf_slider_rect", None)
+        if rect is None or rect.w < 8:
+            return False
+        logical = self._logical_pos(win_pos)
+        point = pygame.Rect(rect)
+        if drag:
+            point.inflate_ip(0, 28)
+        if not point.collidepoint(logical[0], logical[1]):
+            return False
+        span = float(rect.w)
+        share = (float(logical[0]) - float(rect.x)) / span
+        if share < 0.0:
+            share = 0.0
+        elif share > 1.0:
+            share = 1.0
+        inp.teacher_conf = share
         return True
 
     def _draw_lead_row(self, screen, view, panel, y: int) -> int:
@@ -4150,6 +4335,55 @@ class TrainMonitor:
         if nxt is None:
             return y
         self.lead_slider_rect = track
+        return nxt
+
+    def _draw_conf_row(self, screen, view, panel, y: int) -> int:
+        """YOLO confidence on one row: caption, monospace value, thin grey track."""
+        import pygame
+
+        from .tabnum import cell_px
+
+        self.conf_slider_rect = pygame.Rect(0, 0, 0, 0)
+        if getattr(view, "learner", "") != "mb":
+            return y
+        conf = float(getattr(view, "teacher_conf", YOLO_CONF))
+        if conf < 0.0:
+            conf = 0.0
+        elif conf > 1.0:
+            conf = 1.0
+        line = "порог YOLO  %s" % ("%.2f" % conf)
+        prefix = self.font_sm.size("порог YOLO  ")[0]
+        track = pygame.Rect(0, 0, 0, 0)
+
+        def paint() -> None:
+            nonlocal track
+            self._mixed(screen, line, panel.x, y, "порог YOLO  {4}", VALUE, limit=panel.right - 4)
+            row = self._brain_row_h()
+            left = panel.x + prefix + cell_px(14) * 4 + 16
+            width = panel.right - 8 - left
+            if width < 48:
+                return
+            track = pygame.Rect(left, y + row // 2 - 3, width, 6)
+            pygame.draw.rect(screen, INSET, track, border_radius=3)
+            fill_w = int(round(track.w * conf))
+            if fill_w > 0:
+                pygame.draw.rect(screen, INK_DIM, pygame.Rect(track.x, track.y, fill_w, track.h), border_radius=3)
+            pygame.draw.rect(screen, LINE, track, width=1, border_radius=3)
+            thumb_x = track.x + int(round((track.w - 1) * conf))
+            thumb = pygame.Rect(0, 0, 8, 14)
+            thumb.center = (thumb_x, track.centery)
+            if thumb.x < track.x:
+                thumb.x = track.x
+            if thumb.right > track.right:
+                thumb.right = track.right
+            pygame.draw.rect(screen, INK_DIM, thumb, border_radius=2)
+            pygame.draw.rect(screen, LINE, thumb, width=1, border_radius=2)
+
+        nxt = self._paint_line(screen, panel, y, "conf", paint)
+        if nxt is None:
+            return y
+        if track.w >= 48:
+            self.conf_slider_rect = track
         return nxt
 
     def _progress_line(self, screen, line: str, x: int, y: int, limit=None) -> None:

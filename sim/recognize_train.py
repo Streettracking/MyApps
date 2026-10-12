@@ -419,6 +419,7 @@ class RecognizeTrainSim:
 
     def view(self, focused: bool, udp_status: str, last_command: str, keys_hint: str):
         from .brain_panel import panel_readout
+        from .recognize_train_live import session_teacher_conf
         from .train_monitor import MonitorView
 
         now_t = float(self.world.t)
@@ -531,6 +532,7 @@ class RecognizeTrainSim:
                 teacher_counts=str(getattr(self, "teacher_counts", "") or ""),
                 teacher_boxes=list(getattr(self, "teacher_boxes", ()) or ()),
                 teacher_weight=float(getattr(self, "teacher_weight", 0.0) or 0.0),
+                teacher_conf=session_teacher_conf(self),
                 lead_plaque=_lead_plaque(self),
                 run_stage=self.run_marker.stage,
                 run_side=self.run_marker.side,
@@ -808,6 +810,7 @@ def _gui_stress(mon, session) -> None:
 
 def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: Path | None = None) -> dict:
     from .frame_record import FrameRecorder, OperatorMarks
+    from .recognize_train_live import session_teacher_conf
     from .train_monitor import TrainMonitor
     from .yolo_teacher import TeacherRuntime
 
@@ -815,7 +818,7 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
     if session.learner_kind == "mb":
         session.teacher = TeacherRuntime(
             getattr(session, "teacher_url", "http://127.0.0.1:8091"),
-            conf=float(getattr(session, "teacher_conf", 0.5)),
+            conf=session_teacher_conf(session),
             rate=float(getattr(session, "teacher_rate", 2.0)),
         )
     else:
@@ -858,9 +861,10 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         inp = mon.pump()
         if inp.quit:
             break
-        from .recognize_train_live import take_teacher_weight
+        from .recognize_train_live import take_teacher_conf, take_teacher_weight
 
         take_teacher_weight(session, inp)
+        take_teacher_conf(session, inp)
         if inp.record_toggle:
             on = rec.toggle()
             _path = rec.stats()[3]
@@ -1468,7 +1472,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera frames per second written while recording.")
     p.add_argument("--fullscreen", action="store_true", help="Open the trainer fullscreen. F11 toggles it.")
     p.add_argument("--teacher-url", default="http://127.0.0.1:8091")
-    p.add_argument("--teacher-conf", type=float, default=0.5)
+    from .yolo_teacher import DEFAULT_CONF
+
+    p.add_argument("--teacher-conf", type=float, default=DEFAULT_CONF)
     p.add_argument("--teacher-rate", type=float, default=2.0)
     from .go2_control import add_go2_control_arg
 

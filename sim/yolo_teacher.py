@@ -20,13 +20,24 @@ from dataclasses import dataclass
 from .hemifield import overlap_bands
 
 DEFAULT_URL = "http://127.0.0.1:8091"
-DEFAULT_CONF = 0.5
+# A case and the room furniture were clearing 0.5 and being taught as a dog.
+DEFAULT_CONF = 0.75
 DEFAULT_RATE = 2.0
 AREA_MIN = 0.20
 TEACHER_KEY = "Y"
 BOXES_KEY = "H"
 FULLSCREEN_KEY = "F11"
 STEER_KEY = "K"
+
+
+def clamp_conf(value: float) -> float:
+    """YOLO confidence in 0..1. The slider and the teacher share this clip."""
+    conf = float(value)
+    if conf < 0.0:
+        return 0.0
+    if conf > 1.0:
+        return 1.0
+    return conf
 
 
 @dataclass
@@ -298,7 +309,7 @@ class TeacherRuntime:
 
     def __init__(self, url: str = DEFAULT_URL, conf: float = DEFAULT_CONF, rate: float = DEFAULT_RATE):
         self.client = YoloClient(url)
-        self.conf = float(conf)
+        self.conf = clamp_conf(conf)
         self.gate = TeachGate(rate)
         self.on = False
         self.boxes_hidden = False
