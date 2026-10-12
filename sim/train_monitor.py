@@ -2231,7 +2231,8 @@ class TrainMonitor:
         if rect.w < font.size("ВЕДЁТ:")[0]:
             self.driver_rect = pygame.Rect(0, 0, 0, 0)
             return
-        self._card(screen, rect, radius=max(1, h // 2))
+        pygame.draw.rect(screen, CARD, rect, border_radius=max(1, h // 2))
+        pygame.draw.rect(screen, LINE, rect, 1, border_radius=max(1, h // 2))
         name = driver_name(view)
         if name == DRIVER_HUMAN:
             tone = AMBER
@@ -2347,13 +2348,17 @@ class TrainMonitor:
         return max(1, min(WIN_W, int(logical)))
 
     def _layout_span(self) -> int:
-        """Dock width. Below 1440 the window shows ``ww / 0.75`` logical pixels, not 1920."""
+        """Dock width. From 1024 up to 1440 the window shows ``ww / 0.75``, not 1920.
+
+        Narrower clients keep the 1920 canvas and scroll, so readout columns
+        stay wide enough for their fixed slots.
+        """
         ww, _wh = self._view_size()
+        if ww >= MIN_CONTENT_W or ww < 1024:
+            return WIN_W - 24
         scale, _lw, _lh, _cw, _ch = fit_window(ww, _wh)
         visible = int(round(float(ww) / max(float(scale), 1e-6)))
-        if visible >= WIN_W - 2:
-            return WIN_W - 24
-        return max(640, visible - 24)
+        return max(640, min(WIN_W - 24, visible - 24))
 
     def _canvas_height(self, fit_h: int, scale: float, wh: int, footer_h: int) -> int:
         """Match the client when every block still has room above the footer.
@@ -2376,7 +2381,7 @@ class TrainMonitor:
         area_h = int(height) - int(footer_h) - MENU_H
         if area_h < 96:
             return False
-        placed = layout_dock(self.dock, 12, MENU_H, self._layout_span(), area_h)
+        placed = layout_dock(self.dock, 12, MENU_H, WIN_W - 24, area_h)
         blocks = placed["blocks"]
         for leaf in _iter_leaves(self.dock):
             if not leaf.visible:
@@ -3309,6 +3314,9 @@ class TrainMonitor:
             # restarts a brain that is already up. It is not a launch from
             # dead. Do not add a start command here.
             self._brain_panel_cache = None
+            import pygame
+
+            pygame.draw.rect(screen, CARD, body)
             line = self.font.render("Мозг на .213 не запущен", True, LABEL)
             screen.blit(line, (body.x + 12, body.y + 12))
             return
@@ -3351,12 +3359,10 @@ class TrainMonitor:
             if self.journal_rect is not None:
                 self.log_rows = max(3, (self.journal_rect.h - 34) // 16)
         elif view.learner == "mb":
-            reserve = self._stop_reserve_h()
-            main_h = max(40, body.h - 8 - reserve)
-            main = pygame.Rect(body.x + 4, body.y + 4, max(1, body.w - 8), main_h)
-            self._draw_mb(screen, view, main)
-            footer = pygame.Rect(body.x + 4, main.bottom, max(1, body.w - 8), max(1, body.bottom - 4 - main.bottom))
-            self._draw_stop_row(screen, view, footer, footer.y)
+            panel = pygame.Rect(body.x + 4, body.y + 4, body.w - 8, body.h - 8)
+            self.stop_slider_rect = pygame.Rect(0, 0, 0, 0)
+            self._draw_mb(screen, view, panel)
+            self._ensure_stop_slider(screen, view, panel)
         else:
             self._draw_hebb(screen, view, pygame.Rect(body.x + 4, body.y + 4, body.w - 8, body.h - 8))
 
@@ -4749,10 +4755,23 @@ class TrainMonitor:
         if nxt is None:
             return y
         self.lead_slider_rect = track
-        return nxt
+        return self._draw_stop_row(screen, view, panel, nxt)
 
-    def _stop_reserve_h(self) -> int:
-        return self._brain_row_h() + max(14, self._brain_row_h() // 2) + 6
+    def _ensure_stop_slider(self, screen, view, panel) -> None:
+        """At 1024 the stop track is pinned to the bottom of the visible panel."""
+        import pygame
+
+        if getattr(self, "stop_slider_rect", None) is not None and self.stop_slider_rect.w >= 8:
+            return
+        ww, _wh = self._view_size()
+        if ww < 1024 or ww >= MIN_CONTENT_W:
+            return
+        if panel.h < 48:
+            return
+        footer_h = self._brain_row_h() + max(14, self._brain_row_h() // 2) + 4
+        footer = pygame.Rect(panel.x, panel.bottom - footer_h, panel.w, footer_h)
+        pygame.draw.rect(screen, CARD, footer)
+        self._draw_stop_row(screen, view, footer, footer.y)
 
     def _progress_line(self, screen, line: str, x: int, y: int, limit=None) -> None:
         if line.startswith("метки "):
