@@ -1931,6 +1931,8 @@ class TrainMonitor:
             inp.punish_down = bool(keys[pygame.K_x])
         import time as _time
 
+        if inp.yolo_error:
+            self._yolo_err_at = _time.monotonic()
         if inp.punish and getattr(self, "_learning_on", False):
             self._punish_at = _time.monotonic()
         self._sync_cursor()
@@ -3645,6 +3647,11 @@ class TrainMonitor:
     def _yolo_error_button(self, screen, view: MonitorView) -> None:
         rect = getattr(self, "yolo_err_rect", None)
         if rect is None or rect.w < 8:
+            return
+        import time as _time
+
+        if _time.monotonic() - float(getattr(self, "_yolo_err_at", -10.0)) <= FLASH_PRESS_S:
+            self._button(screen, rect, "отмечено", PEACH, False, label_color=ESTOP_LABEL, fill=PEACH, key="O")
             return
         text = "ошибка YOLO %d" % max(0, int(view.yolo_errors))
         self._button(screen, rect, text, None, rect.collidepoint(self._mouse()), key="O")
