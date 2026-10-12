@@ -2,7 +2,6 @@ import unittest
 from types import SimpleNamespace
 
 from sim import recognize_train_live as live
-from sim.pilot import SEARCH_TURN
 from sim.teacher_lead import TeacherLead
 from sim.yolo_teacher import DetBox
 
@@ -41,13 +40,19 @@ class LostTurnTest(unittest.TestCase):
         s = self.seen_then_lost(0.1)
         x, z = self.run_at(s, 0.1, [])
         self.assertEqual(x, 0.0)
-        self.assertAlmostEqual(z, SEARCH_TURN)
+        self.assertAlmostEqual(z, live.LOST_TURN_YAW)
 
     def test_right_turns_right(self):
         s = self.seen_then_lost(0.9)
         x, z = self.run_at(s, 0.1, [])
         self.assertEqual(x, 0.0)
-        self.assertAlmostEqual(z, -SEARCH_TURN)
+        self.assertAlmostEqual(z, -live.LOST_TURN_YAW)
+
+    def test_continuous_until_timeout(self):
+        s = self.seen_then_lost(0.1)
+        self.run_at(s, 0.1, [])
+        self.assertAlmostEqual(self.run_at(s, 0.1 + 1.3, [])[1], 1.0)
+        self.assertAlmostEqual(self.run_at(s, 0.1 + 2.9, [])[1], 1.0)
 
     def test_stops_after_timeout(self):
         s = self.seen_then_lost(0.1)

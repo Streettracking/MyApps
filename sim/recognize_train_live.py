@@ -1,4 +1,4 @@
-﻿"""Live recognition trainer for one Go2.
+"""Live recognition trainer for one Go2.
 
 Sensors: HTTP JPEG preview (camera.jpg, lidar.jpg).
 Motion: UDP JSON to the local command server, or, with ``--onboard``,
@@ -759,14 +759,15 @@ def lead_boxes_fresh(session, now: float | None = None):
 
 
 # A lost box turns the dog in place toward the side it was last seen on, with
-# the pre-walk search turn (search_yaw, build 96b3fe5 / cff625f), for at most
+# a continuous LOST_TURN_YAW turn (side memory as in cff625f), for at most
 # this long after the loss. Stale frames, focus loss and arrows stay zero.
 LOST_TURN_S = 3.0
+LOST_TURN_YAW = 1.0
 
 
 def _lost_turn(session, box, why: str, now: float) -> float:
-    """Yaw for a lost box: search_yaw toward the last side, 0 after LOST_TURN_S."""
-    from .teacher_lead import search_yaw, sign_for_center
+    """Yaw for a lost box: LOST_TURN_YAW toward the last side, 0 after LOST_TURN_S."""
+    from .teacher_lead import sign_for_center
 
     if box is not None:
         sign = sign_for_center(0.5 * (float(box.x0) + float(box.x1)))
@@ -786,7 +787,7 @@ def _lost_turn(session, box, why: str, now: float) -> float:
     age = float(now) - float(lost_t)
     if age < 0.0 or age > LOST_TURN_S:
         return 0.0
-    return float(search_yaw(age, sign))
+    return LOST_TURN_YAW if float(sign) >= 0.0 else -LOST_TURN_YAW
 
 
 def _apply_approach(session, lead, forward_m, now: float | None = None) -> None:
