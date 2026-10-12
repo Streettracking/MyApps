@@ -1,4 +1,4 @@
-"""Live recognition trainer for one Go2.
+﻿"""Live recognition trainer for one Go2.
 
 Sensors: HTTP JPEG preview (camera.jpg, lidar.jpg).
 Motion: UDP JSON to the local command server, or, with ``--onboard``,
@@ -758,7 +758,38 @@ def lead_boxes_fresh(session, now: float | None = None):
     return boxes, ""
 
 
-def _apply_approach(session, lead, forward_m) -> None:
+# A lost box turns the dog in place toward the side it was last seen on, with
+# the pre-walk search turn (search_yaw, build 96b3fe5 / cff625f), for at most
+# this long after the loss. Stale frames, focus loss and arrows stay zero.
+LOST_TURN_S = 3.0
+
+
+def _lost_turn(session, box, why: str, now: float) -> float:
+    """Yaw for a lost box: search_yaw toward the last side, 0 after LOST_TURN_S."""
+    from .teacher_lead import search_yaw, sign_for_center
+
+    if box is not None:
+        sign = sign_for_center(0.5 * (float(box.x0) + float(box.x1)))
+        if sign is not None:
+            session._lead_last_sign = float(sign)
+        session._lead_lost_t = None
+        return 0.0
+    if why != "no_box":
+        return 0.0
+    sign = getattr(session, "_lead_last_sign", None)
+    if sign is None:
+        return 0.0
+    lost_t = getattr(session, "_lead_lost_t", None)
+    if lost_t is None:
+        lost_t = float(now)
+        session._lead_lost_t = lost_t
+    age = float(now) - float(lost_t)
+    if age < 0.0 or age > LOST_TURN_S:
+        return 0.0
+    return float(search_yaw(age, sign))
+
+
+def _apply_approach(session, lead, forward_m, now: float | None = None) -> None:
     """Trainer approach law over the box. Halts and stale frames are zero."""
     from .teacher_lead import STOP_BOX_H_DEFAULT, TEACHER_LIDAR_STOP_M, TEACHER_X_CAP, approach_velocity, best_box, teacher_status_line
 
@@ -767,7 +798,8 @@ def _apply_approach(session, lead, forward_m) -> None:
         session.teacher_state = ""
         session.teacher_status = ""
         return
-    boxes, why = lead_boxes_fresh(session)
+    now = _mono() if now is None else float(now)
+    boxes, why = lead_boxes_fresh(session, now)
     box = best_box(boxes, float(getattr(teacher, "conf", 0.5)))
     x, z, state = approach_velocity(
         box,
@@ -778,6 +810,9 @@ def _apply_approach(session, lead, forward_m) -> None:
     )
     if why:
         state = why
+    lost_z = _lost_turn(session, box, why or state, now)
+    if state == "no_box" and lost_z != 0.0:
+        x, z = 0.0, lost_z
     if getattr(session, "_teacher_halt", False):
         x, z, state = 0.0, 0.0, "halt"
     lead.teacher_x = float(x)
