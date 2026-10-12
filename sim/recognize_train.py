@@ -932,7 +932,7 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
 
 
 def _offer_sim_frame(session: RecognizeTrainSim, rec, marks, camera, steer_x: float, steer_z: float) -> None:
-    from .frame_record import encode_camera_jpeg, fingerprint, make_meta
+    from .frame_record import encode_camera_jpeg, fingerprint, make_meta, yolo_meta
 
     try:
         jpeg = encode_camera_jpeg(camera)
@@ -956,7 +956,8 @@ def _offer_sim_frame(session: RecognizeTrainSim, rec, marks, camera, steer_x: fl
             sector=session.aim_sector,
             r_l=None if mb is None else float(mb.r_l),
             r_r=None if mb is None else float(mb.r_r),
-        ),
+        )
+        | yolo_meta(getattr(session, "teacher", None), "regular"),
         fingerprint(camera),
     )
 

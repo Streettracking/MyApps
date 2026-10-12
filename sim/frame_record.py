@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 LABEL_WINDOW_S = 0.5
+HARD_FPS = 5.0  # cap for N-latch frames that YOLO still boxed
 SIMILAR_MEAN = 4.0
 _DOG = ("T", "D")
 _NONE = ("N",)  # X is PPL1 only. It does not label frames.
@@ -165,6 +166,31 @@ def weak_label_now(marks: OperatorMarks, t: float) -> str | None:
     return weak
 
 
+def yolo_meta(teacher, save_reason: str = "regular") -> dict:
+    """yolo.boxes (conf, normalized x0 y0 x1 y1), yolo.conf_threshold and save_reason.
+
+    Every saved frame carries this. No teacher or no answer is an empty list.
+    """
+    boxes = []
+    raw = getattr(teacher, "_teach_boxes", None) if teacher is not None else None
+    for box in raw or ():
+        try:
+            boxes.append({
+                "conf": round(float(box.conf), 3),
+                "x0": round(float(box.x0), 4),
+                "y0": round(float(box.y0), 4),
+                "x1": round(float(box.x1), 4),
+                "y1": round(float(box.y1), 4),
+            })
+        except (AttributeError, TypeError, ValueError):
+            continue
+    threshold = getattr(teacher, "conf", None) if teacher is not None else None
+    return {
+        "yolo": {"boxes": boxes, "conf_threshold": None if threshold is None else float(threshold)},
+        "save_reason": str(save_reason),
+    }
+
+
 def make_meta(
     marks: OperatorMarks,
     t_s: float,
@@ -236,6 +262,9 @@ class FrameRecorder:
         self._last_digest: bytes | None = None
         self._last_fp: np.ndarray | None = None
         self._next_index = 1
+        # N latch: frames where YOLO still drew a box. At most HARD_FPS.
+        self.hard_saved = 0
+        self._last_hard = -1e9
 
     def toggle(self) -> bool:
         with self._lock:
@@ -256,6 +285,8 @@ class FrameRecorder:
                 self._last_digest = None
                 self._last_fp = None
                 self._last_offer = -1e9
+                self.hard_saved = 0
+                self._last_hard = -1e9
             return self.enabled
 
     def stats(self) -> tuple[bool, int, int, str | None]:
@@ -271,7 +302,7 @@ class FrameRecorder:
         clock = time.monotonic() if now is None else float(now)
         return clock - self._last_offer >= self.min_interval
 
-    def offer(self, jpeg: bytes, meta: dict, fp: np.ndarray | None, now: float | None = None) -> bool:
+    def offer(self, jpeg: bytes, meta: dict, fp: np.ndarray | None, now: float | None = None, hard: bool = False) -> bool:
         """Queue one labelled frame. False when there is no label, recording is off, rate-limited, or the queue is full."""
         if not jpeg_complete(jpeg):
             return False
@@ -281,9 +312,15 @@ class FrameRecorder:
             if not self.enabled or self.session_dir is None:
                 return False
         clock = time.monotonic() if now is None else float(now)
-        if clock - self._last_offer < self.min_interval:
-            return False
-        self._last_offer = clock
+        if hard:
+            # A YOLO box under the N latch skips the 2 fps limit, not the 5 fps cap.
+            if clock - self._last_hard < 1.0 / HARD_FPS:
+                return False
+            self._last_hard = clock
+        else:
+            if clock - self._last_offer < self.min_interval:
+                return False
+            self._last_offer = clock
         try:
             self._queue.put_nowait((bytes(jpeg), dict(meta), None if fp is None else np.array(fp, copy=True)))
         except queue.Full:
@@ -311,7 +348,8 @@ class FrameRecorder:
     def _write(self, jpeg: bytes, meta: dict, fp: np.ndarray | None) -> None:
         digest = hashlib.sha1(jpeg).digest()
         with self._lock:
-            if digest == self._last_digest or too_similar(self._last_fp, fp):
+            hard = bool(meta.get("hard_negative"))
+            if digest == self._last_digest or (not hard and too_similar(self._last_fp, fp)):
                 self._last_digest = digest
                 self._last_fp = fp
                 self.skipped += 1
@@ -331,4 +369,6 @@ class FrameRecorder:
         json_path.write_text(text, encoding="utf-8")
         with self._lock:
             self.saved += 1
+            if meta.get("hard_negative"):
+                self.hard_saved += 1
             self.nbytes += jpg_path.stat().st_size + json_path.stat().st_size

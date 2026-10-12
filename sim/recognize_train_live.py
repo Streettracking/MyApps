@@ -954,7 +954,7 @@ def _phase_name(phase: str, steer: str = "bilateral", search_sign: float = 1.0) 
     return phase_label(phase, steer, search_sign)
 
 
-def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: bytes, onboard: OnboardLink | None) -> None:
+def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: bytes, onboard: OnboardLink | None, extra: dict | None = None, hard: bool = False) -> bool:
     """Queue the preview JPEG. Onboard still reads :8088 on the laptop."""
     from .frame_record import fingerprint, make_meta
 
@@ -985,9 +985,7 @@ def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: byt
         sector = session.aim_sector
         r_l = None if mb is None else float(mb.r_l)
         r_r = None if mb is None else float(mb.r_r)
-    rec.offer(
-        camera_jpeg,
-        make_meta(
+    meta = make_meta(
             marks,
             session.now(),
             source=source,
@@ -1001,9 +999,13 @@ def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: byt
             sector=None if sector is None else int(sector),
             r_l=None if r_l is None else float(r_l),
             r_r=None if r_r is None else float(r_r),
-        ),
-        fingerprint(camera),
-    )
+        )
+    from .frame_record import yolo_meta
+
+    meta.update(yolo_meta(getattr(session, "teacher", None), "box" if hard else "regular"))
+    if extra:
+        meta.update(extra)
+    return rec.offer(camera_jpeg, meta, fingerprint(camera), hard=hard)
 
 
 def _learning_now(session) -> bool:
@@ -1054,7 +1056,8 @@ def _drive_teacher(session: LiveSession, jpeg: bytes | None, frame_id, state: di
 
     learning = _learning_now(session)
     teacher.note_learning(learning)
-    if learning and jpeg and teacher.wants_frame(learning) and state.get("frame") != frame_id:
+    probe = bool(getattr(session, "yolo_probe", False)) and not learning
+    if (learning or probe) and jpeg and teacher.wants_frame(True if probe else learning) and state.get("frame") != frame_id:
         teacher.offer_frame(jpeg)
         state["frame"] = frame_id
     rec_l, rec_r, overlap = plaque_recognized(
@@ -1065,6 +1068,10 @@ def _drive_teacher(session: LiveSession, jpeg: bytes | None, frame_id, state: di
     )
     now = session.now() if hasattr(session, "now") else float(session.world.t)
     kind_l, kind_r = teacher.collect(now, overlap, rec_l, rec_r, learning, operator_busy)
+    if probe:
+        # Learning is off, so collect() taught nothing. Keep the raw answer
+        # for the N-latch recording only; no PAM/PPL1 goes anywhere.
+        teacher._take_result(overlap)
     sent_l, sent_r = kind_l, kind_r
     if sent_l and sent_l == getattr(session, "_outcome_l", None):
         sent_l = None
@@ -1310,8 +1317,28 @@ def run_live_gui(
             view.record_idle = rec_on and not labelled
             view.record_folder = _rec_path or ""
             view.record_latch = marks.latched or ""
-            if rec_on and labelled and camera is not None and camera_jpeg and rec.due():
+            no_dog_latch = rec_on and marks.latched == "no_dog"
+            session.yolo_probe = bool(no_dog_latch)
+            teacher = getattr(session, "teacher", None)
+            # Raw teacher answer, also when the boxes are hidden on screen.
+            yolo_now = getattr(teacher, "_teach_boxes", None) if teacher is not None else None
+            fresh = yolo_now is not None and yolo_now is not tele.get("hn_seen")
+            if no_dog_latch and yolo_now and fresh and camera is not None and camera_jpeg:
+                # N is locked and YOLO still sees a dog: that is a YOLO mistake.
+                tele["hn_seen"] = yolo_now
+                _offer_live_frame(
+                    session, rec, marks, camera, camera_jpeg, onboard,
+                    extra={"hard_negative": True},
+                    hard=True,
+                )
+            elif no_dog_latch and not yolo_now and camera is not None and camera_jpeg and rec.due():
+                _offer_live_frame(
+                    session, rec, marks, camera, camera_jpeg, onboard,
+                    extra={"hard_negative": False},
+                )
+            elif rec_on and not no_dog_latch and labelled and camera is not None and camera_jpeg and rec.due():
                 _offer_live_frame(session, rec, marks, camera, camera_jpeg, onboard)
+            view.record_hard = int(getattr(rec, "hard_saved", 0))
             from .go2_control import drive_go2
             from .mb_view3d import drive_brain
 

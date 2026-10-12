@@ -246,6 +246,7 @@ class MonitorView:
     record_bytes: int = 0
     record_idle: bool = False
     record_folder: str = ""
+    record_hard: int = 0  # N-latch frames YOLO still boxed
     record_latch: str = ""  # "dog" / "no_dog" while D or N is locked
     hemi_l: float | None = None
     hemi_r: float | None = None
@@ -2291,7 +2292,7 @@ class TrainMonitor:
                 ("go2", self._go2_button_width(False)),
                 ("brain", 168),
                 ("teacher", 280),
-                ("record", 380),
+                ("record", 480),
             ]
         return [
             ("go2", self._go2_button_width(True)),
@@ -3577,6 +3578,8 @@ class TrainMonitor:
                     RED,
                     RED,
                 )
+                if view.record_latch == "no_dog":
+                    latch += " · ошибок YOLO · %d" % int(view.record_hard)
                 if latch:
                     glyph = self.font_sm.render(latch.strip(), True, RED)
                     self._blit_clipped(screen, glyph, (int(end) + 8, rect.centery - glyph.get_height() // 2), rect)
