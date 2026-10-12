@@ -2606,11 +2606,21 @@ class TrainMonitor:
         return [
             ("go2", self._go2_button_width(True)),
             ("brain", self._caption_slot("МОЗГ", lamp=True, key=False)),
-            ("teacher", self._caption_slot("УЧ", lamp=True, key=False)),
-            ("record", self._caption_slot("ЗАПИСЬ · 00000", lamp=True, key=False)),
-            ("neg", self._caption_slot("НЕГ · 0000", lamp=False, key=False)),
-            ("kin", self._caption_slot("СОР · 0000", lamp=False, key=False)),
+            ("teacher", self._caption_slot("УЧИТ", lamp=True, key=False)),
+            ("record", self._caption_slot("ЗАПИСЬ · 0000", lamp=True, key=False)),
+            ("neg", self._caption_slot("НЕГАТИВ", lamp=False, key=False)),
+            ("kin", self._caption_slot("СОРОДИЧ", lamp=False, key=False)),
         ]
+
+    def _fit_label(self, avail: int, candidates) -> str:
+        """Longest complete caption that fits. A word that does not fit is not cut."""
+        if self.font_sm is None:
+            return candidates[-1] if candidates else ""
+        room = int(avail)
+        for text in candidates:
+            if text and self.font_sm.size(text)[0] <= room:
+                return text
+        return ""
 
     def _caption_slot(self, text: str, lamp: bool, key: bool) -> int:
         pad = 36 if lamp else 16
@@ -2635,10 +2645,10 @@ class TrainMonitor:
         return [
             ("go2", self._go2_need("УПР", True, 4)),
             ("brain", face("МОЗГ", True)),
-            ("teacher", max(48, face("УЧ", True))),
-            ("record", face("ЗАПИСЬ · 00000", True)),
-            ("neg", face("НЕГ · 0000", False)),
-            ("kin", face("СОР · 0000", False)),
+            ("teacher", face("УЧИТ", True)),
+            ("record", face("ЗАПИСЬ · 0000", True)),
+            ("neg", face("НЕГАТИВ", False)),
+            ("kin", face("СОРОДИЧ", False)),
         ]
 
     def _header_row(self, items, x: int, limit: int, gap: int = 8, exact: bool = False) -> dict:
@@ -3951,15 +3961,18 @@ class TrainMonitor:
         if rect.w < 8 or rect.h < 8:
             return
         badge = None if getattr(self, "_header_short", False) else self._draw_key_badge(screen, rect, "Y")
-        word = "УЧ" if getattr(self, "_header_short", False) else "УЧИТЕЛЬ"
-        title = self.font_sm.render(word, True, VALUE)
-        self._blit_clipped(screen, title, (rect.x + 32, rect.centery - title.get_height() // 2), rect)
+        room = (badge.left - 6 if badge is not None else rect.right - 4) - (rect.x + 32)
+        word = self._fit_label(room, ("УЧИТЕЛЬ", "УЧИТ"))
+        title = self.font_sm.render(word, True, VALUE) if word else None
+        if title is not None:
+            screen.blit(title, (rect.x + 32, rect.centery - title.get_height() // 2))
         lead_status = str(getattr(view, "teacher_status", "") or "")
         if lead_status:
             # Auto: what the teacher is doing now, thin grey, in place of the state word.
             glyph = self.font_tiny.render(lead_status, True, LABEL)
             right = badge.left - 6 if badge is not None else rect.right - 6
-            left = rect.x + 32 + title.get_width() + 6
+            title_w = title.get_width() if title is not None else 0
+            left = rect.x + 32 + title_w + 6
             x = max(left, right - glyph.get_width())
             self._blit_clipped(screen, glyph, (x, rect.centery - glyph.get_height() // 2), rect)
         elif not getattr(self, "_header_short", False):
@@ -4109,9 +4122,11 @@ class TrainMonitor:
             rect = self.record_rect
             self._button(screen, rect, "", RED, hot)
             if getattr(self, "_header_short", False):
-                # Narrow header: no key badge, but «● ЗАПИСЬ · N» always stays.
-                glyph = self.font_sm.render("ЗАПИСЬ · %d" % int(view.record_saved), True, RED)
-                self._blit_clipped(screen, glyph, (rect.x + 32, rect.centery - glyph.get_height() // 2), rect)
+                saved = int(view.record_saved)
+                text = self._fit_label(rect.w - 36, ("ЗАПИСЬ · %d" % saved, "ЗАП · %d" % saved))
+                if text:
+                    glyph = self.font_sm.render(text, True, RED)
+                    screen.blit(glyph, (rect.x + 32, rect.centery - glyph.get_height() // 2))
                 return
             elif waiting and not view.record_latch:
                 glyph = self.font_sm.render("запись ждёт метку: держи D или N", True, AMBER)
@@ -4141,7 +4156,8 @@ class TrainMonitor:
             self._draw_key_badge(screen, self.record_rect, "U")
         else:
             if getattr(self, "_header_short", False):
-                self._button(screen, self.record_rect, "ЗАПИСЬ · 0", None, hot)
+                text = self._fit_label(self.record_rect.w - 36, ("ЗАПИСЬ · 0", "ЗАП · 0"))
+                self._button(screen, self.record_rect, text, None, hot)
             else:
                 self._button(screen, self.record_rect, "ЗАПИСЬ КАДРОВ", LAMP_OFF, hot, key="U")
 
@@ -4151,13 +4167,21 @@ class TrainMonitor:
         if rect is None or rect.w < 8:
             return
         narrow = header and getattr(self, "_header_short", False)
-        caption = short if narrow else word
         key = "" if narrow else key
+        stems = {"НЕГАТИВ": ("НЕГАТИВ", "НЕГАТ", "НЕГ"), "СОРОДИЧ": ("СОРОДИЧ", "СОРОД", "СОР")}.get(word, (word, short))
+        if narrow:
+            room = rect.w - 16
+            if view.record_on and view.record_latch == label:
+                n = int(view.record_saved)
+                text = self._fit_label(room, tuple("%s · %d" % (stem, n) for stem in stems))
+            else:
+                text = self._fit_label(room, stems)
+        else:
+            text = "%s · %d" % (word, int(view.record_saved)) if view.record_on and view.record_latch == label else word
         if view.record_on and view.record_latch == label:
-            text = "%s · %d" % (caption, int(view.record_saved))
             self._button(screen, rect, text, None, False, label_color=ESTOP_LABEL, fill=RED, key=key)
             return
-        self._button(screen, rect, caption, LAMP_OFF, rect.collidepoint(self._mouse()), key=key)
+        self._button(screen, rect, text, LAMP_OFF, rect.collidepoint(self._mouse()), key=key)
 
     def _ensure_audio(self) -> bool:
         if self.audio_ok is not None:
