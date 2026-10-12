@@ -957,7 +957,7 @@ class TrainMonitor:
                 ("take", self._keyed_button_width(("ПЕРЕХВАТ",), "M", True)),
                 ("steer", self._keyed_button_width(("БИЛАТЕРАЛЬНО", "СЕКТОРЫ"), "K", False)),
                 ("treat", self._keyed_button_width(("ЛАКОМСТВО",), "T", True)),
-                ("punish", self._keyed_button_width(("НАКАЗАНИЕ", "наказание PPL1"), "X", False)),
+                ("punish", self._keyed_button_width(("ОШИБКА", "ошибка · стоп"), "X", False)),
                 ("yolo_err", self._keyed_button_width(("ошибка YOLO 000",), "O", False)),
             ]
             gap_b = 8
@@ -3843,12 +3843,12 @@ class TrainMonitor:
             return
         self._learning_on = bool(view.learning_on)
         if not view.learning_on:
-            self._button(screen, rect, "НАКАЗАНИЕ", None, False, label_color=INK_DIM, key="X")
+            self._button(screen, rect, "ОШИБКА", None, False, label_color=INK_DIM, key="X")
             return
         if _time.monotonic() - float(getattr(self, "_punish_at", -10.0)) <= FLASH_PRESS_S:
-            self._button(screen, rect, "наказание PPL1", None, False, label_color=ESTOP_LABEL, fill=RED, key="X")
+            self._button(screen, rect, "ошибка · стоп", None, False, label_color=ESTOP_LABEL, fill=RED, key="X")
             return
-        self._button(screen, rect, "НАКАЗАНИЕ", RED, rect.collidepoint(self._mouse()), key="X")
+        self._button(screen, rect, "ОШИБКА", RED, rect.collidepoint(self._mouse()), key="X")
 
     def _yolo_error_button(self, screen, view: MonitorView) -> None:
         rect = getattr(self, "yolo_err_rect", None)

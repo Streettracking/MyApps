@@ -664,6 +664,15 @@ def _apply_live_keys(session: LiveSession, inp, onboard: OnboardLink | None) -> 
             session._log("обучение выключено, T/X веса не меняют" if not session.learn else "обучение включено")
 
 
+def error_stop(session, onboard) -> None:
+    """«ошибка» (X): a calm stop, the same StopMove as Space. No extra motion."""
+    if onboard is not None:
+        onboard.post("space")
+    else:
+        session.pilot.space()
+    session._log("ошибка: спокойная остановка")
+
+
 def _mirror_remote(session: LiveSession, status: dict) -> None:
     if not status:
         return
@@ -1560,6 +1569,8 @@ def run_live_gui(
             elif link is not None:
                 _note_robot_server(session, link, tele, now)
                 command_name = _drive_udp(session, link, inp, tele, now, frames_ok)
+            if inp.punish:
+                error_stop(session, onboard)
             teach = session.teach_pulse.poll(
                 session.now(),
                 inp.treat,
