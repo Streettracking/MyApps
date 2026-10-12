@@ -1039,11 +1039,11 @@ class TrainMonitor:
             "panel": (self.panel_rect.x, self.panel_rect.y, self.panel_rect.w, self.panel_rect.h),
         }
 
-    def _wrap_rows(self, items, x0: int, y0: int, limit: int, bottom: int, row_h: int, gap: int) -> dict:
+    def _wrap_rows(self, items, x0: int, y0: int, limit: int, bottom: int, row_h: int, gap: int, floor: int = 24, gap_y: int = 6) -> dict:
         """Lay buttons left to right and start a new line when the next one does not fit.
 
-        A row stays at least 24 px when the card is that tall. Further lines are
-        omitted whole, instead of shrinking every caption until none of them draw.
+        A row stays at least ``floor`` px when the card is that tall. Further lines
+        are omitted whole, instead of shrinking every caption until none of them draw.
         """
         import pygame
 
@@ -1061,8 +1061,7 @@ class TrainMonitor:
             used = need
         lines = [line for line in lines if line]
         avail = max(1, int(bottom) - int(y0))
-        gap_y = 6
-        floor = min(24, avail)
+        floor = min(int(floor), avail)
         kept = []
         h = min(int(row_h), avail)
         for line in lines:
@@ -3185,6 +3184,10 @@ class TrainMonitor:
         ]
         row_h = max(1, min(inner.h, CONTROLS_BUTTON_H))
         rects = self._wrap_rows(items, inner.x, inner.y, inner.right, inner.bottom, row_h, gap)
+        if rects["reset_weights"].w < 8:
+            # 1024 keeps two rows of the original buttons and drops «СБРОС ВЕСОВ».
+            # A tighter row still holds the full caption; the confirm click is unchanged.
+            rects = self._wrap_rows(items, inner.x, inner.y, inner.right, inner.bottom, row_h, gap, floor=20, gap_y=0)
         self.stand_up_rect = rects["stand_up"]
         self.stand_down_rect = rects["stand_down"]
         self.recovery_rect = rects["recovery"]
