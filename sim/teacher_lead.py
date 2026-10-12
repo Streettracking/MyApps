@@ -41,6 +41,8 @@ TEACHER_YAW_GAIN = 4.0
 TEACHER_YAW_MIN_OUT = 0.35
 TEACHER_YAW_MIN = 0.15
 YAW_DEADBAND_DEG = 3.0
+TEACHER_LIDAR_STOP_M = 0.0  # off for now; when on, never below the minimum
+TEACHER_LIDAR_STOP_MIN = 0.7
 
 
 def clamp_weight(weight: float) -> float:
@@ -630,7 +632,7 @@ def teacher_yaw(offset: float) -> float:
     return -mag if off > 0.0 else mag
 
 
-def approach_velocity(box, forward_m, stop_h: float = STOP_BOX_H_DEFAULT, x_cap: float = TEACHER_X_CAP):
+def approach_velocity(box, forward_m, stop_h: float = STOP_BOX_H_DEFAULT, x_cap: float = TEACHER_X_CAP, lidar_stop_m: float = TEACHER_LIDAR_STOP_M):
     """``(x, z, state)``: turn first, walk inside the cone, stand when the box is tall.
 
     state is ``no_box``, ``turn``, ``walk``, ``near`` or ``lidar``. No box is a
@@ -648,7 +650,11 @@ def approach_velocity(box, forward_m, stop_h: float = STOP_BOX_H_DEFAULT, x_cap:
         return 0.0, 0.0, "near"
     if abs(box_bearing_deg(cx)) > AIM_CONE_DEG + 1e-9:
         return 0.0, float(yaw), "turn"
-    if lidar_blocks(forward_m):
+    ahead = None if forward_m is None else float(forward_m)
+    limit = float(lidar_stop_m or 0.0)
+    if limit > 0.0:
+        limit = max(TEACHER_LIDAR_STOP_MIN, limit)
+    if limit > 0.0 and ahead is not None and ahead < limit:
         return 0.0, float(yaw), "lidar"
     cap = max(0.0, min(float(x_cap), X_MAX))
     return cap, float(yaw), "walk"
@@ -665,7 +671,9 @@ TEACHER_STATUS = {
 }
 
 
-def teacher_status_line(state: str, kin: str = "") -> str:
+def teacher_status_line(state: str, kin: str = "", ahead_m=None) -> str:
+    if state == "lidar" and ahead_m is not None:
+        return ("препятствие %.2f м" % float(ahead_m)).replace(".", ",")
     if state == "walk":
         return "иду к %s" % (kin or "сородичу")
     return TEACHER_STATUS.get(str(state or ""), "")

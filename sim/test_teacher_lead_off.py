@@ -140,8 +140,15 @@ class LeadOffTest(unittest.TestCase):
         self.assertEqual(teacher_status_line(st), "рядом, стою")
 
     def test_lidar_safety_stop_small_box(self):
-        x, _z, st = approach_velocity(box(0.5, h=0.1), 0.8, 0.45)
-        self.assertEqual((x, st), (0.0, "lidar"))
+        x, _z, st = approach_velocity(box(0.5, h=0.1), 0.35, 0.45)
+        self.assertEqual(st, "walk", "lidar stop is off by default")
+        x, _z, st = approach_velocity(box(0.5, h=0.1), 0.63, 0.45, lidar_stop_m=0.4)
+        self.assertEqual((x, st), (0.0, "lidar"), "enabled stop is raised to 0.7 m")
+        x, _z, st = approach_velocity(box(0.5, h=0.1), 0.8, 0.45, lidar_stop_m=0.7)
+        self.assertEqual(st, "walk")
+        self.assertEqual(teacher_status_line("lidar", "", 0.63), "препятствие 0,63 м")
+        x, _z, st = approach_velocity(box(0.5, h=0.1), 0.35, 0.45, lidar_stop_m=0.0)
+        self.assertEqual(st, "walk")
         x, _z, st = approach_velocity(box(0.5, h=0.1), 3.0, 0.45)
         self.assertGreater(x, 0.0)
 

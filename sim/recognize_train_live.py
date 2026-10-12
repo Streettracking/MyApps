@@ -760,7 +760,7 @@ def lead_boxes_fresh(session, now: float | None = None):
 
 def _apply_approach(session, lead, forward_m) -> None:
     """Trainer approach law over the box. Halts and stale frames are zero."""
-    from .teacher_lead import STOP_BOX_H_DEFAULT, TEACHER_X_CAP, approach_velocity, best_box, teacher_status_line
+    from .teacher_lead import STOP_BOX_H_DEFAULT, TEACHER_LIDAR_STOP_M, TEACHER_X_CAP, approach_velocity, best_box, teacher_status_line
 
     teacher = getattr(session, "teacher", None)
     if teacher is None:
@@ -774,6 +774,7 @@ def _apply_approach(session, lead, forward_m) -> None:
         forward_m,
         float(getattr(session, "teacher_stop_h", STOP_BOX_H_DEFAULT) or STOP_BOX_H_DEFAULT),
         float(getattr(session, "teacher_x_cap", TEACHER_X_CAP) or 0.0),
+        float(getattr(session, "teacher_lidar_stop", TEACHER_LIDAR_STOP_M)),
     )
     if why:
         state = why
@@ -782,7 +783,7 @@ def _apply_approach(session, lead, forward_m) -> None:
     lead.teacher_x = float(x)
     lead.teacher_z = float(z)
     session.teacher_state = state
-    session.teacher_status = teacher_status_line(state, str(getattr(session, "kin_label", KIN_LABEL_DEFAULT) or ""))
+    session.teacher_status = teacher_status_line(state, str(getattr(session, "kin_label", KIN_LABEL_DEFAULT) or ""), forward_m)
 
 
 def teacher_halt_now(inp, remote=None) -> bool:
@@ -1933,6 +1934,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--onboard", default="", help="Robot IP with the fly brain on port 8090. No local Move and no UDP.")
     p.add_argument("--onboard-port", type=int, default=8090)
     p.add_argument("--kin-label", default=KIN_LABEL_DEFAULT, help="Name of the conspecific in the teacher status line.")
+    p.add_argument("--teacher-lidar-stop", type=float, default=0.0, help="Teacher stops forward when the lidar forward cone (±14°) is nearer, m. 0 (default) disables; otherwise at least 0.7.")
     p.add_argument("--teacher-x-cap", type=float, default=0.40, help="Hard cap on teacher forward speed, m/s.")
     p.add_argument("--return-auto", type=float, default=0.0, help="Seconds of idle takeover before autonomy returns. 0 stays manual.")
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
@@ -1982,6 +1984,7 @@ def main(argv: list[str] | None = None) -> int:
     session.teacher_conf = float(args.teacher_conf)
     session.teacher_rate = float(args.teacher_rate)
     session.kin_label = str(args.kin_label or "")
+    session.teacher_lidar_stop = max(0.0, float(args.teacher_lidar_stop))
     from .teacher_lead import TEACHER_X_CAP_MAX as _cap
 
     session.teacher_x_cap = max(0.0, min(float(args.teacher_x_cap), _cap))
