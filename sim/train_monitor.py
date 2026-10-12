@@ -2512,13 +2512,25 @@ class TrainMonitor:
         title_w = max(self.font.size("recognition training")[0], self.font.size(title)[0])
         lamp_w = 14 + self.font_sm.size("борт")[0]
         min_help = self.doggibot_rect.right + 12 + title_w + 18 + lamp_w + 8
-        variants = ((True, False, False), (False, False, False), (False, True, False), (False, True, True))
+        # Exact packs, longest captions first. The scaled row is only a fallback:
+        # scaling the wide slots cuts «УЧИТ» down to an empty button.
+        tight_packs = (
+            ("ЗАПИСЬ · 0000", "НЕГАТИВ", "СОРОДИЧ"),
+            ("ЗАПИСЬ · 000", "НЕГАТИВ", "СОРОДИЧ"),
+            ("ЗАПИСЬ · 00", "НЕГАТИВ", "СОРОДИЧ"),
+            # «СОР · 00» keeps a recording counter on the same button as «СОРОД».
+            ("ЗАПИСЬ · 00", "НЕГАТИВ", "СОР · 00"),
+            ("ЗАП · 00", "НЕГАТ", "СОР · 00"),
+        )
+        variants = [(True, False, None), (False, False, None), (False, True, None)]
+        variants += [(False, True, pack) for pack in tight_packs]
         chosen = (False, True)
         placed = None
         fallback = None
-        for show_label, short, tight in variants:
+        for show_label, short, pack in variants:
+            tight = pack is not None
             gap_b = 4 if tight else 8
-            items = self._tight_header_items() if tight else self._header_items(short)
+            items = self._tight_header_items(*pack) if tight else self._header_items(short)
             total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
             switch_right = limit - margin
             switch = pygame.Rect(switch_right - switch_w, (MENU_H - switch_h) // 2, switch_w, switch_h)
@@ -2635,7 +2647,7 @@ class TrainMonitor:
         panel = self.font_tiny.size("панель")[0]
         return 12 + 10 + 4 + server + gap + 10 + 4 + panel + gap + title + 8
 
-    def _tight_header_items(self) -> list:
+    def _tight_header_items(self, record: str = "ЗАПИСЬ · 0000", neg: str = "НЕГАТИВ", kin: str = "СОРОДИЧ") -> list:
         """Complete captions. No button is narrower than the glyphs it draws."""
 
         def face(text: str, lamp: bool) -> int:
@@ -2646,9 +2658,9 @@ class TrainMonitor:
             ("go2", self._go2_need("УПР", True, 4)),
             ("brain", face("МОЗГ", True)),
             ("teacher", face("УЧИТ", True)),
-            ("record", face("ЗАПИСЬ · 0000", True)),
-            ("neg", face("НЕГАТИВ", False)),
-            ("kin", face("СОРОДИЧ", False)),
+            ("record", face(record, True)),
+            ("neg", face(neg, False)),
+            ("kin", face(kin, False)),
         ]
 
     def _header_row(self, items, x: int, limit: int, gap: int = 8, exact: bool = False) -> dict:
