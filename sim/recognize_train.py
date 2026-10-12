@@ -236,6 +236,11 @@ class RecognizeTrainSim:
                     kind = "pam"
                 elif self.punish_auto and hit.distractor and not hit.dog:
                     kind = "ppl1"
+            stopped = self.pilot.mode == "estop" or bool(self.pilot.held_stop)
+            moving = (not stopped) and (abs(float(steer_x)) + abs(float(steer_z)) > 1e-6)
+            self.mb.note_motion_hold(stopped, moving, float(self.world.t))
+            if self.mb.learning_hold:
+                kind = None
             if kind == "pam":
                 self.treat_flash = True
             self.mb.teach(fwd, kind if self.dan == "teacher" else None, float(self.world.t))

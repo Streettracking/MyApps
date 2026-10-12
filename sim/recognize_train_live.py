@@ -416,6 +416,13 @@ class LiveSession:
             self._last_tick = now_m
             self.mb.progress.note_label(self.operator, value, conf.recognized, conf.ready)
             kind = teach if self.dan == "teacher" else None
+            stopped = self.pilot.mode == "estop" or bool(self.pilot.held_stop)
+            moving = (not stopped) and (
+                abs(float(getattr(self, "cmd_x", 0.0))) + abs(float(getattr(self, "cmd_z", 0.0))) > 1e-6
+            )
+            self.mb.note_motion_hold(stopped, moving, self.now())
+            if self.mb.learning_hold:
+                kind = None
             if kind == "pam":
                 self.treat_flash = True
             self.mb.teach(fwd, kind, self.now())
@@ -759,6 +766,15 @@ def blend_local_command(session, cmd, now: float, estop: bool, autonomy: bool, d
     learning = bool(getattr(session, "learn", False))
     session._outcome_l = None
     session._outcome_r = None
+    stopped = bool(estop) or session.pilot.mode == "estop" or bool(session.pilot.held_stop)
+    moving = (not stopped) and (abs(float(cmd.x)) + abs(float(cmd.z)) > 1e-6)
+    if autonomy and lead.weight > 0.005 and not stopped:
+        mixed_x, mixed_z = mix_velocity(cmd.x, cmd.z, lead.teacher_x, lead.teacher_z, lead.weight)
+        out_x, out_z, _held = apply_guards(mixed_x, mixed_z, False, forward_m)
+        moving = abs(float(out_x)) + abs(float(out_z)) > 1e-6
+    mb = getattr(session, "mb", None)
+    if mb is not None:
+        mb.note_motion_hold(stopped, moving, float(now))
     if autonomy and not estop:
         lead.note(now, matched)
         mb = getattr(session, "mb", None)

@@ -29,6 +29,9 @@ from .npz_compat import open_npz
 from .raw_sense import RawProjector, probe_features
 from .stimuli import StimulusSet
 
+# After a stop releases and the dog moves again, dopamine stays silent this long.
+PAUSE_GRACE_S = 1.0
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -117,6 +120,10 @@ class MbTrainer:
         self.reinforce = ""
         # Mutes every stimulus and freezes KC→MBON. Independent of teacher weight.
         self.reinforcement_off = False
+        # Safety hold: a stop, and PAUSE_GRACE_S after motion resumes.
+        self.learning_hold = False
+        self._awaiting_motion = False
+        self._grace_until = 0.0
         self.object_drives: list = []
         # Empty until the recognition app plugs a source in. Saving weights
         # does not write this list.
@@ -226,11 +233,41 @@ class MbTrainer:
     def set_reinforcement_off(self, off: bool) -> None:
         """Mute every stimulus and freeze plasticity. Teacher weight is separate."""
         self.reinforcement_off = bool(off)
-        self.stimuli.muted = self.reinforcement_off
+        self._mute_sources()
+
+    def _mute_sources(self) -> None:
+        """Silence every attached source while a probe switch or a stop hold is on."""
+        self.stimuli.muted = bool(self.reinforcement_off or self.learning_hold)
+
+    def note_motion_hold(self, stopped: bool, moving: bool, now: float) -> None:
+        """Freeze plasticity and reinforcement for a stop, then for ``PAUSE_GRACE_S``.
+
+        ``stopped`` is an E-STOP, a pause, or an external stop. The grace clock
+        starts on the first tick that moves again. Until that tick, the hold
+        stays. A later stop cancels the clock.
+        """
+        if stopped:
+            self._awaiting_motion = True
+            self._grace_until = 0.0
+            self.learning_hold = True
+            self._mute_sources()
+            return
+        if self._awaiting_motion:
+            if moving:
+                self._awaiting_motion = False
+                self._grace_until = float(now) + PAUSE_GRACE_S
+            self.learning_hold = True
+            self._mute_sources()
+            return
+        self.learning_hold = float(now) < float(self._grace_until)
+        self._mute_sources()
+
+    def _plasticity_open(self) -> bool:
+        return bool(self.learn) and not self.reinforcement_off and not self.learning_hold
 
     def teach(self, fwd: MBForward, kind: str | None, t: float) -> None:
         """Apply a DAN. ``kind`` is pam / ppl1 / None. Never a dog/no-dog label."""
-        if not self.learn or self.reinforcement_off:
+        if not self._plasticity_open():
             return
         if self.dan == "teacher":
             if kind in ("pam", "ppl1"):
@@ -272,7 +309,7 @@ class MbTrainer:
         ``r_r`` stay the approach-minus-avoidance drives ``forward`` stored.
         Reinforcement off freezes this too.
         """
-        if not self.learn or self.reinforcement_off:
+        if not self._plasticity_open():
             return
         if self.last_fwd is not None:
             self.brain.recover(self.last_fwd.kc, bool(dopamine_l))
@@ -294,7 +331,7 @@ class MbTrainer:
         """
         if learning is None:
             learning = self.learn
-        if self.reinforcement_off:
+        if self.reinforcement_off or self.learning_hold:
             return None, None
         kind_l, kind_r = self.stimuli.reinforcement(float(now), bool(learning), skip_l, skip_r)
         if (kind_l or kind_r) and self.learn:
@@ -306,7 +343,7 @@ class MbTrainer:
 
         The counters below are not written into ``mb_train_state.npz``.
         """
-        if not self.learn or self.dan != "teacher" or self.reinforcement_off:
+        if not self._plasticity_open() or self.dan != "teacher":
             return False
         fired = False
         if kind_l in ("pam", "ppl1") and self.last_fwd is not None:

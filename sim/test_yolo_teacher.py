@@ -1275,6 +1275,151 @@ class TeacherLeadTests(unittest.TestCase):
             fresh.load(path)
             self.assertEqual(fresh.teacher_pam_l, 0)
 
+    def test_pause_blocks_target_loss_until_motion_and_grace(self):
+        import json
+        import urllib.request
+
+        import numpy as np
+
+        from robot.flybrain_onboard.app import BrainLoop, serve
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import PAUSE_GRACE_S, MbTrainer, default_npz
+
+        self.assertEqual(PAUSE_GRACE_S, 1.0)
+
+        def loop_at(now):
+            brain = MbTrainer(default_npz(), seed=1, overlap=0.4)
+            loop = BrainLoop(SportDrive(None), brain, "/tmp/mb_pause_hold.npz")
+            loop.learn = True
+            loop.mb.learn = True
+            camera = np.zeros((32, 32, 3), dtype=np.uint8)
+            loop.ingest(camera, np.zeros_like(camera), now)
+            loop.handle({"op": "autonomy_on"}, now)
+            loop.frames_ok = True
+            loop.last_frame_t = now
+            loop.last_hb = now
+            loop.recognized = True
+            loop.recognized_l = True
+            loop.recognized_r = True
+            loop.mb.r_l = 4.0
+            loop.mb.r_r = 4.0
+            loop.dist_m = 3.0
+            loop.forward_m = 3.0
+            return loop
+
+        def lose(loop, now):
+            loop.frames_ok = True
+            loop.last_frame_t = now
+            loop.handle(
+                {
+                    "op": "teacher_aim",
+                    "x": 0.0,
+                    "z": 0.35,
+                    "weight": 1.0,
+                    "lost": True,
+                    "last_l": True,
+                },
+                now,
+            )
+
+        paused = loop_at(5.0)
+        quiet = paused.status()
+        self.assertFalse(quiet["paused"])
+        self.assertFalse(quiet["learning_frozen"])
+        left = np.array(paused.mb.brain.kc_mbon_w, copy=True)
+        right = np.array(paused.mb.brain_r.kc_mbon_w, copy=True)
+        before = int(paused.mb.n_ppl1)
+        paused.handle({"op": "pause"}, 5.0)
+        lose(paused, 5.1)
+        cmd = paused.tick(5.2)
+        self.assertEqual((cmd.x, cmd.z), (0.0, 0.0))
+        held = paused.status()
+        self.assertTrue(held["paused"])
+        self.assertTrue(held["learning_frozen"])
+        self.assertFalse(held["ppl1_event"])
+        self.assertEqual(paused.mb.n_ppl1, before)
+        self.assertEqual(paused.mb.teacher_ppl1_l, 0)
+        np.testing.assert_array_equal(paused.mb.brain.kc_mbon_w, left)
+        np.testing.assert_array_equal(paused.mb.brain_r.kc_mbon_w, right)
+
+        paused.handle({"op": "punish"}, 5.3)
+        paused.ingest(np.zeros((8, 8, 3), dtype=np.uint8), np.zeros((8, 8, 3), dtype=np.uint8), 5.3)
+        self.assertFalse(paused.status()["ppl1_event"])
+        self.assertEqual(paused.mb.n_ppl1, before)
+        np.testing.assert_array_equal(paused.mb.brain.kc_mbon_w, left)
+        np.testing.assert_array_equal(paused.mb.brain_r.kc_mbon_w, right)
+
+        paused.handle({"op": "resume"}, 8.0)
+        lose(paused, 8.0)
+        paused.tick(8.0)
+        self.assertFalse(paused.status()["paused"])
+        self.assertTrue(paused.status()["learning_frozen"])
+        self.assertEqual(paused.mb.n_ppl1, before)
+        np.testing.assert_array_equal(paused.mb.brain.kc_mbon_w, left)
+
+        lose(paused, 8.0 + PAUSE_GRACE_S)
+        paused.tick(8.0 + PAUSE_GRACE_S)
+        self.assertFalse(paused.status()["learning_frozen"])
+        self.assertEqual(paused.mb.n_ppl1, before + 1)
+        self.assertTrue(paused.status()["ppl1_event"])
+        self.assertEqual(paused.mb.teacher_ppl1_l, 1)
+
+        stopped = loop_at(5.0)
+        stopped.handle({"op": "estop"}, 5.0)
+        lose(stopped, 5.1)
+        cmd = stopped.tick(5.2)
+        self.assertEqual((cmd.x, cmd.z), (0.0, 0.0))
+        self.assertFalse(stopped.status()["paused"])
+        self.assertTrue(stopped.status()["learning_frozen"])
+        self.assertEqual(stopped.mb.n_ppl1, 0)
+        self.assertFalse(stopped.status()["ppl1_event"])
+
+        external = loop_at(5.0)
+        external.handle({"op": "external_stop"}, 5.0)
+        lose(external, 5.1)
+        cmd = external.tick(5.2)
+        self.assertEqual((cmd.x, cmd.z), (0.0, 0.0))
+        self.assertTrue(external.status()["learning_frozen"])
+        self.assertEqual(external.mb.n_ppl1, 0)
+
+        served = loop_at(1.0)
+        server = serve(served, 0)
+        port = int(server.server_address[1])
+        try:
+            def post(path, payload):
+                req = urllib.request.Request(
+                    "http://127.0.0.1:%d%s" % (port, path),
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            body = post("/pause", {})
+            self.assertTrue(body["paused"])
+            self.assertTrue(body["learning_frozen"])
+            body = post("/cmd", {"op": "resume"})
+            self.assertFalse(body["paused"])
+            self.assertTrue(body["learning_frozen"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_sim_estop_drops_a_punish(self):
+        import numpy as np
+
+        from sim.recognize_train import RecognizeTrainSim
+
+        session = RecognizeTrainSim(n_agents=1, seed=1, learner="mb", dan="teacher", auto_teach=False)
+        session.pilot.estop()
+        left = np.array(session.mb.brain.kc_mbon_w, copy=True)
+        before = int(session.mb.n_ppl1)
+        session.step(0.4, 0.2, learn=True, teach="ppl1")
+        self.assertEqual(session.mb.n_ppl1, before)
+        self.assertTrue(session.mb.learning_hold)
+        np.testing.assert_array_equal(session.mb.brain.kc_mbon_w, left)
+
 
 if __name__ == "__main__":
     unittest.main()
