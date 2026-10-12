@@ -252,6 +252,78 @@ class TrainerDockTests(unittest.TestCase):
         finally:
             pygame.quit()
 
+    def test_journal_run_marker_chips(self):
+        import pygame
+        import numpy as np
+
+        from sim.dock_layout import find_leaf
+        from sim.train_monitor import MonitorInput, MonitorView, TrainMonitor, window_from_logical
+        from sim.ui_theme import theme_name
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("run-marker")
+            mon._on_resize(1920, 1080)
+            mon._set_theme("dark")
+            self.assertEqual(theme_name(), "dark")
+            view = MonitorView(
+                title="recognition training",
+                learner="mb",
+                learning_on=True,
+                camera=np.zeros((90, 160, 3), dtype=np.uint8),
+                lidar=np.zeros((64, 64, 3), dtype=np.uint8),
+                log_lines=["  0.0s  строка журнала", "  0.1s  заход: до · слева"],
+                run_stage="до",
+                run_side="слева",
+                drive_l=483.2,
+                drive_r=12.1,
+            )
+            mon.draw(view)
+            self.assertGreater(mon.journal_rect.h, 80)
+            self.assertEqual([name for _rect, name in mon.run_stage_rects], ["до", "обучение", "после"])
+            self.assertEqual([name for _rect, name in mon.run_side_rects], ["слева", "справа"])
+            content = mon._content_of("journal")
+            chips_bottom = max(rect.bottom for rect, _name in mon.run_stage_rects + mon.run_side_rects)
+            self.assertLess(chips_bottom, content.bottom - 16)
+            for rect, _name in mon.run_stage_rects + mon.run_side_rects:
+                self.assertTrue(content.contains(rect))
+            selected = mon.run_stage_rects[0][0]
+            idle = mon.run_stage_rects[2][0]
+            peach = tuple(mon.screen.get_at((selected.x + 8, selected.centery))[:3])
+            rest = tuple(mon.screen.get_at((idle.x + 8, idle.centery))[:3])
+            self.assertEqual(peach, (201, 120, 91))
+            self.assertNotEqual(rest, peach)
+            out = __import__("pathlib").Path("/opt/cursor/artifacts")
+            out.mkdir(parents=True, exist_ok=True)
+            frame = mon.present_into((1920, 1080))
+            pygame.image.save(frame, str(out / "run_marker_journal_dark.png"))
+            crop = frame.subsurface(mon.journal_rect.clip(frame.get_rect()))
+            pygame.image.save(crop, str(out / "run_marker_chips_dark.png"))
+
+            after = next(rect for rect, name in mon.run_stage_rects if name == "после")
+            right = next(rect for rect, name in mon.run_side_rects if name == "справа")
+            inp = MonitorInput()
+            wx, wy = window_from_logical(after.center, 1920, 1080)
+            mon._on_primary_down((int(wx), int(wy)), inp)
+            self.assertEqual(inp.run_stage, "после")
+            inp2 = MonitorInput()
+            wx, wy = window_from_logical(right.center, 1920, 1080)
+            mon._on_primary_down((int(wx), int(wy)), inp2)
+            self.assertEqual(inp2.run_side, "справа")
+
+            find_leaf(mon.dock, "journal").collapsed = True
+            mon._apply_layout(mon.screen.get_height())
+            mon.draw(view)
+            self.assertLess(mon.journal_rect.h, 40)
+            self.assertEqual(mon.run_stage_rects, [])
+            self.assertEqual(mon.run_side_rects, [])
+            mon._set_theme("light")
+        finally:
+            from sim.ui_theme import apply_theme
+
+            apply_theme("light")
+            pygame.quit()
+
     def test_view_menu_checks_stay_open_and_the_theme_toggle_saves(self):
         import json
 
@@ -1227,10 +1299,11 @@ class CursorTests(unittest.TestCase):
             print("ok")
             """
         )
+        root = __import__("pathlib").Path(__file__).resolve().parents[1]
         for mode in ("on", "off"):
             proc = subprocess.run(
                 [sys.executable, "-X", "dev", "-c", script, mode],
-                cwd="/workspace",
+                cwd=str(root),
                 capture_output=True,
                 text=True,
             )
@@ -1257,7 +1330,17 @@ class StatusColorTests(unittest.TestCase):
             self.assertEqual(mon._link_color(MonitorView(udp_status="udp 127.0.0.1:5451 ok")), PEACH)
             self.assertEqual(mon._link_color(MonitorView(udp_status="нет связи")), AMBER)
             self.assertEqual(mon._link_color(MonitorView(udp_status="link error")), RED)
-            self.assertEqual(mon._link_color(MonitorView(onboard="192.168.35.213", udp_status="")), AMBER)
+            self.assertEqual(mon._link_color(MonitorView(onboard="192.168.35.213", udp_status="")), RED)
+            quiet = "борт 192.168.35.213:8090  нет связи"
+            live = "борт 192.168.35.213:8090  ok   UDP 5451 не используется"
+            self.assertEqual(mon._link_color(MonitorView(onboard=True, udp_status=quiet)), RED)
+            self.assertEqual(mon._link_color(MonitorView(onboard=True, udp_status=live)), GREEN)
+            from sim.train_monitor import BOARD_CAPTION, BOARD_DOWN, board_caption
+
+            self.assertEqual(board_caption(MonitorView(onboard=True, udp_status=quiet)), BOARD_DOWN)
+            self.assertEqual(BOARD_DOWN, "мозг не запущен (8090)")
+            self.assertEqual(board_caption(MonitorView(onboard=True, udp_status=live)), BOARD_CAPTION)
+            self.assertEqual(board_caption(MonitorView(udp_status=quiet)), BOARD_CAPTION)
         finally:
             pygame.quit()
 
@@ -1296,7 +1379,7 @@ class PaletteTests(unittest.TestCase):
         allowed_names = {"PEACH", "GREEN", "RED", "TEACHER", "ESTOP", "AMBER"}
         # The lamp disc is punched with an opaque white mask. It is not a paint colour.
         exceptions = {(255, 255, 255, 255)}
-        text = Path("/workspace/sim/train_monitor.py").read_text(encoding="utf-8")
+        text = (Path(__file__).resolve().parents[1] / "sim" / "train_monitor.py").read_text(encoding="utf-8")
         text = re.sub(r"(?m)#.*$", "", text)
         kept = []
         for line in text.splitlines():
@@ -1331,12 +1414,14 @@ class FontFloorTests(unittest.TestCase):
         try:
             mon._on_resize(1920, 1080)
             mon.draw(MonitorView(learner="mb", title="recognition training"))
-            full = mon.font_tiny.get_height()
-            self.assertGreaterEqual(mon._font_need, MIN_FONT_PX)
+            full_need = mon._font_need
+            self.assertGreaterEqual(full_need, MIN_FONT_PX)
+            self.assertGreaterEqual(mon.font_tiny.get_height(), MIN_FONT_PX)
             mon._on_resize(1000, 700)
             mon.draw(MonitorView(learner="mb", title="recognition training"))
+            self.assertGreater(mon._font_need, full_need)
             self.assertGreaterEqual(mon._font_need * MIN_SCALE, MIN_FONT_PX)
-            self.assertGreater(mon.font_tiny.get_height(), full)
+            self.assertGreaterEqual(mon.font_tiny.get_height(), MIN_FONT_PX)
         finally:
             pygame.quit()
 
@@ -1371,6 +1456,81 @@ class BoardLampTests(unittest.TestCase):
         finally:
             pygame.quit()
 
+    def test_onboard_lamp_is_red_when_8090_is_silent_and_green_when_up(self):
+        import pygame
+
+        from sim.train_monitor import BOARD_DOWN, GREEN, MENU_H, RED, MonitorView, TrainMonitor, board_caption
+        from sim.ui_theme import apply_theme
+
+        pygame.init()
+        mon = TrainMonitor("board-link")
+        try:
+            mon._on_resize(1920, 1080)
+            apply_theme("dark")
+            title = "тренировка узнавания   мозг на роботе"
+            quiet = MonitorView(
+                title=title,
+                learner="mb",
+                onboard=True,
+                learning_on=True,
+                autonomy_on=False,
+                udp_status="борт 192.168.35.213:8090  нет связи",
+            )
+            mon.draw(quiet)
+            self.assertEqual(board_caption(quiet), BOARD_DOWN)
+            title_x = mon.doggibot_rect.right + 12
+            lamp_x = title_x + mon.font.size(title)[0] + 18
+            text_w = mon.font_sm.size(BOARD_DOWN)[0]
+            self.assertGreaterEqual(mon.mode_badge_rect.x, lamp_x + 16 + text_w)
+            self.assertLess(lamp_x + 16 + text_w, mon.help_bar_rect.x)
+            cy = MENU_H // 2
+            down = mon.screen.get_at((lamp_x, cy))
+            self.assertGreater(down.r, down.g + 20)
+            self.assertGreater(down.r, down.b + 20)
+            inked = 0
+            for dx in range(14, 14 + min(text_w, 80)):
+                pix = mon.screen.get_at((lamp_x + dx, cy))
+                if pix.r > pix.g + 15 and pix.r > 80:
+                    inked += 1
+            self.assertGreater(inked, 4)
+            self._save_menu(mon, "/opt/cursor/artifacts/board_lamp_down_dark.png")
+
+            live = MonitorView(
+                title=title,
+                learner="mb",
+                onboard=True,
+                learning_on=True,
+                autonomy_on=True,
+                pilot_phase="search",
+                pilot_mode="АВТОНОМИЯ",
+                udp_status="борт 192.168.35.213:8090  ok   UDP 5451 не используется",
+            )
+            mon.draw(live)
+            self.assertEqual(board_caption(live), "борт")
+            self.assertEqual(mon._link_color(live), GREEN)
+            self.assertEqual(mon._link_color(quiet), RED)
+            lamp_x = title_x + mon.font.size(title)[0] + 18
+            up = mon.screen.get_at((lamp_x, cy))
+            self.assertGreater(up.g, up.r)
+            self.assertGreater(up.g, up.b)
+            word_w = mon.font_sm.size("борт")[0]
+            self.assertGreaterEqual(mon.mode_badge_rect.x, lamp_x + 16 + word_w)
+            self._save_menu(mon, "/opt/cursor/artifacts/board_lamp_ok_dark.png")
+        finally:
+            pygame.quit()
+
+    def _save_menu(self, mon, path: str) -> None:
+        import pygame
+
+        from sim.train_monitor import MENU_H, WIN_W
+
+        out = __import__("pathlib").Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        crop = pygame.Rect(0, 0, WIN_W, MENU_H)
+        shot = mon.screen.subsurface(crop).copy()
+        big = pygame.transform.smoothscale(shot, (shot.get_width() * 2, shot.get_height() * 2))
+        pygame.image.save(big, str(out))
+
 
 class FooterClearanceTests(unittest.TestCase):
     def test_buttons_clear_the_footer_at_laptop_sizes(self):
@@ -1387,7 +1547,7 @@ class FooterClearanceTests(unittest.TestCase):
             learner="mb",
             learning_on=True,
             yolo_state="смотрит",
-            udp_status="симулятор. В автономии ведёт мозг, иначе сценарий.",
+            udp_status="симулятор. В автономии ведёт мозг, иначе стрелки или сценарий.",
             last_command="сценарий",
             keys_hint=SIM_KEYS,
             focused=True,
@@ -1515,7 +1675,7 @@ class FooterClearanceTests(unittest.TestCase):
         view = MonitorView(
             title="тренировка узнавания   go2_1",
             learner="mb",
-            udp_status="симулятор. В автономии ведёт мозг, иначе сценарий.",
+            udp_status="симулятор. В автономии ведёт мозг, иначе стрелки или сценарий.",
             last_command="сценарий",
             keys_hint=SIM_KEYS,
             focused=True,

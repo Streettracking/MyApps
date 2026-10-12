@@ -26,8 +26,9 @@ from sim.brain_panel import PanelTrace, widget_status
 from sim.frame_sense import features_from_frames
 from sim.learn_flash import flash_payload
 from sim.map_marks import MarkLayer
-from sim.mb_train import MbTrainer, default_npz
-from sim.hemifield import DEFAULT_OVERLAP, fly_turn
+from sim.mb_train import PAUSE_GRACE_S, MbTrainer, default_npz
+from sim.hemifield import DEFAULT_OVERLAP, live_turn
+from sim.run_marker import RunMarker
 from sim.raw_sense import recog_label
 from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, eyes_state_label, phase_label
 from sim.pilot import forward_clearance, scrub_range
@@ -60,8 +61,12 @@ class BrainLoop:
         self.pilot = Pilot(self_radius=self.self_radius)
         self.learn = False
         self.mb.learn = False
+        self.paused = False
+        self.external_stop = False
+        self._link_stop = False
         self.marks = MarkLayer()
         self.log = deque(maxlen=16)
+        self.run_marker = RunMarker()
         self.t0 = time.monotonic()
         self.last_hb = self.t0
         self.last_frame_t = 0.0
@@ -110,6 +115,7 @@ class BrainLoop:
         self._yolo_r = None
         self._yolo_t = -1e9
         self._dog_in_frame = False
+        self.searching = False
         self.panel = PanelTrace()
         self._lock = threading.Lock()
         self._log("наблюдение: SportClient не трогаем, пока нет автономии или перехвата")
@@ -182,7 +188,7 @@ class BrainLoop:
     def halt(self) -> None:
         self._stop_once()
 
-    def on_estop(self) -> None:
+    def on_estop(self, now: float) -> None:
         """One StopMove, then a block. A repeat while the block holds sends nothing."""
         if self.pilot.mode == "estop":
             return
@@ -191,24 +197,71 @@ class BrainLoop:
         self.drive.stop()
         self._sent_move = False
         self._moving = False
+        self._refresh_hold(float(now), False)
         self._log("E-STOP")
 
-    def on_space(self) -> None:
+    def on_space(self, now: float) -> None:
         self._stop_once()
         self.pilot.space()
+        self._refresh_hold(float(now), False)
         self._log("стоп")
 
-    def on_takeover(self) -> None:
+    def _stop_latched(self, now: float) -> bool:
+        """True while an E-STOP, a pause, a space-stop, or an external stop holds.
+
+        A lost link or lost frames while this process is driving is an external
+        stop too. It clears once both are back.
+        """
+        link_ok = (float(now) - self.last_hb) <= LINK_HOLD_S
+        frames_ok = self.frames_ok and (float(now) - self.last_frame_t) <= LINK_HOLD_S
+        if self.driving() and (not link_ok or not frames_ok):
+            self._link_stop = True
+        elif link_ok and frames_ok:
+            self._link_stop = False
+        return bool(
+            self.paused
+            or self.external_stop
+            or self._link_stop
+            or self.pilot.mode == "estop"
+            or self.pilot.held_stop
+        )
+
+    def _refresh_hold(self, now: float, moving: bool) -> None:
+        """Freeze dopamine while a stop holds, and for PAUSE_GRACE_S after motion."""
+        self.mb.note_motion_hold(self._stop_latched(now), bool(moving), float(now))
+
+    def learning_frozen(self) -> bool:
+        return bool(self.mb.learning_hold)
+
+    def on_takeover(self, now: float) -> None:
+        """Stop the brain, freeze learning, and leave the stick with the operator."""
         self._stop_once()
         self.pilot.takeover()
+        if not self.paused:
+            self.paused = True
+            self._log("пауза: ход ноль, пластичность заморожена")
+        self._refresh_hold(float(now), False)
         self._log("перехват: ручное, автономия сама не вернётся")
+
+    def on_takeover_release(self, now: float) -> None:
+        """Drop the stick and stay paused. Autonomy does not start by itself."""
+        self._stop_once()
+        if self.pilot.mode != "estop":
+            self.pilot.stop_auto()
+        if not self.paused:
+            self.paused = True
+            self._log("пауза: ход ноль, пластичность заморожена")
+        self._refresh_hold(float(now), False)
+        self._log("перехват снят, мозг сам не поедет")
 
     def handle(self, data: dict, now: float) -> None:
         self.note_heartbeat(now)
         op = str(data.get("op", ""))
         with self._lock:
             if op == "autonomy_on":
-                if self.pilot.start_auto(now):
+                if self.paused and self.pilot.took_over:
+                    self._log("перехват держит руль, автономия ждёт явной команды")
+                elif self.pilot.start_auto(now):
                     self._log("автономия: поиск в одну сторону, z=+0.35, без качки")
                     self._log("руль: %s" % ("билатерально, z от R_L−R_R" if self.pilot.steer == "bilateral" else "секторы"))
                     self._log("сырой сектор — мозг; sector_smooth — медиана контроллера")
@@ -248,11 +301,36 @@ class BrainLoop:
                     self._teach_l = left if left in ("pam", "ppl1") else None
                     self._teach_r = right if right in ("pam", "ppl1") else None
             elif op == "estop":
-                self.on_estop()
+                self.on_estop(now)
+            elif op == "pause":
+                if not self.paused:
+                    self.paused = True
+                    self._stop_once()
+                    self._log("пауза: ход ноль, пластичность заморожена")
+                self._refresh_hold(now, False)
+            elif op == "resume":
+                if self.paused:
+                    self.paused = False
+                    self._log("ход разрешён, обучение заморожено до движения и ещё %.0f с" % PAUSE_GRACE_S)
+                self._refresh_hold(now, False)
+            elif op == "external_stop":
+                on = bool(data.get("on", True))
+                if on and not self.external_stop:
+                    self.external_stop = True
+                    self._stop_once()
+                    self._log("внешний стоп: ход ноль, пластичность заморожена")
+                elif not on and self.external_stop:
+                    self.external_stop = False
+                    self._log("внешний стоп снят")
+                else:
+                    self.external_stop = on
+                self._refresh_hold(now, False)
             elif op == "space":
-                self.on_space()
+                self.on_space(now)
             elif op == "takeover":
-                self.on_takeover()
+                self.on_takeover(now)
+            elif op == "takeover_off":
+                self.on_takeover_release(now)
             elif op == "stand_up":
                 code = self.drive.stand_up(now)
                 self._log(f"StandUp code={code}")
@@ -269,7 +347,13 @@ class BrainLoop:
                 self.mb.save(self.state_path)
                 self._log("сохранено")
             elif op == "manual":
-                if self.driving():
+                # Autonomy keeps the brain's own command. Axes apply only after takeover.
+                if (
+                    self.paused
+                    and self.pilot.took_over
+                    and self.pilot.mode == "manual"
+                    and not self.external_stop
+                ):
                     self.note_manual(float(data.get("x", 0.0)), float(data.get("z", 0.0)), now)
             elif op == "steer":
                 mode = str(data.get("mode", ""))
@@ -305,6 +389,9 @@ class BrainLoop:
                     or bool(data.get("hit_l"))
                     or bool(data.get("hit_r"))
                 )
+            elif op == "run_marker":
+                self.run_marker.set_stage(data.get("stage"))
+                self.run_marker.set_side(data.get("side"))
             elif op == "heartbeat":
                 pass
 
@@ -318,7 +405,10 @@ class BrainLoop:
         self._pam_event = False
         self._ppl1_event = False
         self.mb.learn = self.learn
+        self._refresh_hold(float(now), False)
         yolo_fresh = float(now) - self._yolo_t <= AIM_HOLD_S
+        seen_now = bool(yolo_fresh and self._dog_in_frame)
+        self.searching = self.pilot.mode == "auto" and not seen_now
         fwd = self.mb.forward(
             feat,
             yolo_l=self._yolo_l if yolo_fresh else None,
@@ -349,6 +439,10 @@ class BrainLoop:
         self._teach_r = None
         self._taught_l = None
         self._taught_r = None
+        if self.mb.learning_hold or self.searching:
+            kind = None
+            side_l = None
+            side_r = None
         if (kind or side_l or side_r) and not self.learn:
             if float(now) - self._learn_block_log > 1.0:
                 self._log("обучение выключено, T/X веса не меняют")
@@ -372,7 +466,8 @@ class BrainLoop:
             pulsed_l = side_l in ("pam", "ppl1")
             pulsed_r = side_r in ("pam", "ppl1")
             self._note_dan(side_l, side_r)
-        self.mb.settle(pulsed_l, pulsed_r)
+        if not self.searching:
+            self.mb.settle(pulsed_l, pulsed_r)
         with self._lock:
             self.recognized = seen
             self.sector = self.marks.aim_sector if seen else None
@@ -390,6 +485,7 @@ class BrainLoop:
             self.confidence_r_ready = bool(self.mb.conf_r.ready)
             dog = (float(now) - self._yolo_t) <= AIM_HOLD_S and bool(self._dog_in_frame)
             self.panel.note(float(now), float(value), dog, self.mb)
+            self.run_marker.note(float(now), float(self.mb.r_l), float(self.mb.r_r))
 
     def tick(self, now: float) -> DriveCommand:
         now = float(now)
@@ -412,10 +508,37 @@ class BrainLoop:
             r_r = float(self.mb.r_r)
             recognized_l = self.recognized_l
             recognized_r = self.recognized_r
+        if (
+            self.paused
+            and self.pilot.took_over
+            and self.pilot.mode == "manual"
+            and not self.external_stop
+        ):
+            # The brain stays paused and learning stays frozen. The stick is the operator's.
+            self.pilot.track.note_sides(r_l, r_r, self.mb.base_l, self.mb.base_r)
+            self._refresh_hold(now, False)
+            x = float(manual[0]) if recent_manual else 0.0
+            z = float(manual[1]) if recent_manual else 0.0
+            if abs(x) + abs(z) > 1e-6:
+                self.pilot.phase = "manual"
+                self.pilot.who = "оператор"
+                cmd = DriveCommand(x, z, False, "manual", "оператор", "")
+                self._emit(cmd, now)
+                return cmd
+            self.pilot.phase = "stop"
+            self.pilot.who = "оператор"
+            self._stop_once()
+            return DriveCommand(0.0, 0.0, True, "stop", "оператор", "")
+        if self.paused or self.external_stop or self.pilot.mode == "estop" or self.pilot.held_stop:
+            self.pilot.track.note_sides(r_l, r_r, self.mb.base_l, self.mb.base_r)
+            self._refresh_hold(now, False)
+            self._stop_once()
+            return DriveCommand(0.0, 0.0, True, "stop", "никто", "")
         if not self.driving():
-            # Watch-only, or the E-STOP block: no Move and no StopMove.
+            # Watch-only: no Move and no StopMove.
             # The fly's two readouts still update so the laptop can see them.
-            self.pilot.track.note_sides(r_l, r_r)
+            self.pilot.track.note_sides(r_l, r_r, self.mb.base_l, self.mb.base_r)
+            self._refresh_hold(now, False)
             return DriveCommand(0.0, 0.0, True, "stop", "никто", "")
         if self.pilot.mode != "auto":
             axes = manual
@@ -426,7 +549,8 @@ class BrainLoop:
         if not link_ok or not frames_ok:
             # The sport service would keep our last Move for about a second.
             # One StopMove covers that. Further ticks stay silent.
-            self.pilot.track.note_sides(r_l, r_r)
+            self.pilot.track.note_sides(r_l, r_r, self.mb.base_l, self.mb.base_r)
+            self._refresh_hold(now, False)
             self._stop_once()
             self.pilot.phase = "stop"
             self.pilot.who = "никто"
@@ -446,13 +570,37 @@ class BrainLoop:
             r_r=r_r,
             recognized_l=recognized_l,
             recognized_r=recognized_r,
+            base_l=float(self.mb.base_l),
+            base_r=float(self.mb.base_r),
         )
+        from sim.search_reflex import cover_command
+
+        seen = (now - self._yolo_t) <= AIM_HOLD_S and bool(self._dog_in_frame)
+        if self.pilot.mode == "auto" and cmd.phase != "stop":
+            cmd, self.searching = cover_command(
+                cmd, seen, r_l, r_r, dist_m, forward_m, self.mb.base_l, self.mb.base_r
+            )
+            self.pilot.phase = cmd.phase
+        elif self.pilot.mode != "auto":
+            self.searching = False
         cmd = self._blend_teacher(cmd, now, forward_m)
         self._emit(cmd, now)
         return cmd
 
+    def _command_will_move(self, cmd: DriveCommand, now: float, forward_m) -> bool:
+        """True when the command that would leave this tick is not a full stop."""
+        if self._stop_latched(now):
+            return False
+        speed, yaw = float(cmd.x), float(cmd.z)
+        if self.pilot.mode == "auto" and self.teacher_weight > 0.005:
+            teacher_x, teacher_z, _hit_l, _hit_r = self.lead.remote(now)
+            speed, yaw = mix_velocity(cmd.x, cmd.z, teacher_x, teacher_z, self.teacher_weight)
+            speed, yaw, _stopped = apply_guards(speed, yaw, self.pilot.mode == "estop", forward_m)
+        return abs(float(speed)) > 1e-6 or abs(float(yaw)) > 1e-6
+
     def _blend_teacher(self, cmd: DriveCommand, now: float, forward_m) -> DriveCommand:
         """Keep the fly command at weight 0. Otherwise mix, then apply the stops."""
+        self._refresh_hold(now, self._command_will_move(cmd, now, forward_m))
         teacher_x, teacher_z, hit_l, hit_r = self.lead.remote(now)
         self.fly_x = float(cmd.x)
         self.fly_z = float(cmd.z)
@@ -554,6 +702,8 @@ class BrainLoop:
                 "who": self.pilot.who,
                 "took_over": bool(self.pilot.took_over),
                 "learning": bool(self.learn),
+                "paused": bool(self.paused),
+                "learning_frozen": bool(self.mb.learning_hold),
                 "reinforcement_off": bool(self.mb.reinforcement_off),
                 "object_drives": _object_drives(self.mb.object_drives),
                 "autonomy": bool(self.pilot.autonomy),
@@ -604,7 +754,7 @@ class BrainLoop:
                 "kc_active_frac_abp": self._kc_active_frac_group("abp"),
                 "drive_l": drive_l,
                 "drive_r": drive_r,
-                "turn": float(fly_turn(drive_l, drive_r)),
+                "turn": float(live_turn(drive_l, drive_r, self.mb.base_l, self.mb.base_r)),
                 "pam_event": bool(self._pam_event),
                 "ppl1_event": bool(self._ppl1_event),
                 "pam_count": int(self.mb.n_pam),
@@ -617,6 +767,7 @@ class BrainLoop:
                 "flash_r": flash_payload(self.mb.flash_r),
                 "log": list(self.log),
             }
+            payload.update(self.run_marker.status())
             payload.update(widget_status(self.mb, self.panel))
             return payload
 
@@ -707,7 +858,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self) -> None:
-        self.loop.note_heartbeat(time.monotonic())
+        """Read-only. A status poll must not keep the link alive."""
         if self.path.split("?", 1)[0] != "/status":
             self.send_response(404)
             self.end_headers()
@@ -724,7 +875,16 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             data = {}
         now = time.monotonic()
-        if self.path.split("?", 1)[0] != "/cmd":
+        path = self.path.split("?", 1)[0]
+        if path == "/heartbeat":
+            self.loop.note_heartbeat(now)
+            self._send(self.loop.status())
+            return
+        if path == "/pause":
+            data["op"] = "pause"
+        elif path == "/resume":
+            data["op"] = "resume"
+        elif path != "/cmd":
             self.send_response(404)
             self.end_headers()
             return
@@ -736,6 +896,13 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def serve(loop: BrainLoop, port: int = 8090) -> ThreadingHTTPServer:
+    """GET /status, POST /cmd, POST /heartbeat, POST /pause, and POST /resume.
+
+    GET is read-only. The link stays up only while POST /cmd or POST /heartbeat
+    arrives inside LINK_HOLD_S. Pause and resume accept ``{}``. The same ops
+    work on POST /cmd. Pause zeros motion and freezes plasticity. After resume,
+    learning stays frozen until the dog moves and then for PAUSE_GRACE_S.
+    """
     _Handler.loop = loop
     server = ThreadingHTTPServer(("0.0.0.0", int(port)), _Handler)
     threading.Thread(target=server.serve_forever, name="flybrain-http", daemon=True).start()

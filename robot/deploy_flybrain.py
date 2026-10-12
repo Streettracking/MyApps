@@ -55,6 +55,7 @@ SIM_FILES = (
     "teacher_lead.py",
     "stimuli.py",
     "brain_panel.py",
+    "run_marker.py",
 )
 
 FORBIDDEN = (

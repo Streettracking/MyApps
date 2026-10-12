@@ -856,12 +856,20 @@ class QuietLaunchTests(unittest.TestCase):
         os.environ.pop("RECOGNIZER_START_TEACHER", None)
         self.assertEqual(OwnedTeacher().start("http://127.0.0.1:8091"), "")
         os.environ["RECOGNIZER_START_TEACHER"] = "1"
+        os.environ["RECOGNIZER_YOLO_PYTHON"] = str(Path("/tmp/no-such-yolo-python"))
+        os.environ["RECOGNIZER_YOLO_WEIGHTS"] = str(Path("/tmp/no-such-best.pt"))
+        os.environ["RECOGNIZER_YOLO_SERVE"] = str(Path("/tmp/no-such-serve.py"))
         try:
-            note = OwnedTeacher().start("http://127.0.0.1:9")
+            owned = OwnedTeacher()
+            note = owned.start("http://127.0.0.1:9")
             self.assertIn("нет файла", note)
+            self.assertIsNone(owned.proc)
             self.assertIsNone(teacher_argv("http://127.0.0.1:8091", home=Path("/tmp/no-such-home")))
         finally:
             os.environ.pop("RECOGNIZER_START_TEACHER", None)
+            os.environ.pop("RECOGNIZER_YOLO_PYTHON", None)
+            os.environ.pop("RECOGNIZER_YOLO_WEIGHTS", None)
+            os.environ.pop("RECOGNIZER_YOLO_SERVE", None)
 
     def test_teacher_argv_prefers_pythonw_beside_the_venv(self):
         from sim.yolo_teacher import teacher_argv
@@ -1274,6 +1282,326 @@ class TeacherLeadTests(unittest.TestCase):
             fresh = MbTrainer(default_npz(), seed=1, overlap=0.4)
             fresh.load(path)
             self.assertEqual(fresh.teacher_pam_l, 0)
+
+    def test_pause_blocks_target_loss_until_motion_and_grace(self):
+        import json
+        import urllib.request
+
+        import numpy as np
+
+        from robot.flybrain_onboard.app import BrainLoop, serve
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import PAUSE_GRACE_S, MbTrainer, default_npz
+
+        self.assertEqual(PAUSE_GRACE_S, 1.0)
+
+        def loop_at(now):
+            brain = MbTrainer(default_npz(), seed=1, overlap=0.4)
+            loop = BrainLoop(SportDrive(None), brain, "/tmp/mb_pause_hold.npz")
+            loop.learn = True
+            loop.mb.learn = True
+            camera = np.zeros((32, 32, 3), dtype=np.uint8)
+            loop.ingest(camera, np.zeros_like(camera), now)
+            loop.handle({"op": "autonomy_on"}, now)
+            loop.frames_ok = True
+            loop.last_frame_t = now
+            loop.last_hb = now
+            loop.recognized = True
+            loop.recognized_l = True
+            loop.recognized_r = True
+            loop.mb.r_l = 4.0
+            loop.mb.r_r = 4.0
+            loop.dist_m = 3.0
+            loop.forward_m = 3.0
+            return loop
+
+        def lose(loop, now):
+            loop.frames_ok = True
+            loop.last_frame_t = now
+            loop.handle(
+                {
+                    "op": "teacher_aim",
+                    "x": 0.0,
+                    "z": 0.35,
+                    "weight": 1.0,
+                    "lost": True,
+                    "last_l": True,
+                },
+                now,
+            )
+
+        paused = loop_at(5.0)
+        quiet = paused.status()
+        self.assertFalse(quiet["paused"])
+        self.assertFalse(quiet["learning_frozen"])
+        left = np.array(paused.mb.brain.kc_mbon_w, copy=True)
+        right = np.array(paused.mb.brain_r.kc_mbon_w, copy=True)
+        before = int(paused.mb.n_ppl1)
+        paused.handle({"op": "pause"}, 5.0)
+        lose(paused, 5.1)
+        cmd = paused.tick(5.2)
+        self.assertEqual((cmd.x, cmd.z), (0.0, 0.0))
+        held = paused.status()
+        self.assertTrue(held["paused"])
+        self.assertTrue(held["learning_frozen"])
+        self.assertFalse(held["ppl1_event"])
+        self.assertEqual(paused.mb.n_ppl1, before)
+        self.assertEqual(paused.mb.teacher_ppl1_l, 0)
+        np.testing.assert_array_equal(paused.mb.brain.kc_mbon_w, left)
+        np.testing.assert_array_equal(paused.mb.brain_r.kc_mbon_w, right)
+
+        paused.handle({"op": "punish"}, 5.3)
+        paused.ingest(np.zeros((8, 8, 3), dtype=np.uint8), np.zeros((8, 8, 3), dtype=np.uint8), 5.3)
+        self.assertFalse(paused.status()["ppl1_event"])
+        self.assertEqual(paused.mb.n_ppl1, before)
+        np.testing.assert_array_equal(paused.mb.brain.kc_mbon_w, left)
+        np.testing.assert_array_equal(paused.mb.brain_r.kc_mbon_w, right)
+
+        paused.handle({"op": "resume"}, 8.0)
+        lose(paused, 8.0)
+        paused.tick(8.0)
+        self.assertFalse(paused.status()["paused"])
+        self.assertTrue(paused.status()["learning_frozen"])
+        self.assertEqual(paused.mb.n_ppl1, before)
+        np.testing.assert_array_equal(paused.mb.brain.kc_mbon_w, left)
+
+        lose(paused, 8.0 + PAUSE_GRACE_S)
+        paused.tick(8.0 + PAUSE_GRACE_S)
+        self.assertFalse(paused.status()["learning_frozen"])
+        self.assertEqual(paused.mb.n_ppl1, before + 1)
+        self.assertTrue(paused.status()["ppl1_event"])
+        self.assertEqual(paused.mb.teacher_ppl1_l, 1)
+
+        stopped = loop_at(5.0)
+        stopped.handle({"op": "estop"}, 5.0)
+        lose(stopped, 5.1)
+        cmd = stopped.tick(5.2)
+        self.assertEqual((cmd.x, cmd.z), (0.0, 0.0))
+        self.assertFalse(stopped.status()["paused"])
+        self.assertTrue(stopped.status()["learning_frozen"])
+        self.assertEqual(stopped.mb.n_ppl1, 0)
+        self.assertFalse(stopped.status()["ppl1_event"])
+
+        external = loop_at(5.0)
+        external.handle({"op": "external_stop"}, 5.0)
+        lose(external, 5.1)
+        cmd = external.tick(5.2)
+        self.assertEqual((cmd.x, cmd.z), (0.0, 0.0))
+        self.assertTrue(external.status()["learning_frozen"])
+        self.assertEqual(external.mb.n_ppl1, 0)
+
+        served = loop_at(1.0)
+        server = serve(served, 0)
+        port = int(server.server_address[1])
+        try:
+            def post(path, payload):
+                req = urllib.request.Request(
+                    "http://127.0.0.1:%d%s" % (port, path),
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            body = post("/pause", {})
+            self.assertTrue(body["paused"])
+            self.assertTrue(body["learning_frozen"])
+            body = post("/cmd", {"op": "resume"})
+            self.assertFalse(body["paused"])
+            self.assertTrue(body["learning_frozen"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_sim_estop_drops_a_punish(self):
+        import numpy as np
+
+        from sim.recognize_train import RecognizeTrainSim
+
+        session = RecognizeTrainSim(n_agents=1, seed=1, learner="mb", dan="teacher", auto_teach=False)
+        session.pilot.estop()
+        left = np.array(session.mb.brain.kc_mbon_w, copy=True)
+        before = int(session.mb.n_ppl1)
+        session.step(0.4, 0.2, learn=True, teach="ppl1")
+        self.assertEqual(session.mb.n_ppl1, before)
+        self.assertTrue(session.mb.learning_hold)
+        np.testing.assert_array_equal(session.mb.brain.kc_mbon_w, left)
+
+
+class YoloConfSliderTests(unittest.TestCase):
+    def test_default_conf_drops_a_room_object(self):
+        from sim.yolo_teacher import DEFAULT_CONF, DetBox, clamp_conf, hemisphere_hits
+
+        self.assertGreaterEqual(DEFAULT_CONF, 0.75)
+        self.assertEqual(clamp_conf(1.4), 1.0)
+        self.assertEqual(clamp_conf(-0.2), 0.0)
+        weak = DetBox(0.30, 0.2, 0.55, 0.8, 0.55)
+        strong = DetBox(0.30, 0.2, 0.55, 0.8, 0.92)
+        self.assertEqual(hemisphere_hits([weak], 0.4), (False, False))
+        hit_l, hit_r = hemisphere_hits([strong], 0.4)
+        self.assertTrue(hit_l or hit_r)
+
+    def test_slider_sets_the_teacher_and_stays_grey(self):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        import pygame
+
+        from sim.recognize_train_live import take_teacher_conf
+        from sim.train_monitor import PEACH, MonitorInput, MonitorView, TrainMonitor
+        from sim.yolo_teacher import DEFAULT_CONF, TeacherRuntime
+
+        class Session:
+            teacher_conf = None
+            teacher = TeacherRuntime(conf=DEFAULT_CONF)
+
+        session = Session()
+        take_teacher_conf(session, MonitorInput())
+        self.assertIsNone(session.teacher_conf)
+        self.assertAlmostEqual(session.teacher.conf, DEFAULT_CONF)
+        take_teacher_conf(session, MonitorInput(teacher_conf=0.91))
+        self.assertAlmostEqual(session.teacher_conf, 0.91)
+        self.assertAlmostEqual(session.teacher.conf, 0.91)
+        take_teacher_conf(session, MonitorInput(teacher_conf=4.0))
+        self.assertAlmostEqual(session.teacher.conf, 1.0)
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("yolo-conf")
+            mon._on_resize(1920, 1080)
+            mon.draw(MonitorView(learner="mb", learning_on=True, teacher_conf=DEFAULT_CONF, yolo_state="учит"))
+            track = mon.conf_slider_rect
+            self.assertEqual(track.h, 6)
+            self.assertGreater(track.w, 40)
+            filled = self._rgb(mon, track.x + 4, track.centery)
+            self.assertLess(abs(filled[0] - filled[1]), 20)
+            self.assertLess(abs(filled[1] - filled[2]), 20)
+            self.assertNotEqual(filled, PEACH)
+            empty_x = track.x + int(track.w * 0.92)
+            empty = self._rgb(mon, empty_x, track.centery)
+            self.assertNotEqual(empty, PEACH)
+            self.assertGreater(abs(filled[0] - empty[0]) + abs(filled[1] - empty[1]), 20)
+
+            point = [0, 0]
+            from sim.train_monitor import window_from_logical
+
+            logical = (track.x + int(track.w * 0.40), track.centery)
+            wx, wy = window_from_logical(logical, mon.window.get_width(), mon.window.get_height(), (mon.scroll_x, mon.scroll_y))
+            point[0], point[1] = int(wx), int(wy)
+            real = pygame.mouse.get_pos
+            pygame.mouse.get_pos = lambda: (int(point[0]), int(point[1]))
+            try:
+                pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(point[0]), int(point[1])), button=1))
+                inp = mon.pump()
+            finally:
+                pygame.mouse.get_pos = real
+            self.assertIsNotNone(inp.teacher_conf)
+            self.assertAlmostEqual(float(inp.teacher_conf), 0.40, delta=0.03)
+            self.assertIsNone(inp.teacher_weight)
+
+            out = __import__("pathlib").Path("/opt/cursor/artifacts/yolo_conf_slider.png")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            crop = pygame.Rect(max(0, track.x - 210), max(0, track.y - 14), track.w + 226, 40)
+            crop.clamp_ip(mon.screen.get_rect())
+            shot = mon.screen.subsurface(crop).copy()
+            big = pygame.transform.smoothscale(shot, (shot.get_width() * 2, max(1, shot.get_height() * 2)))
+            pygame.image.save(big, str(out))
+        finally:
+            pygame.quit()
+
+    def _rgb(self, mon, x, y):
+        color = mon.screen.get_at((int(x), int(y)))
+        return (color.r, color.g, color.b)
+
+
+class YoloErrorFrameTests(unittest.TestCase):
+    def test_o_tags_the_current_frame_with_yolo_boxes(self):
+        import json
+        from pathlib import Path
+
+        import pygame
+
+        from sim.frame_record import YOLO_ERROR_TAG, FrameRecorder, with_yolo_error, yolo_boxes_json
+        from sim.recognize_train import SIM_KEYS
+        from sim.recognize_train_live import LIVE_KEYS, _note_yolo_error_save
+        from sim.train_monitor import TrainMonitor
+        from sim.yolo_teacher import DetBox
+
+        self.assertIn("O ошибка YOLO", SIM_KEYS)
+        self.assertIn("O ошибка YOLO", LIVE_KEYS)
+        box = DetBox(0.12, 0.2, 0.48, 0.9, 0.81234, "Л", "dog")
+        rows = yolo_boxes_json([box])
+        self.assertEqual(rows[0]["conf"], 0.8123)
+        self.assertEqual(rows[0]["zone"], "Л")
+        self.assertEqual(yolo_boxes_json(None), [])
+
+        jpeg = b"\xff\xd8\xff\xd9"
+        plain = {"operator": {"weak_label": None}, "source": "sim"}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            closed = FrameRecorder(root / "off", fps=2.0)
+            try:
+                self.assertFalse(closed.offer_tagged(jpeg, with_yolo_error(plain, [box]), None))
+            finally:
+                closed.close()
+
+            rec = FrameRecorder(root / "on", fps=2.0)
+            try:
+                self.assertTrue(rec.toggle())
+                self.assertFalse(rec.offer(jpeg, plain, None, now=10.0))
+                labelled = {"operator": {"weak_label": "dog", "events": []}}
+                self.assertTrue(rec.offer(jpeg, labelled, None, now=10.0))
+                self.assertFalse(rec.offer(jpeg, labelled, None, now=10.1))
+                tagged = with_yolo_error(dict(plain), [box])
+                self.assertEqual(tagged["tag"], YOLO_ERROR_TAG)
+                self.assertEqual(tagged["operator"]["weak_label"], "no_dog")
+                self.assertTrue(rec.offer_tagged(jpeg, tagged, None))
+                self.assertTrue(rec.offer_tagged(jpeg, with_yolo_error(dict(plain), []), None))
+            finally:
+                rec.close()
+            saved = sorted(rec.session_dir.glob("frame_*.jpg"))
+            notes = sorted(rec.session_dir.glob("frame_*.json"))
+            self.assertEqual(len(saved), 3)
+            self.assertEqual(len(notes), 3)
+            self.assertTrue(saved[1].read_bytes().startswith(b"\xff\xd8"))
+            body = json.loads(notes[1].read_text(encoding="utf-8"))
+            self.assertEqual(body["tag"], YOLO_ERROR_TAG)
+            self.assertEqual(body["operator"]["tag"], YOLO_ERROR_TAG)
+            self.assertEqual(body["operator"]["weak_label"], "no_dog")
+            self.assertEqual(body["yolo_boxes"][0]["x0"], 0.12)
+            self.assertEqual(body["yolo_boxes"][0]["conf"], 0.8123)
+            self.assertEqual(body["yolo_boxes"][0]["kind"], "dog")
+            empty = json.loads(notes[2].read_text(encoding="utf-8"))
+            self.assertEqual(empty["yolo_boxes"], [])
+            self.assertEqual(empty["tag"], YOLO_ERROR_TAG)
+
+        class _Log:
+            def __init__(self):
+                self.lines = []
+
+            def _log(self, text):
+                self.lines.append(text)
+
+        desk = _Log()
+        _note_yolo_error_save(desk, False, False)
+        _note_yolo_error_save(desk, True, True)
+        self.assertEqual(desk.lines[0], "кадр не записан: запись выключена")
+        self.assertEqual(desk.lines[1], "кадр: не собака / ошибка YOLO")
+
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        pygame.init()
+        try:
+            mon = TrainMonitor("yolo-error")
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_o, mod=0, unicode="o", scancode=0, repeat=True))
+            skipped = mon.pump()
+            self.assertFalse(skipped.yolo_error)
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_o, mod=0, unicode="o", scancode=0))
+            hit = mon.pump()
+            self.assertTrue(hit.yolo_error)
+            self.assertFalse(hit.record_toggle)
+        finally:
+            pygame.quit()
 
 
 if __name__ == "__main__":

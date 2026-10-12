@@ -15,9 +15,20 @@ of one map, with their own KC→MBON weights.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from .mb_constants import YAW_DEAD, YAW_EPS, YAW_K
+from .mb_constants import (
+    LIVE_DEAD,
+    TURN_MEMORY,
+    TURN_PRESENCE,
+    TURN_SCALE,
+    TURN_TANH,
+    YAW_DEAD,
+    YAW_EPS,
+    YAW_K,
+)
 from .raw_sense import N_AZ, N_RAW, OFF_BODY, OFF_CLOSE, OFF_FLOOR, OFF_LIDAR, OFF_MOTION
 
 # Ego-left slots. A right-hemifield sector s is written to slot (N_AZ - 1 - s):
@@ -169,12 +180,51 @@ def bilateral_yaw(r_l: float, r_r: float) -> float:
 
 
 def fly_turn(drive_l: float, drive_r: float) -> float:
-    """Yaw command. Left is positive.
+    """Ratio yaw. Left is positive.
 
     ``drive_l`` and ``drive_r`` are approach minus avoidance on that side.
     The command is that difference, with the gain and deadband in ``mb_constants``.
+    A live command uses ``live_turn``, which stays smooth when both drives
+    are large and share a sign.
     """
     return bilateral_yaw(drive_l, drive_r)
+
+
+def _present(base: float) -> float:
+    """Near 1 when this hemisphere sees a pattern, 0 when the half is empty.
+
+    The magnitude is compressed, so a brighter and a dimmer hemifield still
+    cancel. The sign is the sign of the birth drive. Both hemispheres use
+    the same convention, so an approach pattern is positive on either side.
+    """
+    if abs(base) < 1e-6 or abs(TURN_SCALE) < 1e-6:
+        return 0.0
+    unit = math.tanh(abs(base) / (TURN_PRESENCE * abs(TURN_SCALE)))
+    if base < 0.0:
+        return -unit
+    return unit
+
+
+def live_turn(drive_l: float, drive_r: float, base_l: float | None = None, base_r: float | None = None) -> float:
+    """Smooth yaw. Left is positive. Blank and matched views sit near zero.
+
+    ``z`` follows left minus right. Each side is the same function: a
+    saturated presence, plus the rise above that side's birth drive.
+    ``base_*`` is the birth drive of this view. Omitted bases use the drives
+    themselves, so the command is only which side is occupied. ``tanh`` keeps
+    the result inside ±1.
+    """
+    left = float(drive_l)
+    right = float(drive_r)
+    born_l = left if base_l is None else float(base_l)
+    born_r = right if base_r is None else float(base_r)
+    appetite_l = (left - born_l) / abs(TURN_SCALE)
+    appetite_r = (right - born_r) / abs(TURN_SCALE)
+    raw = (_present(born_l) - _present(born_r)) + TURN_MEMORY * (appetite_l - appetite_r)
+    z = math.tanh(TURN_TANH * raw)
+    if abs(z) < LIVE_DEAD:
+        return 0.0
+    return float(z)
 
 
 def format_fly_line(r_l, r_r, diff, z, steer: str) -> str:

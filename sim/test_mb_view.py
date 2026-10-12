@@ -376,7 +376,11 @@ class ClientChromeTests(unittest.TestCase):
 
         from sim.win_dpi import clip_window_box, enable_dpi_awareness, work_area
 
-        self.assertIsNone(work_area())
+        area_now = work_area()
+        if os.name == "nt":
+            self.assertEqual(len(area_now), 4)
+        else:
+            self.assertIsNone(area_now)
         enable_dpi_awareness()
         area = (0, 0, 1920, 1040)
         self.assertEqual(clip_window_box(10, 20, 800, 600, area), (10, 20, 800, 600))
@@ -580,16 +584,88 @@ class BrainTests(unittest.TestCase):
         self.assertLess(float(x1[0]), float(x0[0]))
         self.assertGreater(float(y1[0]), float(y0[0]))
 
-    def test_trainer_arrows_do_not_steer(self):
-        import inspect
+    def test_trainer_arrows_and_stick_fill_the_manual_axes(self):
+        from collections import defaultdict
 
-        from sim.train_monitor import TrainMonitor
+        import pygame
 
-        src = inspect.getsource(TrainMonitor.pump)
-        self.assertNotIn("steer_x", src)
-        self.assertNotIn("steer_z", src)
-        self.assertNotIn("K_UP", src)
-        self.assertNotIn("K_LEFT", src)
+        from sim.train_monitor import STICK_DEADZONE, TrainMonitor, drive_axes
+
+        self.assertEqual(drive_axes(up=True), (1.0, 0.0))
+        self.assertEqual(drive_axes(down=True), (-1.0, 0.0))
+        self.assertEqual(drive_axes(left=True), (0.0, 1.0))
+        self.assertEqual(drive_axes(right=True), (0.0, -1.0))
+        self.assertEqual(drive_axes(up=True, down=True), (0.0, 0.0))
+        self.assertEqual(drive_axes(axis_y=-1.0), (1.0, 0.0))
+        self.assertEqual(drive_axes(axis_x=-1.0), (0.0, 1.0))
+        self.assertEqual(drive_axes(axis_x=1.0, axis_y=1.0), (-1.0, -1.0))
+        self.assertEqual(drive_axes(axis_x=STICK_DEADZONE, axis_y=-STICK_DEADZONE), (0.0, 0.0))
+        self.assertEqual(drive_axes(hat=(0, 1)), (1.0, 0.0))
+        self.assertEqual(drive_axes(hat=(-1, 0)), (0.0, 1.0))
+        self.assertEqual(drive_axes(hat=(1, -1)), (-1.0, -1.0))
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("arrows")
+            pressed = pygame.key.get_pressed
+            focused = pygame.key.get_focused
+            pygame.key.get_focused = lambda: True
+            pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_UP: True, pygame.K_LEFT: True})
+            try:
+                held = mon.pump()
+            finally:
+                pygame.key.get_pressed = pressed
+                pygame.key.get_focused = focused
+            self.assertEqual((held.steer_x, held.steer_z), (1.0, 1.0))
+            self.assertTrue(held.arrow_down)
+            self.assertFalse(held.treat_down)
+            pygame.key.get_focused = lambda: False
+            pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_UP: True})
+            try:
+                idle = mon.pump()
+            finally:
+                pygame.key.get_pressed = pressed
+                pygame.key.get_focused = focused
+            self.assertEqual((idle.steer_x, idle.steer_z), (0.0, 0.0))
+            self.assertFalse(idle.arrow_down)
+            # A click runs its handler and leaves the arrow axes in place.
+            pygame.event.clear()
+            pygame.key.get_focused = lambda: True
+            pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_UP: True, pygame.K_LEFT: True})
+            seen = []
+
+            def _click(_pos, box):
+                seen.append(box)
+                box.teacher_conf = 0.91
+
+            mon._on_primary_down = _click
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(4, 4), button=1))
+            try:
+                clicked = mon.pump()
+            finally:
+                pygame.key.get_pressed = pressed
+                pygame.key.get_focused = focused
+            self.assertEqual(seen[0].teacher_conf, 0.91)
+            self.assertEqual((clicked.steer_x, clicked.steer_z), (1.0, 1.0))
+            self.assertTrue(clicked.arrow_down)
+            # Focus lost while the key is still down, and a KEYDOWN is queued.
+            # The axis is zero so the dog does not keep that stuck key.
+            pygame.event.clear()
+            pygame.key.get_focused = lambda: False
+            pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_RIGHT: True})
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RIGHT, mod=0, unicode="", scancode=0)
+            )
+            try:
+                queued = mon.pump()
+            finally:
+                pygame.key.get_pressed = pressed
+                pygame.key.get_focused = focused
+            self.assertFalse(queued.focused)
+            self.assertFalse(queued.arrow_down)
+            self.assertEqual((queued.steer_x, queued.steer_z), (0.0, 0.0))
+        finally:
+            pygame.quit()
 
     def test_eyes_follow_the_plaques_and_frames_start_off(self):
         import pygame
@@ -989,7 +1065,7 @@ class WindowPinTests(unittest.TestCase):
         self.assertNotIn("from_display_module", viewer)
         fly = Path(view.__file__).resolve().parent.joinpath("mb_flywire.py").read_text(encoding="utf-8")
         self.assertIn("VIEW_HINT", fly)
-        self.assertEqual(view.VIEW_HINT, "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс")
+        self.assertEqual(view.VIEW_HINT, "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс · перехват — в главном окне")
         self.assertNotIn("поверх окон", view.VIEW_HINT)
         self.assertNotIn("стрелки", view.VIEW_HINT)
         self.assertNotIn("WASD", view.VIEW_HINT)
@@ -1211,7 +1287,7 @@ class CalloutTests(unittest.TestCase):
         )
         from sim.window_pin import pin_button_rect
 
-        self.assertEqual(VIEW_HINT, "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс")
+        self.assertEqual(VIEW_HINT, "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс · перехват — в главном окне")
         self.assertEqual(facing_label(YAW0, PITCH0, DIST0), "вид сзади")
         self.assertEqual(facing_label(YAW0 + math.pi, PITCH0, DIST0), "вид спереди")
 

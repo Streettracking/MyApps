@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max frames per second while «ЗАПИСЬ КАДРОВ» is on.")
     p.add_argument("--fullscreen", action="store_true", help="Open fullscreen. F11 toggles it.")
     p.add_argument("--teacher-url", default="http://127.0.0.1:8091")
-    p.add_argument("--teacher-conf", type=float, default=0.5)
+    p.add_argument("--teacher-conf", type=float, default=sim.yolo_teacher.DEFAULT_CONF)
     p.add_argument("--teacher-rate", type=float, default=2.0)
     from sim.go2_control import add_go2_control_arg
 

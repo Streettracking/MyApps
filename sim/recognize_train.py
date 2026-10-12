@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .approach_watch import ApproachWatch
 from .frame_sense import sim_previews
 from .hemifield import DEFAULT_OVERLAP, format_fly_line
 from .pilot import format_eyes_line, phase_label
@@ -31,6 +32,7 @@ from .pilot import (
     scrub_range,
 )
 from .mb_train import MbTrainer, default_npz
+from .run_marker import RunMarker
 from .raw_sense import N_AZ, OFF_LIDAR, add_recog_camera_only_arg, recog_label, render_view
 from .recognize import ConspecificRecognizer
 from .world import AgentState, ArenaConfig, ArenaWorld, default_agents
@@ -78,10 +80,15 @@ class RecognizeTrainSim:
         self.peers = agents[1:]
         self.state_path = Path(state_path) if state_path else DEFAULT_STATE
         self.learn = True
+        self.paused = False
+        self.freeze_peers = False
+        self.searching = False
+        self.target_in_view = False
         self.peer_curve: list[tuple[float, float]] = []
         self.other_curve: list[tuple[float, float]] = []
         self.metric_curve: list[dict] = []
         self.log: deque[str] = deque(maxlen=200)
+        self.run_marker = RunMarker()
         self._prev_like = 0.0
         self._last_spike_t = -10.0
         self.last_like = 0.0
@@ -111,6 +118,7 @@ class RecognizeTrainSim:
         self.aim_dist: float | None = None
         self.forward_m: float | None = None
         self.recognized_now = False
+        self.approach = ApproachWatch()
         self._hint_logged = ""
         self._learn_block_log = -10.0
         self.mb: MbTrainer | None = None
@@ -177,6 +185,17 @@ class RecognizeTrainSim:
             agent.yaw = _wrap(agent.yaw + np.pi)
         agent.x, agent.y = nxt_x, nxt_y
 
+    def peer_too_close(self) -> bool:
+        """True when a conspecific is near enough that its box fills the frame."""
+        from .stimuli import TOO_CLOSE_M
+
+        nearest = None
+        for peer in self.peers:
+            dist = float(np.hypot(peer.x - self.learner.x, peer.y - self.learner.y))
+            if nearest is None or dist < nearest:
+                nearest = dist
+        return nearest is not None and 0.05 < nearest <= float(TOO_CLOSE_M)
+
     def _wander_peers(self) -> None:
         for peer in self.peers:
             peer.yaw = _wrap(peer.yaw + float(self.rng.normal(0.0, 0.18)))
@@ -213,7 +232,10 @@ class RecognizeTrainSim:
         if learn is None:
             learn = self.learn
         self.world.step_environment()
-        self._wander_peers()
+        if not self.freeze_peers:
+            self._wander_peers()
+        if self.paused:
+            steer_x, steer_z = 0.0, 0.0
         self._move_body(self.learner, steer_x, steer_z, rate=rate)
         feat, hit = render_view(self.learner, self.world, include_agents=True)
         self.lidar_bank.update(self.learner, self.world, float(self.world.t))
@@ -232,15 +254,24 @@ class RecognizeTrainSim:
             # Auto-teach stands in for a human pressing T/X. It is a DAN, not a D/N label.
             kind = teach
             if kind is None and self.auto_teach and self.dan == "teacher":
-                if hit.dog and not hit.distractor:
+                if hit.dog and self.peer_too_close():
+                    kind = "ppl1"
+                elif hit.dog and not hit.distractor:
                     kind = "pam"
                 elif self.punish_auto and hit.distractor and not hit.dog:
                     kind = "ppl1"
+            stopped = self.paused or self.pilot.mode == "estop" or bool(self.pilot.held_stop)
+            moving = (not stopped) and (abs(float(steer_x)) + abs(float(steer_z)) > 1e-6)
+            self.mb.note_motion_hold(stopped, moving, float(self.world.t))
+            if self.mb.learning_hold or self.searching:
+                kind = None
             if kind == "pam":
                 self.treat_flash = True
             self.mb.teach(fwd, kind if self.dan == "teacher" else None, float(self.world.t))
             pulsed = kind in ("pam", "ppl1") and self.dan == "teacher"
-            self.mb.settle(pulsed, pulsed)
+            # The scan is innate. Settle would still walk the weights.
+            if not self.searching:
+                self.mb.settle(pulsed, pulsed)
             self.mb.progress.tick(self.world.cfg.dt, learn)
             self.mb.progress.note_label(self.operator, value, conf.recognized, conf.ready)
             if kind == "pam" and (self.mb.n_pam <= 2 or self.mb.n_pam % 15 == 0):
@@ -267,6 +298,14 @@ class RecognizeTrainSim:
                 mode="sim",
             )
             self._note_aim(feat, seen)
+            drive = 0.5 * (float(self.mb.r_l) + float(self.mb.r_r))
+            self.approach.note(
+                float(self.world.cfg.dt),
+                bool(hit.dog),
+                bool(getattr(hit, "control", False)),
+                drive,
+            )
+            self.run_marker.note(float(self.world.t), float(self.mb.r_l), float(self.mb.r_r))
         else:
             rec = self.recognizer
             assert rec is not None
@@ -291,6 +330,8 @@ class RecognizeTrainSim:
             self.peer_curve.append(point)
         else:
             self.other_curve.append(point)
+        boxes = getattr(self, "teacher_boxes", None) or ()
+        self.target_in_view = bool(boxes) or bool(hit.dog)
         self.step_i += 1
         if self.step_i % 10 == 0:
             self._record_metric()
@@ -298,7 +339,6 @@ class RecognizeTrainSim:
                 self.mb.note_drift(float(self.world.t))
         if self.state_path and self.step_i % 300 == 0:
             self.save()
-            self._log(f"сохранено  {self.state_path.name}")
 
     def _effective_refresh(self) -> float:
         return self.lidar_interval if self.lidar_fresh_on else 0.0
@@ -337,7 +377,9 @@ class RecognizeTrainSim:
             self.mb.save(self.state_path)
         elif self.recognizer is not None:
             self.recognizer.save(self.state_path)
-        self._log(f"сохранено  {self.state_path.name}")
+        from .tabnum import note_repeated_save
+
+        note_repeated_save(self.log, "%6.1fs" % float(self.world.t), self.state_path.name)
         return self.state_path
 
     def load(self) -> None:
@@ -376,6 +418,8 @@ class RecognizeTrainSim:
             self._log("прототип сброшен")
 
     def view(self, focused: bool, udp_status: str, last_command: str, keys_hint: str):
+        from .brain_panel import panel_readout
+        from .recognize_train_live import session_teacher_conf
         from .train_monitor import MonitorView
 
         now_t = float(self.world.t)
@@ -415,7 +459,6 @@ class RecognizeTrainSim:
                 kc_on=self.mb.last_kc_on,
                 kc_n=self.mb.brain.n_kc,
                 kc_bins=self.mb.last_kc_bins,
-                drift=self.mb.last_drift,
                 drift_curve=self.mb.drift_curve[-120:],
                 dan_events=self.mb.dan_events[-240:],
                 treat_flash=self.treat_flash,
@@ -476,6 +519,7 @@ class RecognizeTrainSim:
                 eye_l_ready=bool(conf_l.ready),
                 eye_r_ready=bool(conf_r.ready),
                 phase_ru=phase_label(self.pilot.phase, self.pilot.steer, self.pilot.search_sign),
+                search_lamp=not bool(self.target_in_view),
                 recog_line=recog_label(self.camera_only),
                 eyes_line=format_eyes_line(
                     self.pilot.track.r_l,
@@ -488,7 +532,11 @@ class RecognizeTrainSim:
                 teacher_counts=str(getattr(self, "teacher_counts", "") or ""),
                 teacher_boxes=list(getattr(self, "teacher_boxes", ()) or ()),
                 teacher_weight=float(getattr(self, "teacher_weight", 0.0) or 0.0),
+                teacher_conf=session_teacher_conf(self),
                 lead_plaque=_lead_plaque(self),
+                run_stage=self.run_marker.stage,
+                run_side=self.run_marker.side,
+                **panel_readout(self.mb, self.approach),
             )
         assert self.recognizer is not None
         return MonitorView(
@@ -586,8 +634,8 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "T/X учить  A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  U запись  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
-HEBB_KEYS = "U запись   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
+SIM_KEYS = "T/X учить  A авто  M перехват  стрелки/стик  K руль  Y учитель  H рамки  J мозг  F11 экран  U запись  O ошибка YOLO  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
+HEBB_KEYS = "стрелки/стик ход   U запись   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
 
 
 def _command_name(steer_x: float, steer_z: float, hold: bool) -> str:
@@ -624,13 +672,16 @@ def _apply_pilot_keys(session: RecognizeTrainSim, inp, now: float) -> None:
         elif not session.pilot.start_auto(now):
             session._log("E-STOP держит стоп. M переводит в ручное")
         else:
-            session._log("автономия: поиск в одну сторону, руль %s" % _steer_name(session.pilot.steer))
+            session._log("автономия: медленный поиск, пока в кадре пусто, руль %s" % _steer_name(session.pilot.steer))
     if inp.steer_toggle and session.learner_kind == "mb":
         mode = session.pilot.toggle_steer()
         session._log("руль: %s" % _steer_name(mode))
     if inp.pause_learn:
         session.learn = not session.learn
         session._log("обучение выключено, T/X веса не меняют" if not session.learn else "обучение включено")
+    from .run_marker import apply_marker_input
+
+    apply_marker_input(session, inp)
 
 
 def _steer_name(mode: str) -> str:
@@ -672,7 +723,26 @@ def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, floa
         r_r=r_r,
         recognized_l=eye_l,
         recognized_r=eye_r,
+        base_l=None if session.mb is None else float(session.mb.base_l),
+        base_r=None if session.mb is None else float(session.mb.base_r),
     )
+    from .search_reflex import cover_command
+
+    autonomy = bool(session.pilot.autonomy) and session.learner_kind == "mb"
+    if autonomy and cmd.phase != "stop":
+        cmd, session.searching = cover_command(
+            cmd,
+            bool(session.target_in_view),
+            r_l,
+            r_r,
+            session.aim_dist,
+            session.forward_m,
+            None if session.mb is None else float(session.mb.base_l),
+            None if session.mb is None else float(session.mb.base_r),
+        )
+        session.pilot.phase = cmd.phase
+    else:
+        session.searching = False
     from .recognize_train_live import blend_local_command
 
     cmd = blend_local_command(
@@ -740,6 +810,7 @@ def _gui_stress(mon, session) -> None:
 
 def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: Path | None = None) -> dict:
     from .frame_record import FrameRecorder, OperatorMarks
+    from .recognize_train_live import session_teacher_conf
     from .train_monitor import TrainMonitor
     from .yolo_teacher import TeacherRuntime
 
@@ -747,7 +818,7 @@ def run_gui(session: RecognizeTrainSim, seconds: float = 0.0, screenshot_path: P
     if session.learner_kind == "mb":
         session.teacher = TeacherRuntime(
             getattr(session, "teacher_url", "http://127.0.0.1:8091"),
-            conf=float(getattr(session, "teacher_conf", 0.5)),
+            conf=session_teacher_conf(session),
             rate=float(getattr(session, "teacher_rate", 2.0)),
         )
     else:
@@ -790,9 +861,10 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         inp = mon.pump()
         if inp.quit:
             break
-        from .recognize_train_live import take_teacher_weight
+        from .recognize_train_live import take_teacher_conf, take_teacher_weight
 
         take_teacher_weight(session, inp)
+        take_teacher_conf(session, inp)
         if inp.record_toggle:
             on = rec.toggle()
             _path = rec.stats()[3]
@@ -815,6 +887,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
                 session._log(hidden)
         note_operator(marks, float(session.world.t), inp)
         _apply_pilot_keys(session, inp, float(session.world.t))
+        if getattr(inp, "approach_reset", False):
+            session.approach.reset()
+            session._log("новый заход")
         if inp.reset:
             session.reset()
         if inp.lidar_reset:
@@ -859,7 +934,7 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         sim_frame += 1
         view = session.view(
             focused=inp.focused,
-            udp_status="симулятор. В автономии ведёт мозг, иначе сценарий.",
+            udp_status="симулятор. В автономии ведёт мозг, иначе стрелки или сценарий.",
             last_command=command_name,
             keys_hint=SIM_KEYS if session.learner_kind == "mb" else HEBB_KEYS,
         )
@@ -872,6 +947,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
                 jpeg = b""
         _drive_teacher(session, jpeg or None, sim_frame, teacher_state, bool(teach), None)
         view.teacher_boxes = list(getattr(session, "teacher_boxes", ()) or ())
+        if teacher is not None and getattr(teacher, "on", False):
+            session.target_in_view = bool(session.teacher_boxes)
+        view.search_lamp = not bool(session.target_in_view)
         view.yolo_state = str(getattr(session, "yolo_state", "") or "")
         view.teacher_counts = str(getattr(session, "teacher_counts", "") or "")
         view.teacher_skips = str(getattr(session, "teacher_skips", "") or "")
@@ -886,6 +964,13 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         view.record_idle = rec_on and not labelled
         if rec_on and labelled and view.camera is not None and rec.due():
             _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z)
+        if inp.yolo_error:
+            from .recognize_train_live import _note_yolo_error_save
+
+            saved = False
+            if rec_on and view.camera is not None:
+                saved = _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z, tagged=True)
+            _note_yolo_error_save(session, saved, rec_on)
         from .go2_control import drive_go2
         from .mb_view3d import drive_brain
 
@@ -918,34 +1003,36 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
     return session.summary()
 
 
-def _offer_sim_frame(session: RecognizeTrainSim, rec, marks, camera, steer_x: float, steer_z: float) -> None:
+def _offer_sim_frame(session: RecognizeTrainSim, rec, marks, camera, steer_x: float, steer_z: float, tagged: bool = False) -> bool:
     from .frame_record import encode_camera_jpeg, fingerprint, make_meta
 
     try:
         jpeg = encode_camera_jpeg(camera)
     except Exception:
-        return
+        return False
     mb = session.mb
     conf = None if mb is None else mb.conf
-    rec.offer(
-        jpeg,
-        make_meta(
-            marks,
-            float(session.world.t),
-            source="sim",
-            mode="auto" if session.pilot.autonomy else "manual",
-            speed_m_s=float(np.hypot(session.learner.vx, session.learner.vy)),
-            yaw_rad_s=float(steer_z),
-            readout=None if mb is None else float(mb.last_readout),
-            confidence=None if conf is None else float(conf.percent),
-            confidence_ready=False if conf is None else bool(conf.ready),
-            recognized=bool(session.recognized_now),
-            sector=session.aim_sector,
-            r_l=None if mb is None else float(mb.r_l),
-            r_r=None if mb is None else float(mb.r_r),
-        ),
-        fingerprint(camera),
+    meta = make_meta(
+        marks,
+        float(session.world.t),
+        source="sim",
+        mode="auto" if session.pilot.autonomy else "manual",
+        speed_m_s=float(np.hypot(session.learner.vx, session.learner.vy)),
+        yaw_rad_s=float(steer_z),
+        readout=None if mb is None else float(mb.last_readout),
+        confidence=None if conf is None else float(conf.percent),
+        confidence_ready=False if conf is None else bool(conf.ready),
+        recognized=bool(session.recognized_now),
+        sector=session.aim_sector,
+        r_l=None if mb is None else float(mb.r_l),
+        r_r=None if mb is None else float(mb.r_r),
     )
+    sample = fingerprint(camera)
+    if tagged:
+        from .frame_record import with_yolo_error
+
+        return bool(rec.offer_tagged(jpeg, with_yolo_error(meta, getattr(session, "teacher_boxes", ())), sample))
+    return bool(rec.offer(jpeg, meta, sample))
 
 
 def try_load(session: RecognizeTrainSim) -> None:
@@ -972,6 +1059,47 @@ def run_headless(session: RecognizeTrainSim, seconds: float) -> dict:
 def _bin_delta(a: int, b: int) -> int:
     delta = abs(int(a) - int(b))
     return min(delta, N_AZ - delta)
+
+
+def run_too_close(seed: int = 1) -> dict:
+    """Place a conspecific inside the close distance and let auto-teach punish it.
+
+    The peer is held still, in front of the learner, nearer than ``TOO_CLOSE_M``.
+    A far peer on the next check does not add another PPL1.
+    """
+    from .stimuli import TOO_CLOSE_M
+
+    session = RecognizeTrainSim(
+        n_agents=2,
+        seed=int(seed),
+        state_path=Path("/tmp/too_close_%s.npz" % int(seed)),
+        learner="mb",
+        dan="teacher",
+        auto_teach=True,
+    )
+    session.freeze_peers = True
+    session.world.distractors.clear()
+    session.learner.x, session.learner.y, session.learner.yaw = 2.0, 2.5, 0.0
+    peer = session.peers[0]
+    peer.x = float(session.learner.x) + float(TOO_CLOSE_M) * 0.7
+    peer.y = float(session.learner.y)
+    peer.vx = peer.vy = 0.0
+    before = 0 if session.mb is None else int(session.mb.n_ppl1)
+    for _ in range(4):
+        session.step(0.0, 0.0, learn=True)
+    punished = 0 if session.mb is None else int(session.mb.n_ppl1)
+    dist = float(np.hypot(peer.x - session.learner.x, peer.y - session.learner.y))
+    peer.x = float(session.learner.x) + 2.2
+    far_before = punished
+    session.step(0.0, 0.0, learn=True)
+    far_after = 0 if session.mb is None else int(session.mb.n_ppl1)
+    return {
+        "distance_m": dist,
+        "too_close_m": float(TOO_CLOSE_M),
+        "n_ppl1_before": before,
+        "n_ppl1": punished,
+        "far_added": int(far_after - far_before),
+    }
 
 
 def seek_trial(seed: int, teach_s: float = 25.0, seek_s: float = 20.0, state: Path | None = None) -> dict:
@@ -1020,6 +1148,8 @@ def seek_trial(seed: int, teach_s: float = 25.0, seek_s: float = 20.0, state: Pa
             r_r=r_r,
             recognized_l=eye_l,
             recognized_r=eye_r,
+            base_l=None if session.mb is None else float(session.mb.base_l),
+            base_r=None if session.mb is None else float(session.mb.base_r),
         )
         learner = session.learner
         dogs = []
@@ -1172,7 +1302,7 @@ def compare_steer(seeds: tuple[int, ...] = (1, 2, 3), teach_s: float = 8.0, seek
     ``fly_acc`` is the sign of R_L−R_R during the teacher, before either
     controller moves the dog.
     """
-    from .hemifield import bilateral_yaw
+    from .hemifield import live_turn
 
     rows = []
     for seed in seeds:
@@ -1199,7 +1329,15 @@ def compare_steer(seeds: tuple[int, ...] = (1, 2, 3), teach_s: float = 8.0, seek
                 nearest, _bodies = _fov_bodies(session)
                 if nearest is None:
                     continue
-                matched = _side_hit(bilateral_yaw(float(session.mb.r_l), float(session.mb.r_r)), nearest[1])
+                matched = _side_hit(
+                    live_turn(
+                        float(session.mb.r_l),
+                        float(session.mb.r_r),
+                        float(session.mb.base_l),
+                        float(session.mb.base_r),
+                    ),
+                    nearest[1],
+                )
                 if matched is None:
                     continue
                 fly_n += 1
@@ -1239,6 +1377,8 @@ def compare_steer(seeds: tuple[int, ...] = (1, 2, 3), teach_s: float = 8.0, seek
                     r_r=r_r,
                     recognized_l=eye_l,
                     recognized_r=eye_r,
+                    base_l=None if session.mb is None else float(session.mb.base_l),
+                    base_r=None if session.mb is None else float(session.mb.base_r),
                 )
                 nearest, bodies = _fov_bodies(session)
                 bearing = None if nearest is None else nearest[1]
@@ -1341,7 +1481,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera frames per second written while recording.")
     p.add_argument("--fullscreen", action="store_true", help="Open the trainer fullscreen. F11 toggles it.")
     p.add_argument("--teacher-url", default="http://127.0.0.1:8091")
-    p.add_argument("--teacher-conf", type=float, default=0.5)
+    from .yolo_teacher import DEFAULT_CONF
+
+    p.add_argument("--teacher-conf", type=float, default=DEFAULT_CONF)
     p.add_argument("--teacher-rate", type=float, default=2.0)
     from .go2_control import add_go2_control_arg
 
@@ -1387,6 +1529,14 @@ def main(argv: list[str] | None = None) -> int:
     apply_go2_control_arg(session, args)
     if args.load or Path(args.state).is_file():
         try_load(session)
+    from .sim_status import SIM_STATUS_PORT, serve_sim
+
+    status_server = serve_sim(session, SIM_STATUS_PORT)
+    if status_server is None:
+        session._log("порт статуса %s занят, внешнее чтение метрик недоступно" % SIM_STATUS_PORT)
+    else:
+        session._log("статус и пауза на 127.0.0.1:%s" % SIM_STATUS_PORT)
+        session._status_server = status_server
     if args.headless:
         summary = run_headless(session, args.seconds or 30.0)
     else:

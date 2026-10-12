@@ -167,10 +167,132 @@ class HeaderChromeTests(unittest.TestCase):
             pygame.mouse.get_pos = real_pos
             pygame.quit()
 
+    def test_dog_mode_badge_and_learning_chip(self):
+        import pygame
+
+        from sim.recognize_train_live import DEFAULT_IP
+        from sim.train_monitor import ESTOP, LEARN_BADGE, PEACH, MonitorView, TrainMonitor, dog_badge_label
+        from sim.ui_theme import apply_theme
+
+        drive, tone = dog_badge_label(True, "search", "bilateral")
+        self.assertEqual(tone, "auto")
+        self.assertEqual(drive, ".213 · АВТО · поиск")
+        self.assertTrue(str(DEFAULT_IP).endswith("213"))
+        idle, tone = dog_badge_label(False, "manual")
+        self.assertEqual(tone, "idle")
+        self.assertEqual(idle, ".213 · стоит")
+        operator, tone = dog_badge_label(False, "manual", operator=True)
+        self.assertEqual(tone, "operator")
+        self.assertEqual(operator, ".213 · ведёт оператор")
+        self.assertEqual(dog_badge_label(True, "search", operator=True)[0], ".213 · ведёт оператор")
+        self.assertEqual(dog_badge_label(True, "hold")[0], ".213 · стоит")
+        self.assertEqual(dog_badge_label(True, "approach", "bilateral")[0], ".213 · АВТО · иду")
+        self.assertEqual(dog_badge_label(True, "search", compact=True)[0], ".213 · поиск")
+        self.assertEqual(LEARN_BADGE, "обучение вкл")
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("dog-badge")
+            mon._on_resize(1920, 1080)
+            driving_view = MonitorView(
+                title="recognition training",
+                learner="mb",
+                learning_on=True,
+                autonomy_on=True,
+                pilot_phase="search",
+                pilot_mode="АВТОНОМИЯ",
+                steer="bilateral",
+            )
+            apply_theme("dark")
+            mon.draw(driving_view)
+            self._assert_gaps(mon)
+            self.assertFalse(mon._badge_compact)
+            self.assertGreater(mon.mode_badge_rect.w, 120)
+            self.assertGreater(mon.learn_badge_rect.w, 80)
+            self.assertEqual(mon.mode_badge_rect.h, 26)
+            peach = self._rgb(mon, mon.mode_badge_rect.x + 8, mon.mode_badge_rect.centery)
+            self.assertEqual(peach, PEACH)
+            red = self._rgb(mon, mon.learn_badge_rect.x + 8, mon.learn_badge_rect.centery)
+            self.assertEqual(red, ESTOP)
+            self._save_menu(mon, "/opt/cursor/artifacts/header_dog_drive_dark.png")
+
+            apply_theme("light")
+            mon.draw(driving_view)
+            self._assert_gaps(mon)
+            self.assertEqual(self._rgb(mon, mon.mode_badge_rect.x + 8, mon.mode_badge_rect.centery), PEACH)
+            self.assertEqual(self._rgb(mon, mon.learn_badge_rect.x + 8, mon.learn_badge_rect.centery), ESTOP)
+            self._save_menu(mon, "/opt/cursor/artifacts/header_dog_drive_light.png")
+
+            standing = MonitorView(
+                title="recognition training",
+                learner="mb",
+                learning_on=False,
+                autonomy_on=False,
+                pilot_phase="stop",
+            )
+            apply_theme("dark")
+            mon.draw(standing)
+            self._assert_gaps(mon)
+            self.assertEqual(mon.learn_badge_rect.w, 0)
+            grey = self._rgb(mon, mon.mode_badge_rect.x + 8, mon.mode_badge_rect.centery)
+            self.assertLess(abs(grey[0] - grey[1]), 16)
+            self.assertLess(abs(grey[1] - grey[2]), 16)
+            self.assertNotEqual(grey, PEACH)
+            self._save_menu(mon, "/opt/cursor/artifacts/header_dog_idle_dark.png")
+
+            from sim.train_monitor import TEACHER
+
+            grabbed = MonitorView(
+                title="recognition training",
+                learner="mb",
+                learning_on=True,
+                autonomy_on=False,
+                pilot_phase="manual",
+                pilot_mode="РУЧНОЕ · ПЕРЕХВАТ",
+                steer="bilateral",
+            )
+            mon.draw(grabbed)
+            self._assert_gaps(mon)
+            self.assertIn("ведёт оператор", dog_badge_label(False, "manual", operator=True)[0])
+            blue = self._rgb(mon, mon.mode_badge_rect.x + 8, mon.mode_badge_rect.centery)
+            self.assertEqual(blue, TEACHER)
+            self.assertFalse(mon._badge_compact)
+            self.assertGreaterEqual(mon.mode_badge_rect.w, mon.font.size(".213 · ведёт оператор")[0])
+            self.assertGreater(mon.take_rect.w, 40)
+            lit = self._rgb(mon, mon.take_rect.x + 6, mon.take_rect.centery)
+            self.assertEqual(lit, PEACH)
+            self._save_menu(mon, "/opt/cursor/artifacts/header_operator_badge_dark.png")
+            button = pygame.Rect(mon.take_rect.x, mon.take_rect.y, mon.take_rect.w, mon.take_rect.h)
+            crop = button.inflate(24, 16).clip(mon.screen.get_rect())
+            shot = mon.screen.subsurface(crop).copy()
+            big = pygame.transform.smoothscale(shot, (shot.get_width() * 2, max(1, shot.get_height() * 2)))
+            out = __import__("pathlib").Path("/opt/cursor/artifacts/takeover_button_lit.png")
+            pygame.image.save(big, str(out))
+
+            mon.draw(standing)
+            dim = self._rgb(mon, mon.take_rect.x + 6, mon.take_rect.centery)
+            self.assertNotEqual(dim, PEACH)
+        finally:
+            pygame.quit()
+
+    def _save_menu(self, mon, path: str) -> None:
+        import pygame
+
+        from sim.train_monitor import MENU_H, WIN_W
+
+        out = __import__("pathlib").Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        crop = pygame.Rect(0, 0, WIN_W, MENU_H)
+        shot = mon.screen.subsurface(crop).copy()
+        big = pygame.transform.smoothscale(shot, (shot.get_width() * 2, shot.get_height() * 2))
+        pygame.image.save(big, str(out))
+
     def _header_rects(self, mon):
         return (
             mon.view_rect,
             mon.doggibot_rect,
+            mon.mode_badge_rect,
+            mon.learn_badge_rect,
             mon.help_bar_rect,
             mon.go2_rect,
             mon.brain_rect,
@@ -186,6 +308,8 @@ class HeaderChromeTests(unittest.TestCase):
         from sim.train_monitor import MENU_H, MIN_CONTENT_W, WIN_W
 
         ordered = (
+            mon.mode_badge_rect,
+            mon.learn_badge_rect,
             mon.help_bar_rect,
             mon.go2_rect,
             mon.brain_rect,
@@ -212,8 +336,12 @@ class HeaderChromeTests(unittest.TestCase):
                 self.assertFalse(left.colliderect(right), (left, right))
         title_w = mon.font.size("recognition training")[0]
         title_x = mon.doggibot_rect.right + 12
-        lamp_w = 14 + mon.font_sm.size("борт")[0]
-        self.assertLess(title_x + title_w + 18 + lamp_w, mon.help_bar_rect.x)
+        lamp_w = 16 + mon.font_sm.size("борт")[0]
+        lamp_end = title_x + title_w + 18 + lamp_w
+        self.assertLess(lamp_end, mon.help_bar_rect.x)
+        if mon.mode_badge_rect.w > 0:
+            self.assertGreaterEqual(mon.mode_badge_rect.x, lamp_end)
+            self.assertLessEqual(mon.mode_badge_rect.bottom, MENU_H)
         self.assertEqual((mon.theme_switch_rect.w, mon.theme_switch_rect.h), (36, 20))
         self.assertEqual((mon.pin_rect.w, mon.pin_rect.h), (30, 26))
         self.assertLessEqual(mon.theme_switch_rect.right, WIN_W - 8)
@@ -229,6 +357,8 @@ class HeaderChromeTests(unittest.TestCase):
             return pygame.Rect(left, top, max(1, right - left), max(1, bottom - top))
 
         ordered = [scaled(rect) for rect in (
+            mon.mode_badge_rect,
+            mon.learn_badge_rect,
             mon.help_bar_rect,
             mon.go2_rect,
             mon.brain_rect,

@@ -11,6 +11,9 @@ from __future__ import annotations
 # A confident box this tall, or covering this much of the frame, is too close.
 CLOSE_HEIGHT = 0.70
 CLOSE_AREA = 0.18
+# Sim distance at which a conspecific fills the frame the way CLOSE_HEIGHT does.
+# Nearer than this, the sim auto-teacher sends PPL1 instead of PAM.
+TOO_CLOSE_M = 0.55
 # Growth of the tracked box, as a fraction of the frame, counts as an approach.
 APPROACH_GROWTH = 0.02
 

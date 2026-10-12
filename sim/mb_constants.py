@@ -26,11 +26,22 @@ IDLE_GROWTH = 0.002
 W_FLOOR_FRAC = 0.20
 W_CEIL_FRAC = 1.50
 
-# Turn = k (drive_L - drive_R) / (|drive_L| + |drive_R| + eps), then a deadband.
+# Ratio law kept for the gain probe: k (drive_L - drive_R) / (|drive_L| + |drive_R| + eps).
 # Each drive is approach minus avoidance on that side. Left is positive.
 YAW_K = 1.0
 YAW_EPS = 1e-3
 YAW_DEAD = 0.08
+
+# Live yaw. Both hemispheres are born near +520 for a pattern in one hemifield,
+# with the same sign. Dividing by that scale, and saturating presence, cancels
+# a blank frame and a pair of occupied hemifields whose birth magnitudes differ
+# by a few tens of counts. The learned term is this view's drive minus its
+# birth drive, in those units. tanh keeps the command inside ±1.
+TURN_SCALE = 520.0
+TURN_PRESENCE = 0.35
+TURN_MEMORY = 4.0
+TURN_TANH = 1.05
+LIVE_DEAD = 0.05
 
 
 def kc_winner_count(n_kc: int) -> int:

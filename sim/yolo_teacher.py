@@ -20,13 +20,24 @@ from dataclasses import dataclass
 from .hemifield import overlap_bands
 
 DEFAULT_URL = "http://127.0.0.1:8091"
-DEFAULT_CONF = 0.5
+# A case and the room furniture were clearing 0.5 and being taught as a dog.
+DEFAULT_CONF = 0.75
 DEFAULT_RATE = 2.0
 AREA_MIN = 0.20
 TEACHER_KEY = "Y"
 BOXES_KEY = "H"
 FULLSCREEN_KEY = "F11"
 STEER_KEY = "K"
+
+
+def clamp_conf(value: float) -> float:
+    """YOLO confidence in 0..1. The slider and the teacher share this clip."""
+    conf = float(value)
+    if conf < 0.0:
+        return 0.0
+    if conf > 1.0:
+        return 1.0
+    return conf
 
 
 @dataclass
@@ -37,6 +48,7 @@ class DetBox:
     y1: float
     conf: float
     zone: str = ""
+    kind: str = ""
 
 
 def _span(box: DetBox) -> tuple[float, float, float]:
@@ -151,6 +163,14 @@ def plaque_recognized(mb, eye_l: bool, eye_r: bool, overlap: float) -> tuple[boo
     return bool(eye_l), bool(eye_r), float(overlap)
 
 
+def _box_kind(row: dict) -> str:
+    raw = str(row.get("kind") or row.get("name") or row.get("label") or row.get("cls") or "")
+    text = raw.lower()
+    if "куб" in text or "cube" in text or text in ("control", "box"):
+        return "cube"
+    return ""
+
+
 def annotate_boxes(boxes, overlap: float, conf_min: float = DEFAULT_CONF) -> list[DetBox]:
     out: list[DetBox] = []
     for box in boxes:
@@ -159,7 +179,17 @@ def annotate_boxes(boxes, overlap: float, conf_min: float = DEFAULT_CONF) -> lis
         zone = zone_of(box, overlap)
         if not zone:
             continue
-        out.append(DetBox(float(box.x0), float(box.y0), float(box.x1), float(box.y1), float(box.conf), zone))
+        out.append(
+            DetBox(
+                float(box.x0),
+                float(box.y0),
+                float(box.x1),
+                float(box.y1),
+                float(box.conf),
+                zone,
+                str(getattr(box, "kind", "") or ""),
+            )
+        )
     return out
 
 
@@ -266,6 +296,7 @@ class YoloClient:
                         float(row["x1"]),
                         float(row["y1"]),
                         float(row.get("conf", 0.0)),
+                        kind=_box_kind(row),
                     )
                 )
             except (KeyError, TypeError, ValueError):
@@ -278,7 +309,7 @@ class TeacherRuntime:
 
     def __init__(self, url: str = DEFAULT_URL, conf: float = DEFAULT_CONF, rate: float = DEFAULT_RATE):
         self.client = YoloClient(url)
-        self.conf = float(conf)
+        self.conf = clamp_conf(conf)
         self.gate = TeachGate(rate)
         self.on = False
         self.boxes_hidden = False

@@ -19,8 +19,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield
-from .kc_pathways import VisualPathway, lobula_channels, medulla_channels
+from .hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield, live_turn
+from .kc_pathways import VisualPathway, lobula_channels, medulla_channels, mirror_kenyon
 from .raw_sense import drop_lidar
 from .learn_flash import LearnFlash, MbLayout, build_layout, record_teacher_step
 from .mb_confidence import Confidence, ConfidenceCalibrator, TrainProgress
@@ -28,6 +28,9 @@ from .mb_runtime import MBForward, MushroomBodyRuntime
 from .npz_compat import open_npz
 from .raw_sense import RawProjector, probe_features
 from .stimuli import StimulusSet
+
+# After a stop releases and the dog moves again, dopamine stays silent this long.
+PAUSE_GRACE_S = 1.0
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -90,12 +93,15 @@ class MbTrainer:
         self.brain.vision = VisualPathway(self.brain, "left")
         self.brain_r.vision = VisualPathway(self.brain_r, "right")
         self.brain.gamma_d_kc = self.brain.vision.gamma_mask
-        self.brain_r.gamma_d_kc = self.brain_r.vision.gamma_mask
+        # The right eye keeps its own cells for the pathway split, then the
+        # readout is replayed on this left map. Plasticity follows those cells.
+        self.brain_r.gamma_d_kc = self.brain.vision.gamma_mask.copy()
         self.proj = RawProjector(self.brain.n_pn, seed=seed + 17)
         self.learn = True
         self.drift_curve: list[tuple[float, float]] = []
         self.dan_events: list[tuple[float, str]] = []
         self.last_drift = 0.0
+        self.drift_session0 = 0.0
         self.last_readout = 0.0
         self.last_kc_on = 0
         self.last_kc_bins = np.zeros(48, dtype=np.float32)
@@ -103,6 +109,10 @@ class MbTrainer:
         self.last_fwd_r: MBForward | None = None
         self.r_l = 0.0
         self.r_r = 0.0
+        # Birth drive of the current view. Kept for the status readout.
+        self.base_l = 0.0
+        self.base_r = 0.0
+        self.yaw = 0.0
         self.overlap = clamp_overlap(overlap)
         # Set before probe(): the canonical views must use the same input as training.
         self.camera_only = bool(camera_only)
@@ -117,6 +127,10 @@ class MbTrainer:
         self.reinforce = ""
         # Mutes every stimulus and freezes KC→MBON. Independent of teacher weight.
         self.reinforcement_off = False
+        # Safety hold: a stop, and PAUSE_GRACE_S after motion resumes.
+        self.learning_hold = False
+        self._awaiting_motion = False
+        self._grace_until = 0.0
         self.object_drives: list = []
         # Empty until the recognition app plugs a source in. Saving weights
         # does not write this list.
@@ -150,6 +164,10 @@ class MbTrainer:
         kc = brain.vision.kenyon(feat, yolo)
         if float(kc.max()) <= 0.0:
             return None, 0.0
+        if brain is self.brain_r:
+            kc = mirror_kenyon(brain.vision, self.brain.vision)
+            if float(kc.max()) <= 0.0:
+                return None, 0.0
         mbon, scores = brain.scores_of_kc(kc)
         fwd = MBForward(
             pn=_pn_trace(brain.n_pn, feat, yolo),
@@ -159,6 +177,32 @@ class MbTrainer:
             action_scores=scores,
         )
         return fwd, self._value(brain, fwd)
+
+    def _birth_value(self, brain: MushroomBodyRuntime, fwd: MBForward) -> float:
+        """Approach minus avoidance of this KC vector at the birth weights.
+
+        The live weights are put back. An empty half is zero, same as ``_drive``.
+        """
+        if fwd is None or float(np.max(fwd.kc)) <= 0.0 or len(brain.kc_mbon_w0) == 0:
+            return 0.0
+        saved = brain.kc_mbon_w
+        brain.kc_mbon_w = brain.kc_mbon_w0
+        try:
+            mbon, scores = brain.scores_of_kc(fwd.kc)
+        finally:
+            brain.kc_mbon_w = saved
+        ghost = MBForward(
+            pn=fwd.pn,
+            kc=fwd.kc,
+            mbon=mbon,
+            action=fwd.action,
+            action_scores=scores,
+        )
+        return float(self._value(brain, ghost))
+
+    def _note_yaw(self) -> None:
+        """Live command from the current drives and the birth drives of this view."""
+        self.yaw = float(live_turn(self.r_l, self.r_r, self.base_l, self.base_r))
 
     def _value(self, brain: MushroomBodyRuntime, fwd: MBForward) -> float:
         if self.dan == "familiarity":
@@ -190,6 +234,9 @@ class MbTrainer:
             fwd_r = self._silent(self.brain_r)
         self.last_fwd = fwd_l
         self.last_fwd_r = fwd_r
+        self.base_l = self._birth_value(self.brain, fwd_l)
+        self.base_r = self._birth_value(self.brain_r, fwd_r)
+        self._note_yaw()
         self.last_kc_on = int(np.count_nonzero(fwd_l.kc) + np.count_nonzero(fwd_r.kc))
         self.last_kc_bins = bin_kc(fwd_l.kc)
         self.last_readout = float(self.r_l + self.r_r)
@@ -226,11 +273,41 @@ class MbTrainer:
     def set_reinforcement_off(self, off: bool) -> None:
         """Mute every stimulus and freeze plasticity. Teacher weight is separate."""
         self.reinforcement_off = bool(off)
-        self.stimuli.muted = self.reinforcement_off
+        self._mute_sources()
+
+    def _mute_sources(self) -> None:
+        """Silence every attached source while a probe switch or a stop hold is on."""
+        self.stimuli.muted = bool(self.reinforcement_off or self.learning_hold)
+
+    def note_motion_hold(self, stopped: bool, moving: bool, now: float) -> None:
+        """Freeze plasticity and reinforcement for a stop, then for ``PAUSE_GRACE_S``.
+
+        ``stopped`` is an E-STOP, a pause, or an external stop. The grace clock
+        starts on the first tick that moves again. Until that tick, the hold
+        stays. A later stop cancels the clock.
+        """
+        if stopped:
+            self._awaiting_motion = True
+            self._grace_until = 0.0
+            self.learning_hold = True
+            self._mute_sources()
+            return
+        if self._awaiting_motion:
+            if moving:
+                self._awaiting_motion = False
+                self._grace_until = float(now) + PAUSE_GRACE_S
+            self.learning_hold = True
+            self._mute_sources()
+            return
+        self.learning_hold = float(now) < float(self._grace_until)
+        self._mute_sources()
+
+    def _plasticity_open(self) -> bool:
+        return bool(self.learn) and not self.reinforcement_off and not self.learning_hold
 
     def teach(self, fwd: MBForward, kind: str | None, t: float) -> None:
         """Apply a DAN. ``kind`` is pam / ppl1 / None. Never a dog/no-dog label."""
-        if not self.learn or self.reinforcement_off:
+        if not self._plasticity_open():
             return
         if self.dan == "teacher":
             if kind in ("pam", "ppl1"):
@@ -262,6 +339,7 @@ class MbTrainer:
         if self.last_fwd is not None and self.last_fwd_r is not None:
             self.r_l = self._value(self.brain, self.last_fwd)
             self.r_r = self._value(self.brain_r, self.last_fwd_r)
+            self._note_yaw()
             self.last_readout = float(self.r_l + self.r_r)
 
     def settle(self, dopamine_l: bool = False, dopamine_r: bool = False) -> None:
@@ -272,7 +350,7 @@ class MbTrainer:
         ``r_r`` stay the approach-minus-avoidance drives ``forward`` stored.
         Reinforcement off freezes this too.
         """
-        if not self.learn or self.reinforcement_off:
+        if not self._plasticity_open():
             return
         if self.last_fwd is not None:
             self.brain.recover(self.last_fwd.kc, bool(dopamine_l))
@@ -294,7 +372,7 @@ class MbTrainer:
         """
         if learning is None:
             learning = self.learn
-        if self.reinforcement_off:
+        if self.reinforcement_off or self.learning_hold:
             return None, None
         kind_l, kind_r = self.stimuli.reinforcement(float(now), bool(learning), skip_l, skip_r)
         if (kind_l or kind_r) and self.learn:
@@ -306,7 +384,7 @@ class MbTrainer:
 
         The counters below are not written into ``mb_train_state.npz``.
         """
-        if not self.learn or self.dan != "teacher" or self.reinforcement_off:
+        if not self._plasticity_open() or self.dan != "teacher":
             return False
         fired = False
         if kind_l in ("pam", "ppl1") and self.last_fwd is not None:
@@ -324,6 +402,7 @@ class MbTrainer:
         if self.last_fwd is not None and self.last_fwd_r is not None:
             self.r_l = self._value(self.brain, self.last_fwd)
             self.r_r = self._value(self.brain_r, self.last_fwd_r)
+            self._note_yaw()
             self.last_readout = float(self.r_l + self.r_r)
         return True
 
@@ -365,7 +444,9 @@ class MbTrainer:
         return left, right
 
     def note_drift(self, t: float) -> None:
-        self.drift_curve.append((t, self.last_drift))
+        """Sample the live L2 sum for the panel. Does not move a weight."""
+        self.last_drift = float(self.brain.weight_drift() + self.brain_r.weight_drift())
+        self.drift_curve.append((float(t), self.last_drift))
 
     def probe(self) -> dict[str, float]:
         """Canonical views. Does not teach."""
@@ -389,7 +470,12 @@ class MbTrainer:
         self.flash_r = None
         self.r_l = 0.0
         self.r_r = 0.0
+        self.base_l = 0.0
+        self.base_r = 0.0
+        self.yaw = 0.0
         self.last_drift = 0.0
+        self.drift_session0 = 0.0
+        self.drift_curve.clear()
         self.n_pam = self.n_ppl1 = self.n_novelty = 0
         self.teacher_pam_l = self.teacher_pam_r = 0
         self.teacher_ppl1_l = self.teacher_ppl1_r = 0
@@ -481,3 +567,5 @@ class MbTrainer:
         self.teacher_ppl1_l = self.teacher_ppl1_r = 0
         self.reinforce = ""
         self.probe_init = self.probe()
+        self.drift_session0 = float(self.last_drift)
+        self.drift_curve.clear()

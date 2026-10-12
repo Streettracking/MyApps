@@ -44,6 +44,7 @@ from .dock_layout import (
     tree_from_dict,
 )
 from .hemifield import DEFAULT_OVERLAP
+from .yolo_teacher import DEFAULT_CONF as YOLO_CONF
 from .ui_settings import default_settings, load_settings, persist_enabled, save_settings
 from .ui_theme import (
     AMBER_SOFT,
@@ -81,8 +82,13 @@ from .tabnum import (
     SOUND_STATUS,
     format_box_tag,
     format_command,
-    format_drift,
+    format_drift_span,
+    format_drive_line,
     format_familiar,
+    format_kc_scales,
+    format_lamps,
+    format_pref_line,
+    format_stim_line,
     format_half,
     format_hebb_proto,
     format_kc,
@@ -124,9 +130,130 @@ TEACHER = (46, 154, 206)  # #2E9ACE teacher watch, same in both themes
 ESTOP = (184, 40, 36)
 AMBER = (214, 154, 52)  # #D69A34 warning
 LAMP_OFF = ("off",)
+LEARN_BADGE = "обучение вкл"
+BOARD_CAPTION = "борт"
+BOARD_DOWN = "мозг не запущен (8090)"
+BADGE_INK = (32, 22, 18)
+# Phases where the mushroom body is sending a turn or a walk.
+DRIVING_PHASES = ("search", "approach", "align_l", "align_r")
+
+
+def dog_octet() -> str:
+    """Last octet of the lab dog, with the leading dot. ``192.168.35.213`` → ``.213``."""
+    from .recognize_train_live import DEFAULT_IP
+
+    tail = str(DEFAULT_IP).rsplit(".", 1)[-1].strip()
+    return "." + tail if tail else ".213"
+
+
+def dog_badge_label(
+    autonomy_on: bool,
+    phase: str,
+    steer: str = "bilateral",
+    compact: bool = False,
+    octet: str | None = None,
+    operator: bool = False,
+) -> tuple[str, str]:
+    """Header dog-mode text and a tone: ``operator``, ``auto``, or ``idle``.
+
+    The operator holds the stick: ``.213 · ведёт оператор`` in teacher blue.
+    The brain drives in orange: ``.213 · АВТО · поиск`` while searching.
+    Standing is grey: ``.213 · стоит``. Compact drops the long words when the bar is narrow.
+    """
+    host = octet or dog_octet()
+    if operator:
+        word = "оператор" if compact else "ведёт оператор"
+        return "%s · %s" % (host, word), "operator"
+    name = str(phase or "")
+    driving = bool(autonomy_on) and name in DRIVING_PHASES
+    if not driving:
+        return "%s · стоит" % host, "idle"
+    if name == "search":
+        word = "поиск"
+    elif name == "approach" and steer == "sectors":
+        word = "подход"
+    elif name == "approach":
+        word = "иду"
+    else:
+        word = "доворот"
+    if compact:
+        return "%s · %s" % (host, word), "auto"
+    return "%s · АВТО · %s" % (host, word), "auto"
+
+
+def operator_has_stick(pilot_mode: str) -> bool:
+    """True while the mode line is the lit takeover, not a stop."""
+    return "ПЕРЕХВАТ" in str(pilot_mode or "")
+
+
+def link_answers(status: str) -> bool:
+    """True when a status line reports a live link."""
+    low = (status or "").lower()
+    return " ok" in low or low.endswith("ok")
+
+
+def board_caption(view) -> str:
+    """Onboard lamp text. A silent :8090 names that the brain is not running."""
+    if view is not None and getattr(view, "onboard", False) and not link_answers(getattr(view, "udp_status", "") or ""):
+        return BOARD_DOWN
+    return BOARD_CAPTION
+
+
 PANEL = CARD
 BTN = CARD
 BTN_EDGE = LINE
+
+# Below this, a resting stick reads as zero so noise does not creep the dog.
+STICK_DEADZONE = 0.15
+
+
+def drive_axes(axis_x: float = 0.0, axis_y: float = 0.0, hat: tuple[int, int] = (0, 0), up: bool = False, down: bool = False, left: bool = False, right: bool = False) -> tuple[float, float]:
+    """Forward is +x, left yaw is +z. Arrows, hat, and the left stick share that sign.
+
+    Pygame's stick is +x right and +y down, so both axes are flipped.
+    A hat uses the same signs: up is forward, left is positive yaw.
+    """
+
+    def shaped(value: float) -> float:
+        value = float(value)
+        if abs(value) <= STICK_DEADZONE:
+            return 0.0
+        sign = 1.0 if value > 0.0 else -1.0
+        span = (abs(value) - STICK_DEADZONE) / (1.0 - STICK_DEADZONE)
+        return sign * min(1.0, span)
+
+    sx = -shaped(axis_y)
+    sz = -shaped(axis_x)
+    hx, hy = int(hat[0]), int(hat[1])
+    if up or hy > 0:
+        sx += 1.0
+    if down or hy < 0:
+        sx -= 1.0
+    if left or hx < 0:
+        sz += 1.0
+    if right or hx > 0:
+        sz -= 1.0
+    return max(-1.0, min(1.0, sx)), max(-1.0, min(1.0, sz))
+
+
+def _joystick_sample() -> tuple[float, float, tuple[int, int]]:
+    """Left stick and hat of the first pad. Zeros when no pad is plugged in."""
+    import pygame
+
+    try:
+        if not pygame.joystick.get_init():
+            pygame.joystick.init()
+        if pygame.joystick.get_count() <= 0:
+            return 0.0, 0.0, (0, 0)
+        joy = pygame.joystick.Joystick(0)
+        if not joy.get_init():
+            joy.init()
+        axis_x = float(joy.get_axis(0)) if joy.get_numaxes() > 0 else 0.0
+        axis_y = float(joy.get_axis(1)) if joy.get_numaxes() > 1 else 0.0
+        hat = joy.get_hat(0) if joy.get_numhats() > 0 else (0, 0)
+        return axis_x, axis_y, (int(hat[0]), int(hat[1]))
+    except Exception:
+        return 0.0, 0.0, (0, 0)
 
 
 @dataclass
@@ -159,12 +286,18 @@ class MonitorInput:
     go2_control: bool = False
     fullscreen_toggle: bool = False
     record_toggle: bool = False
+    yolo_error: bool = False
     doggibot: bool = False
     takeover: bool = False
+    arrow_down: bool = False
     treat_down: bool = False
     punish_down: bool = False
     focused: bool = True
     teacher_weight: float | None = None
+    teacher_conf: float | None = None
+    approach_reset: bool = False
+    run_stage: str | None = None
+    run_side: str | None = None
 
 
 @dataclass
@@ -197,6 +330,8 @@ class MonitorView:
     kc_n: int = 0
     kc_bins: np.ndarray | None = None
     drift: float = 0.0
+    session_drift: float | None = None
+    search_lamp: bool = False
     drift_curve: list[tuple[float, float]] = field(default_factory=list)
     dan_events: list[tuple[float, str]] = field(default_factory=list)
     treat_flash: bool = False
@@ -262,8 +397,24 @@ class MonitorView:
     eyes_line: str = ""
     recog_line: str = ""
     teacher_weight: float = 0.0
+    teacher_conf: float = YOLO_CONF
     lead_plaque: str = ""
     brain_offline: bool = False
+    drive_l: float | None = None
+    drive_r: float | None = None
+    turn: float | None = None
+    stim_dog: float | None = None
+    stim_cube: float | None = None
+    pref_index: float | None = None
+    pref_seconds: float = 0.0
+    kc_gd_frac: float | None = None
+    kc_abp_frac: float | None = None
+    pam_l: int = 0
+    pam_r: int = 0
+    ppl1_l: int = 0
+    ppl1_r: int = 0
+    run_stage: str = "до"
+    run_side: str = "слева"
 
 
 def fit_window(ww: int, wh: int) -> tuple:
@@ -773,7 +924,12 @@ class TrainMonitor:
         self._client_size = (WIN_W, WIN_H)
         self.estop_bar_rect = pygame.Rect(0, 0, 0, 0)
         self.lead_slider_rect = pygame.Rect(0, 0, 0, 0)
+        self.conf_slider_rect = pygame.Rect(0, 0, 0, 0)
+        self.mode_badge_rect = pygame.Rect(0, 0, 0, 0)
+        self.learn_badge_rect = pygame.Rect(0, 0, 0, 0)
         self._lead_drag = False
+        self._conf_drag = False
+        self._badge_compact = False
         self._pin_surface = None
         self._pin_applied = None
         self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
@@ -797,6 +953,8 @@ class TrainMonitor:
         self.brain_packet = None
         self._card_cache: dict = {}
         self._journal_cache = None
+        self.run_stage_rects = []
+        self.run_side_rects = []
         self._brain_panel_cache = None
         self._bg = None
         self._win_bg = None
@@ -1638,6 +1796,13 @@ class TrainMonitor:
         if self._lead_at(win_pos, inp, drag=False):
             self._lead_drag = True
             return
+        if self._conf_at(win_pos, inp, drag=False):
+            self._conf_drag = True
+            return
+        approach = getattr(self, "approach_rect", None)
+        if approach is not None and approach.w > 8 and approach.collidepoint(pos):
+            inp.approach_reset = True
+            return
         if self._header_chrome_hit(pos):
             return
         if self.view_rect.collidepoint(pos):
@@ -1688,6 +1853,14 @@ class TrainMonitor:
         if header:
             self._block_drag = header
             return
+        for rect, name in getattr(self, "run_stage_rects", ()) or ():
+            if rect.collidepoint(pos):
+                inp.run_stage = name
+                return
+        for rect, name in getattr(self, "run_side_rects", ()) or ():
+            if rect.collidepoint(pos):
+                inp.run_side = name
+                return
         bar = getattr(self, "estop_bar_rect", None)
         if bar is not None and bar.w >= 8 and bar.collidepoint(pos):
             inp.estop = True
@@ -1777,10 +1950,17 @@ class TrainMonitor:
         pending_full = False
         trust_surface = False
         note_restore = False
+        arrow_event = False
+        arrows = (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 inp.quit = True
+            elif event.type == pygame.KEYUP and event.key in arrows:
+                # Key-up still counts: a release has to zero the axes this frame.
+                arrow_event = True
             elif event.type == pygame.KEYDOWN:
+                if event.key in arrows:
+                    arrow_event = True
                 if event.key == pygame.K_ESCAPE:
                     if self.help_id:
                         self.help_id = None
@@ -1838,6 +2018,8 @@ class TrainMonitor:
                     pending_full = True
                 elif event.key == pygame.K_u and not getattr(event, "repeat", False):
                     inp.record_toggle = True
+                elif event.key == pygame.K_o and not getattr(event, "repeat", False):
+                    inp.yolo_error = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
@@ -1845,7 +2027,13 @@ class TrainMonitor:
             elif event.type == pygame.MOUSEWHEEL:
                 self._on_wheel(event)
             elif event.type == pygame.MOUSEMOTION:
-                if self._lead_drag:
+                if self._conf_drag:
+                    buttons = getattr(event, "buttons", (1, 0, 0))
+                    if buttons and buttons[0]:
+                        self._conf_at(event.pos, inp, drag=True)
+                    else:
+                        self._conf_drag = False
+                elif self._lead_drag:
                     buttons = getattr(event, "buttons", (1, 0, 0))
                     if buttons and buttons[0]:
                         self._lead_at(event.pos, inp, drag=True)
@@ -1859,6 +2047,7 @@ class TrainMonitor:
                     self._drag_splitter(event.pos)
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 self._lead_drag = False
+                self._conf_drag = False
                 self._scroll_drag = None
                 self._finish_block_drag(event.pos)
                 self._split_drag = None
@@ -1896,13 +2085,34 @@ class TrainMonitor:
         elif pending_size is not None:
             self._on_resize(pending_size[0], pending_size[1])
         inp.focused = bool(pygame.key.get_focused())
+        # An unfocused window drops the arrows even if the key is still down
+        # or a KEYDOWN is sitting in the queue. Otherwise the dog keeps the
+        # last axis after the operator alt-tabs away.
         if inp.focused:
-            # Arrows do not drive. They used to move the dog: up and down
-            # were forward and back, left and right were yaw, left positive.
-            # Onboard sent that as a manual Move after takeover.
             keys = pygame.key.get_pressed()
+            if keys[pygame.K_UP]:
+                inp.steer_x += 1.0
+            if keys[pygame.K_DOWN]:
+                inp.steer_x -= 1.0
+            if keys[pygame.K_LEFT]:
+                inp.steer_z += 1.0
+            if keys[pygame.K_RIGHT]:
+                inp.steer_z -= 1.0
+            inp.arrow_down = bool(
+                keys[pygame.K_UP] or keys[pygame.K_DOWN] or keys[pygame.K_LEFT] or keys[pygame.K_RIGHT]
+            )
+            # Up and down are forward and back. Left is positive yaw.
+            # WASD stays on its own keys: A is autonomy, S saves, D labels.
             inp.treat_down = bool(keys[pygame.K_t])
             inp.punish_down = bool(keys[pygame.K_x])
+            axis_x, axis_y, hat = _joystick_sample()
+            sx, sz = drive_axes(axis_x, axis_y, hat)
+            inp.steer_x = max(-1.0, min(1.0, inp.steer_x + sx))
+            inp.steer_z = max(-1.0, min(1.0, inp.steer_z + sz))
+        elif arrow_event:
+            inp.arrow_down = False
+            inp.steer_x = 0.0
+            inp.steer_z = 0.0
         self._sync_cursor()
         return inp
 
@@ -1953,6 +2163,8 @@ class TrainMonitor:
                 self._sync_canvas(ww, wh)
         screen = self.screen
         self._fill_bg(screen)
+        self.run_stage_rects = []
+        self.run_side_rects = []
         self._fixed_rows = []
         self._anchors = []
         self._glyph_rects = []
@@ -2014,6 +2226,7 @@ class TrainMonitor:
         title_x = self.doggibot_rect.right + 12
         screen.blit(title, (title_x, (MENU_H - title.get_height()) // 2))
         self._link_lamp(screen, view, title_x + title.get_width() + 18)
+        self._draw_dog_badges(screen, view)
         self._go2_button(screen)
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
@@ -2163,7 +2376,7 @@ class TrainMonitor:
         """Pack the menu bar into the visible client. Hide the theme label, then shorten captions."""
         import pygame
 
-        if self.font_sm is None:
+        if self.font_sm is None or self.font is None:
             return
         limit = self._visible_right()
         margin = 12
@@ -2178,12 +2391,28 @@ class TrainMonitor:
         if view is not None and view.title:
             title = view.title
         title_w = max(self.font.size("recognition training")[0], self.font.size(title)[0])
-        lamp_w = 14 + self.font_sm.size("борт")[0]
-        min_help = self.doggibot_rect.right + 12 + title_w + 18 + lamp_w + 8
-        variants = ((True, False), (False, False), (False, True))
+        lamp_w = 16 + self.font_sm.size(board_caption(view))[0]
+        lamp_end = self.doggibot_rect.right + 12 + title_w + 18 + lamp_w
+        learning = bool(view is not None and getattr(view, "learning_on", False))
+        # Full dog-mode and learning badges, then the mode badge alone, then neither.
+        variants = (
+            (True, False, "full"),
+            (True, True, "full"),
+            (False, False, "full"),
+            (False, True, "full"),
+            (False, True, "plain"),
+            (False, True, "off"),
+        )
         chosen = variants[-1]
         placed = None
-        for show_label, short in variants:
+        for show_label, short, badge_mode in variants:
+            mode_w, learn_w = self._badge_reserve(badge_mode, learning)
+            badge_span = 0
+            if mode_w:
+                badge_span = 8 + mode_w
+                if learn_w:
+                    badge_span += 8 + learn_w
+            min_help = lamp_end + badge_span + 8
             items = self._header_items(short)
             total = sum(ww for _name, ww in items) + 8 * (len(items) - 1)
             switch_right = limit - margin
@@ -2212,12 +2441,13 @@ class TrainMonitor:
                 and buttons["record"].right <= stop
                 and (bar.w < 8 or bar.x >= buttons["record"].right + 4)
                 and help_rect.x >= min_help
+                and help_rect.x >= lamp_end + 8
             )
-            placed = (pin, label, switch, buttons, help_rect, bar)
-            chosen = (show_label, short)
+            placed = (pin, label, switch, buttons, help_rect, bar, badge_mode)
+            chosen = (show_label, short, badge_mode)
             if fits:
                 break
-        pin, label, switch, buttons, help_rect, bar = placed
+        pin, label, switch, buttons, help_rect, bar, badge_mode = placed
         self.pin_rect = pin
         self.theme_label_rect = label
         self.theme_switch_rect = switch
@@ -2229,6 +2459,91 @@ class TrainMonitor:
         self.estop_bar_rect = bar
         self._show_theme_label = bool(chosen[0])
         self._header_short = bool(chosen[1])
+        self._badge_mode = str(chosen[2])
+        self._badge_compact = self._badge_mode == "plain"
+        self._place_dog_badges(lamp_end, learning)
+
+    def _badge_reserve(self, mode: str, learning: bool) -> tuple[int, int]:
+        """Widest dog-mode pill, and the learning pill when that mode keeps it."""
+        if mode == "off" or self.font is None:
+            return 0, 0
+        compact = mode == "plain"
+        pad = 24
+        widest = 0
+        for driving, phase, steer, operator in (
+            (True, "search", "bilateral", False),
+            (True, "approach", "bilateral", False),
+            (True, "approach", "sectors", False),
+            (True, "align_l", "bilateral", False),
+            (False, "stop", "bilateral", False),
+            (False, "manual", "bilateral", True),
+        ):
+            text, _tone = dog_badge_label(driving, phase, steer, compact=compact, operator=operator)
+            widest = max(widest, self.font.size(text)[0])
+        mode_w = widest + pad
+        if mode != "full" or not learning:
+            return mode_w, 0
+        return mode_w, self.font.size(LEARN_BADGE)[0] + pad
+
+    def _place_dog_badges(self, lamp_end: int, learning: bool) -> None:
+        import pygame
+
+        self.mode_badge_rect = pygame.Rect(0, 0, 0, 0)
+        self.learn_badge_rect = pygame.Rect(0, 0, 0, 0)
+        if getattr(self, "_badge_mode", "off") == "off" or self.font is None:
+            return
+        view = getattr(self, "_last_view", None)
+        if view is None:
+            return
+        text, _tone = dog_badge_label(
+            bool(getattr(view, "autonomy_on", False)),
+            str(getattr(view, "pilot_phase", "") or ""),
+            str(getattr(view, "steer", "") or "bilateral"),
+            compact=bool(getattr(self, "_badge_compact", False)),
+            operator=operator_has_stick(getattr(view, "pilot_mode", "")),
+        )
+        pad = 24
+        height = 26
+        y = (MENU_H - height) // 2
+        mode_w = self.font.size(text)[0] + pad
+        self.mode_badge_rect = pygame.Rect(lamp_end + 8, y, mode_w, height)
+        if learning and getattr(self, "_badge_mode", "") == "full":
+            learn_w = self.font.size(LEARN_BADGE)[0] + pad
+            self.learn_badge_rect = pygame.Rect(self.mode_badge_rect.right + 8, y, learn_w, height)
+
+    def _draw_dog_badges(self, screen, view: MonitorView) -> None:
+        text, tone = dog_badge_label(
+            bool(getattr(view, "autonomy_on", False)),
+            str(getattr(view, "pilot_phase", "") or ""),
+            str(getattr(view, "steer", "") or "bilateral"),
+            compact=bool(getattr(self, "_badge_compact", False)),
+            operator=operator_has_stick(getattr(view, "pilot_mode", "")),
+        )
+        if tone == "operator":
+            fill, ink = TEACHER, ESTOP_LABEL
+        elif tone == "auto":
+            fill, ink = PEACH, BADGE_INK
+        else:
+            fill, ink = KEY_BADGE, KEY_BADGE_INK
+        self._paint_badge(screen, self.mode_badge_rect, text, fill, ink)
+        if bool(getattr(view, "learning_on", False)):
+            self._paint_badge(screen, self.learn_badge_rect, LEARN_BADGE, ESTOP, ESTOP_LABEL)
+
+    def _paint_badge(self, screen, rect, text: str, fill, ink) -> None:
+        import pygame
+
+        if rect is None or rect.w < 8 or rect.h < 8:
+            return
+        radius = max(1, rect.h // 2)
+        pygame.draw.rect(screen, fill, rect, border_radius=radius)
+        pygame.draw.rect(screen, LINE, rect, width=1, border_radius=radius)
+        label = self.font.render(str(text), True, ink)
+        tx = rect.x + max(0, (rect.w - label.get_width()) // 2)
+        ty = rect.y + max(0, (rect.h - label.get_height()) // 2)
+        prev = screen.get_clip()
+        screen.set_clip(rect)
+        screen.blit(label, (tx, ty))
+        screen.set_clip(prev)
 
     def _estop_bar_width(self) -> int:
         return self.font_sm.size("E-STOP")[0] + 64
@@ -2851,6 +3166,19 @@ class TrainMonitor:
             str(getattr(view, "lead_plaque", "") or ""),
             round(float(getattr(view, "teacher_weight", 0.0) or 0.0), 3),
             bool(getattr(view, "brain_offline", False)),
+            None if getattr(view, "drive_l", None) is None else round(float(view.drive_l), 2),
+            None if getattr(view, "drive_r", None) is None else round(float(view.drive_r), 2),
+            None if getattr(view, "turn", None) is None else round(float(view.turn), 3),
+            None if getattr(view, "stim_dog", None) is None else round(float(view.stim_dog), 2),
+            None if getattr(view, "stim_cube", None) is None else round(float(view.stim_cube), 2),
+            None if getattr(view, "pref_index", None) is None else round(float(view.pref_index), 3),
+            int(getattr(view, "pref_seconds", 0) or 0),
+            None if getattr(view, "kc_gd_frac", None) is None else round(float(view.kc_gd_frac), 3),
+            None if getattr(view, "kc_abp_frac", None) is None else round(float(view.kc_abp_frac), 3),
+            int(getattr(view, "pam_l", 0) or 0),
+            int(getattr(view, "pam_r", 0) or 0),
+            int(getattr(view, "ppl1_l", 0) or 0),
+            int(getattr(view, "ppl1_r", 0) or 0),
             int(getattr(view, "n_pam", 0) or 0),
             int(getattr(view, "total_pam", 0) or 0),
             int(getattr(view, "n_ppl1", 0) or 0),
@@ -2877,10 +3205,15 @@ class TrainMonitor:
 
         body = pygame.Rect(content.x, content.y, content.w, content.h)
         if getattr(view, "brain_offline", False):
-            from .brain_panel import offline_plate
+            from .brain_panel import BRAIN_OFFLINE_TITLE, offline_plate
 
             plate = offline_plate(_scheme_rgb("card"), _scheme_rgb("ink_dim"))
             pygame.draw.rect(screen, plate, body)
+            caption = self.font_sm.render(BRAIN_OFFLINE_TITLE, True, INK_DIM)
+            screen.blit(
+                caption,
+                (body.centerx - caption.get_width() // 2, body.centery - caption.get_height() // 2),
+            )
             self._brain_panel_cache = None
             return
         log_source = self.journal_rect
@@ -2926,26 +3259,107 @@ class TrainMonitor:
         else:
             self._draw_hebb(screen, view, pygame.Rect(body.x + 4, body.y + 4, body.w - 8, body.h - 8))
 
+    def _run_marker_layout(self, content, view: MonitorView):
+        """Two chip rows and a drive sample, or nothing when the journal is short."""
+        import pygame
+
+        from .run_marker import SIDES, STAGES
+
+        if view.learner != "mb" or content.w < 160:
+            return [], [], None, 0
+        chip_h = max(18, int(self.font_sm.get_height()) + 4)
+        sample_h = int(self.font_sm.get_height())
+        gap = 3
+        block = chip_h + gap + chip_h + gap + sample_h + 6
+        if content.h < block + 16:
+            return [], [], None, 0
+        x = content.x + 4
+        width = content.w - 8
+        y = content.y + 2
+        stage_rects = self._chip_row(x, y, width, chip_h, STAGES)
+        side_rects = self._chip_row(x, y + chip_h + gap, width, chip_h, SIDES)
+        sample_y = y + chip_h + gap + chip_h + gap
+        return stage_rects, side_rects, sample_y, block
+
+    def _chip_row(self, x: int, y: int, width: int, height: int, names) -> list:
+        import pygame
+
+        gap = 4
+        count = len(names)
+        chip_w = max(1, (int(width) - gap * (count - 1)) // count)
+        rects = []
+        cursor = int(x)
+        for name in names:
+            rects.append((pygame.Rect(cursor, int(y), chip_w, int(height)), name))
+            cursor += chip_w + gap
+        return rects
+
+    def _paint_run_chips(self, screen, rects, selected: str) -> None:
+        import pygame
+
+        for rect, name in rects:
+            on = name == selected
+            pygame.draw.rect(screen, PEACH if on else INSET, rect, border_radius=4)
+            pygame.draw.rect(screen, LINE, rect, 1, border_radius=4)
+            glyph = self.font_sm.render(name, True, VALUE if on else LABEL)
+            screen.blit(
+                glyph,
+                (rect.centerx - glyph.get_width() // 2, rect.centery - glyph.get_height() // 2),
+            )
+
+    def _paint_run_sample(self, screen, view: MonitorView, x: int, y: int) -> None:
+        from .run_marker import run_label
+        from .tabnum import signed
+
+        tag = self.font_sm.render(run_label(view.run_stage, view.run_side), True, LABEL)
+        screen.blit(tag, (x, y))
+        cursor = x + tag.get_width() + 8
+        left = self.font_sm.render("Л", True, LABEL)
+        screen.blit(left, (cursor, y))
+        cursor += left.get_width() + 4
+        cursor = self._cells(screen, signed(view.drive_l, 7, 1), cursor, y, VALUE, size=13)
+        cursor += 8
+        right = self.font_sm.render("П", True, LABEL)
+        screen.blit(right, (cursor, y))
+        cursor += right.get_width() + 4
+        self._cells(screen, signed(view.drive_r, 7, 1), cursor, y, VALUE, size=13)
+
     def _draw_journal_block(self, screen, view: MonitorView, content) -> None:
+        from .tabnum import signed
+
         journal = self.journal_rect
-        log_n = max(5, (journal.h - 34) // 16) if journal is not None else 5
-        if view.learner == "mb" and self.flash_open:
-            log_n = max(3, (journal.h - 34) // 16)
+        stage_rects, side_rects, sample_y, switch_h = self._run_marker_layout(content, view)
+        self.run_stage_rects = stage_rects
+        self.run_side_rects = side_rects
+        floor = 3 if view.learner == "mb" and self.flash_open else 5
+        room = (journal.h - 34 - switch_h) if journal is not None else floor * 16
+        log_n = max(floor, room // 16)
         self.log_rows = int(log_n)
         lines = tuple(view.log_lines[-log_n:])
-        key = (int(content.w), int(content.h), lines, theme_name())
-        cached = None if no_snap() else self._journal_cache
+        stage = str(view.run_stage or "до")
+        side = str(view.run_side or "слева")
+        drives = (signed(view.drive_l, 7, 1), signed(view.drive_r, 7, 1))
+        key = (int(content.w), int(content.h), lines, theme_name(), stage, side, drives, int(switch_h))
+        # The drive sample registers monospace cells every frame. A cached blit
+        # would skip that registration and the column check would see fewer rows.
+        cached = None if no_snap() or switch_h else self._journal_cache
         if cached is not None and cached[0] == key:
             screen.blit(cached[1], content.topleft)
             return
-        y = content.y + 2
+        y = content.y + 2 + switch_h
+        if switch_h:
+            self._paint_run_chips(screen, stage_rects, stage)
+            self._paint_run_chips(screen, side_rects, side)
+            self._paint_run_sample(screen, view, content.x + 4, int(sample_y))
         width_chars = max(24, content.w // 8)
         for line in lines:
             if y + 16 > content.bottom:
                 break
             screen.blit(self.font_sm.render(line[:width_chars], True, LABEL), (content.x + 4, y))
             y += 16
-        if not no_snap() and screen.get_rect().contains(content):
+        if switch_h:
+            self._journal_cache = None
+        elif not no_snap() and screen.get_rect().contains(content):
             self._journal_cache = (key, _snap(screen, content))
 
     def _draw_controls_block(self, screen, view: MonitorView) -> None:
@@ -3301,24 +3715,27 @@ class TrainMonitor:
     def _link_color(self, view: MonitorView):
         text = view.udp_status or ""
         low = text.lower()
+        if getattr(view, "onboard", False):
+            return GREEN if link_answers(text) else RED
         if "error" in low or "ошиб" in low:
             return RED
         if "нет связи" in text:
             return AMBER
-        if " ok" in low or low.endswith("ok"):
+        if link_answers(text):
             return PEACH
-        if view.onboard:
-            return AMBER
         return LAMP_OFF
 
     def _link_lamp(self, screen, view: MonitorView, x: int = 400) -> None:
         color = self._link_color(view)
         ink = INK_DIM if color == LAMP_OFF else color
-        label = self.font_sm.render("борт", True, ink)
+        label = self.font_sm.render(board_caption(view), True, ink)
         stop = self.brain_rect.x - 16
         bar = getattr(self, "help_bar_rect", None)
         if bar is not None and bar.w > 0:
             stop = min(stop, bar.x - 8)
+        badge = getattr(self, "mode_badge_rect", None)
+        if badge is not None and badge.w > 0:
+            stop = min(stop, badge.x - 8)
         if x + 14 > stop:
             return
         cy = MENU_H // 2
@@ -3377,14 +3794,26 @@ class TrainMonitor:
             self.auto_rect.collidepoint(mouse),
             key="A",
         )
-        self._button(
-            screen,
-            self.take_rect,
-            "ПЕРЕХВАТ",
-            PEACH if grabbed else LAMP_OFF,
-            self.take_rect.collidepoint(mouse),
-            key="M",
-        )
+        if grabbed:
+            self._button(
+                screen,
+                self.take_rect,
+                "ПЕРЕХВАТ",
+                None,
+                self.take_rect.collidepoint(mouse),
+                label_color=BADGE_INK,
+                fill=PEACH,
+                key="M",
+            )
+        else:
+            self._button(
+                screen,
+                self.take_rect,
+                "ПЕРЕХВАТ",
+                LAMP_OFF,
+                self.take_rect.collidepoint(mouse),
+                key="M",
+            )
         if view.learner == "mb":
             bilateral = view.steer != "sectors"
             self._button(
@@ -3489,17 +3918,22 @@ class TrainMonitor:
             y1 = inner.y + int(round(float(box.y1) * inner.h))
             rect = pygame.Rect(min(x0, x1), min(y0, y1), max(1, abs(x1 - x0)), max(1, abs(y1 - y0)))
             pygame.draw.rect(screen, color, rect, 1)
-            zone = getattr(box, "zone", "") or ""
-            self._mixed(
-                screen,
-                format_box_tag(zone, float(box.conf)),
-                rect.x + 2,
-                max(inner.y, rect.y - 16),
-                "[3] {6}",
-                color,
-                label_color=color,
-                limit=inner.right - 2,
-            )
+            kind = getattr(box, "kind", "") or ""
+            tag = format_box_tag("", float(box.conf), kind)
+            from .tabnum import cell_px
+
+            need = cell_px(14) * len(tag)
+            if rect.w >= need and rect.h >= 16:
+                self._mixed(
+                    screen,
+                    tag,
+                    rect.x + 2,
+                    max(inner.y, rect.y - 16),
+                    "[8] {4}%",
+                    color,
+                    label_color=color,
+                    limit=rect.right - 2,
+                )
 
     def _draw_robot_block(self, screen) -> None:
         mouse = self._mouse()
@@ -3652,12 +4086,15 @@ class TrainMonitor:
 
     def _teacher_sees(self, view: MonitorView) -> tuple:
         """``(sees_L, sees_R)`` from box centres. Image left is Л, image right is П."""
-        from .yolo_teacher import DEFAULT_CONF, hemisphere_hits
+        from .yolo_teacher import hemisphere_hits
 
+        conf = getattr(view, "teacher_conf", None)
+        if conf is None:
+            conf = YOLO_CONF
         return hemisphere_hits(
             view.teacher_boxes,
             view.overlap,
-            conf_min=DEFAULT_CONF,
+            conf_min=float(conf),
             center_only=True,
         )
 
@@ -3848,23 +4285,18 @@ class TrainMonitor:
         import pygame
 
         self.lead_slider_rect = pygame.Rect(0, 0, 0, 0)
+        self.conf_slider_rect = pygame.Rect(0, 0, 0, 0)
+        self.approach_rect = pygame.Rect(0, 0, 0, 0)
+        self.search_lamp_at = (0, 0)
         sm = self.font_sm
         rx, col_w = panel.x, panel.w
         limit = panel.right - 4
         y = self._eyes_banner(screen, view, rx, col_w, panel.y, bottom=panel.bottom)
-        raw = format_raw(view.likeness, view.readout_caption)
-
-        def raw_row() -> None:
-            self._mixed(screen, raw, rx, y, "сырой MBON {7}  [36]", VALUE, status_samples=RAW_STATUS, limit=limit)
-
-        nxt = self._paint_line(screen, panel, y, "raw", raw_row)
-        if nxt is None:
-            return y
-        y = nxt
+        y = self._approach_block(screen, view, panel, y, limit)
         y = self._progress_box(screen, view, panel, y)
         row = self._brain_row_h()
         # Curves are optional. The readout lines below them stay on their own rows.
-        keep_after_plots = row * 6 + 28
+        keep_after_plots = row * 5 + 8
         plot_h = 72
         if y + plot_h + keep_after_plots <= panel.bottom and col_w >= 180:
             plot_w = (col_w - 8) // 2
@@ -3880,38 +4312,50 @@ class TrainMonitor:
                 if graph_rect.w > 0 and graph_rect.h > 0:
                     self._note_brain_row(graph_rect, "plot")
             y += plot_h + 6
-        drift_line = format_drift(view.drift)
+        series = [(float(t), float(v)) for t, v in view.drift_curve]
+        if view.session_drift is not None:
+            base = float(view.drift) - float(view.session_drift)
+            series = [(t, v - base) for t, v in series]
+            if series:
+                series[-1] = (series[-1][0], float(view.session_drift))
+            elif view.drift or view.session_drift:
+                series = [(float(view.t), float(view.session_drift))]
+        else:
+            if series:
+                series[-1] = (series[-1][0], float(view.drift))
+            elif view.drift:
+                series = [(float(view.t), float(view.drift))]
+        from .brain_panel import drift_axis
+
+        drift_lo, drift_hi = drift_axis(series)
+        drift_line = format_drift_span(view.session_drift, view.drift)
+        drift_pattern = "дрейф: сессия {7} · с начала {7}"
 
         def drift_row() -> None:
-            self._mixed(screen, drift_line, rx, y, "дрейф KC→MBON  {7}", VALUE, limit=limit)
+            self._mixed(screen, drift_line, rx, y, drift_pattern, VALUE, limit=limit - 78)
+            lamp_x = limit - 62
+            cy = y + self._brain_row_h() // 2
+            color = AMBER if view.search_lamp else LAMP_OFF
+            self._lamp(screen, (lamp_x, cy), color, 5)
+            self.search_lamp_at = (lamp_x, cy)
+            word = self.font_sm.render("поиск", True, AMBER if view.search_lamp else INK_DIM)
+            screen.blit(word, (lamp_x + 12, y))
+            self._keep_glyphs([pygame.Rect(lamp_x + 12, y, word.get_width(), word.get_height())])
 
         nxt = self._paint_line(screen, panel, y, "drift", drift_row)
         if nxt is None:
             return y
         y = nxt
-        keep_after_drift_plot = row * 5 + 28
+        keep_after_drift_plot = row * 3 + 8
         drift_plot_h = 48
-        if y + drift_plot_h + keep_after_drift_plot <= panel.bottom:
-            drift_hi = max((v for _, v in view.drift_curve), default=1.0)
-            if drift_hi <= 0:
-                drift_hi = 1.0
+        if y + drift_plot_h + keep_after_drift_plot <= panel.bottom and series:
             drift_rect = pygame.Rect(rx, y, col_w, drift_plot_h)
-            _label_rect, graph_rect = _plot(screen, drift_rect, view.drift_curve, 0.0, drift_hi, INK_DIM, sm, "")
+            _label_rect, graph_rect = _plot(screen, drift_rect, series, drift_lo, drift_hi, INK_DIM, sm, "")
             if graph_rect.h > 0:
                 self._note_brain_row(graph_rect, "drift-plot")
             y += drift_plot_h + 4
         y = self._dan_timeline(screen, view, panel, y)
         y = self._kc_row(screen, view, panel, y)
-        if view.teacher_counts:
-            y = self._paint_readout(
-                screen,
-                panel,
-                y,
-                "teacher",
-                view.teacher_counts,
-                "учитель: PAM_L {7}  PAM_R {7}  PPL1_L {7}  PPL1_R {7}",
-                VALUE,
-            )
         if view.teacher_skips:
             quiet = skips_are_quiet(view.teacher_skips)
             tone = LABEL if quiet else AMBER
@@ -3927,6 +4371,7 @@ class TrainMonitor:
                 status_samples=SKIP_STATUS,
             )
         y = self._draw_lead_row(screen, view, panel, y)
+        y = self._draw_conf_row(screen, view, panel, y)
         return y
 
     def _lead_at(self, win_pos, inp, drag: bool) -> bool:
@@ -3949,6 +4394,28 @@ class TrainMonitor:
         elif share > 1.0:
             share = 1.0
         inp.teacher_weight = share
+        return True
+
+    def _conf_at(self, win_pos, inp, drag: bool) -> bool:
+        """Map a pointer x onto the YOLO confidence. Drag keeps the track."""
+        import pygame
+
+        rect = getattr(self, "conf_slider_rect", None)
+        if rect is None or rect.w < 8:
+            return False
+        logical = self._logical_pos(win_pos)
+        point = pygame.Rect(rect)
+        if drag:
+            point.inflate_ip(0, 28)
+        if not point.collidepoint(logical[0], logical[1]):
+            return False
+        span = float(rect.w)
+        share = (float(logical[0]) - float(rect.x)) / span
+        if share < 0.0:
+            share = 0.0
+        elif share > 1.0:
+            share = 1.0
+        inp.teacher_conf = share
         return True
 
     def _draw_lead_row(self, screen, view, panel, y: int) -> int:
@@ -4001,6 +4468,55 @@ class TrainMonitor:
         self.lead_slider_rect = track
         return nxt
 
+    def _draw_conf_row(self, screen, view, panel, y: int) -> int:
+        """YOLO confidence on one row: caption, monospace value, thin grey track."""
+        import pygame
+
+        from .tabnum import cell_px
+
+        self.conf_slider_rect = pygame.Rect(0, 0, 0, 0)
+        if getattr(view, "learner", "") != "mb":
+            return y
+        conf = float(getattr(view, "teacher_conf", YOLO_CONF))
+        if conf < 0.0:
+            conf = 0.0
+        elif conf > 1.0:
+            conf = 1.0
+        line = "порог YOLO  %s" % ("%.2f" % conf)
+        prefix = self.font_sm.size("порог YOLO  ")[0]
+        track = pygame.Rect(0, 0, 0, 0)
+
+        def paint() -> None:
+            nonlocal track
+            self._mixed(screen, line, panel.x, y, "порог YOLO  {4}", VALUE, limit=panel.right - 4)
+            row = self._brain_row_h()
+            left = panel.x + prefix + cell_px(14) * 4 + 16
+            width = panel.right - 8 - left
+            if width < 48:
+                return
+            track = pygame.Rect(left, y + row // 2 - 3, width, 6)
+            pygame.draw.rect(screen, INSET, track, border_radius=3)
+            fill_w = int(round(track.w * conf))
+            if fill_w > 0:
+                pygame.draw.rect(screen, INK_DIM, pygame.Rect(track.x, track.y, fill_w, track.h), border_radius=3)
+            pygame.draw.rect(screen, LINE, track, width=1, border_radius=3)
+            thumb_x = track.x + int(round((track.w - 1) * conf))
+            thumb = pygame.Rect(0, 0, 8, 14)
+            thumb.center = (thumb_x, track.centery)
+            if thumb.x < track.x:
+                thumb.x = track.x
+            if thumb.right > track.right:
+                thumb.right = track.right
+            pygame.draw.rect(screen, INK_DIM, thumb, border_radius=2)
+            pygame.draw.rect(screen, LINE, thumb, width=1, border_radius=2)
+
+        nxt = self._paint_line(screen, panel, y, "conf", paint)
+        if nxt is None:
+            return y
+        if track.w >= 48:
+            self.conf_slider_rect = track
+        return nxt
+
     def _progress_line(self, screen, line: str, x: int, y: int, limit=None) -> None:
         if line.startswith("метки "):
             screen.blit(self.font_sm.render(line, True, LABEL), (x, y))
@@ -4022,6 +4538,9 @@ class TrainMonitor:
             return
         if "знакомство" in line:
             self._mixed(screen, line, x, y, "[8]{12}  знакомство {7}", VALUE, limit=limit)
+            return
+        if line == "нет данных":
+            screen.blit(self.font_sm.render(line, True, LABEL), (x, y))
             return
         if line.startswith("D"):
             self._mixed(screen, line, x, y, "D−N сессия {6} {4}% {5}  всего {6} {4}% {5}", VALUE, limit=limit)
@@ -4087,11 +4606,74 @@ class TrainMonitor:
             cursor += row
         return y + used + 4
 
+    def _approach_block(self, screen, view: MonitorView, panel, y: int, limit: int) -> int:
+        import pygame
+
+        title = "подход − избегание"
+
+        def title_row() -> None:
+            screen.blit(self.font_sm.render(title, True, PEACH), (panel.x, y))
+
+        nxt = self._paint_line(screen, panel, y, "drive-title", title_row)
+        if nxt is None:
+            return y
+        y = nxt
+        drive = format_drive_line(view.drive_l, view.drive_r, view.turn)
+
+        def drive_row() -> None:
+            self._mixed(screen, drive, panel.x, y, "Л {7}  {1}  П {7}", VALUE, limit=limit)
+
+        nxt = self._paint_line(screen, panel, y, "drive", drive_row)
+        if nxt is None:
+            return y
+        y = nxt
+        track_h = 8
+        gap = 4
+        block_h = track_h + gap + track_h
+        if y + block_h <= panel.bottom and panel.w >= 80:
+            bars = pygame.Rect(panel.x, y, panel.w, block_h)
+            self._note_brain_row(bars, "drive-bars")
+            scale = 1.0
+            for value in (view.drive_l, view.drive_r):
+                if value is not None:
+                    scale = max(scale, abs(float(value)))
+            self._mirror_bars(screen, pygame.Rect(panel.x, y, panel.w, track_h), view.drive_l, view.drive_r, scale)
+            self._zero_bar(screen, pygame.Rect(panel.x, y + track_h + gap, panel.w, track_h), view.turn)
+            y += block_h
+        stim = format_stim_line(view.stim_dog, view.stim_cube)
+
+        def stim_row() -> None:
+            self._mixed(screen, stim, panel.x, y, "сородич {7}  контроль (куб) {7}", VALUE, limit=limit)
+
+        nxt = self._paint_line(screen, panel, y, "stim", stim_row)
+        if nxt is None:
+            return y
+        y = nxt
+        pref = format_pref_line(view.pref_index, view.pref_seconds)
+        pattern = "сородич−куб {12}  {6}" if view.pref_index is None else "сородич−куб {7}  {6}"
+
+        def pref_row() -> None:
+            end = self._mixed(screen, pref, panel.x, y, pattern, VALUE, limit=limit)
+            word = "новый заход"
+            glyph = self.font_sm.render(word, True, LABEL)
+            width = int(glyph.get_width()) + 16
+            if end + 8 + width <= limit:
+                rect = pygame.Rect(end + 8, y, width, max(1, self._brain_row_h() - 2))
+                pygame.draw.rect(screen, INSET, rect, border_radius=3)
+                pygame.draw.rect(screen, LINE, rect, width=1, border_radius=3)
+                screen.blit(glyph, (rect.x + 8, rect.centery - glyph.get_height() // 2))
+                self._keep_glyphs([pygame.Rect(rect.x + 8, rect.y, glyph.get_width(), glyph.get_height())])
+                self.approach_rect = rect
+
+        nxt = self._paint_line(screen, panel, y, "pref", pref_row)
+        if nxt is None:
+            return y
+        return nxt
+
     def _dan_timeline(self, screen, view: MonitorView, panel, y: int) -> int:
         import pygame
 
-        row = self._brain_row_h()
-        title = "шкала DAN    T = лакомство PAM    X = наказание PPL1"
+        title = "шкала DAN"
 
         def title_row() -> None:
             screen.blit(self.font_sm.render(title, True, PEACH), (panel.x + 8, y))
@@ -4100,99 +4682,175 @@ class TrainMonitor:
         if nxt is None:
             return y
         y = nxt
-        if view.t <= 30.0:
-            t0 = 0.0
-            t1 = max(view.t, 1.0)
-            span_label = format_span(t1, False)
-        else:
-            t1 = view.t
-            t0 = t1 - 30.0
-            span_label = format_span(t1, True)
-        hint = "каждое лакомство появится здесь — собака в кадре, клавиша T"
-        shown_events = [(t, kind) for t, kind in view.dan_events if t0 <= float(t) <= t1]
-        if not shown_events:
-            def hint_row() -> None:
-                screen.blit(self.font_sm.render(hint, True, INK_DIM), (panel.x + 8, y))
+        line = format_lamps(view.pam_l, view.pam_r, view.ppl1_l, view.ppl1_r)
+        limit = panel.right - 4
 
-            nxt = self._paint_line(screen, panel, y, "dan-hint", hint_row)
-            if nxt is None:
-                return y
-            y = nxt
-        axis_h = 28
-        if y + axis_h <= panel.bottom:
-            axis = pygame.Rect(panel.x + 8, y, max(1, panel.w - 16), axis_h)
-            self._note_brain_row(axis, "dan-axis")
-            prev = screen.get_clip()
-            clip = axis if prev is None else axis.clip(prev)
-            if clip.w > 0 and clip.h > 0:
-                screen.set_clip(clip)
-                try:
-                    pygame.draw.line(screen, LINE, (axis.x, axis.centery), (axis.right, axis.centery), 1)
-                    for t, kind in shown_events:
-                        u = (float(t) - t0) / max(t1 - t0, 1e-6)
-                        x = axis.x + int(u * max(axis.w - 1, 1))
-                        if kind == "PAM":
-                            pygame.draw.line(screen, GREEN, (x, axis.y + 2), (x, axis.centery - 1), 3)
-                        elif kind == "PPL1":
-                            pygame.draw.line(screen, RED, (x, axis.centery + 1), (x, axis.bottom - 2), 3)
-                        else:
-                            pygame.draw.line(screen, INK_DIM, (x, axis.y + 4), (x, axis.bottom - 4), 1)
-                finally:
-                    screen.set_clip(prev)
-            y += axis_h
-        from .tabnum import cell_px
+        def lamps() -> None:
+            x = panel.x + 8
+            cy = y + self._brain_row_h() // 2
+            for color in (GREEN, GREEN, RED, RED):
+                pygame.draw.circle(screen, color, (x + 4, cy), 4)
+                x += 12
+            self._mixed(screen, line, x + 4, y, "PAM Л {7}  PAM П {7}  PPL1 Л {7}  PPL1 П {7}", VALUE, limit=limit)
 
-        span_w = cell_px(14) * len(span_label)
-        span_x = panel.right - 8 - span_w
-
-        def span_row() -> None:
-            if span_x >= panel.x and span_w <= panel.w - 8:
-                self._cells(screen, span_label, span_x, y, INK_DIM)
-
-        nxt = self._paint_line(screen, panel, y, "dan-span", span_row)
+        nxt = self._paint_line(screen, panel, y, "dan-lamps", lamps)
         if nxt is None:
             return y
-        return nxt + 2
+        return nxt
 
     def _kc_row(self, screen, view: MonitorView, panel, y: int) -> int:
         import pygame
 
-        line = format_kc(view.kc_on, view.kc_n)
-        limit = panel.right - 4
+        from .tabnum import SLOT_GAP, slot_width, slots_of
 
-        def label() -> None:
-            self._mixed(screen, line, panel.x, y, "активность KC  {7} из {7}", VALUE, limit=limit)
-
-        nxt = self._paint_line(screen, panel, y, "kc", label)
+        line = format_kc_scales(view.kc_gd_frac, view.kc_abp_frac)
+        row_h = self._brain_row_h()
+        if y + row_h > panel.bottom:
+            return y
+        try:
+            slots = slots_of(line, "γ-d {4}%  α/β-p {4}%")
+        except (ValueError, IndexError):
+            slots = []
+        label_w = 0
+        for slot in slots:
+            if label_w:
+                label_w += SLOT_GAP
+            label_w += slot_width(slot, self.font_sm)
+        label_w += 4
+        room = panel.w - label_w - 8
+        if room >= 96:
+            label_rect = pygame.Rect(panel.x, y, label_w, row_h)
+            scale_rect = pygame.Rect(label_rect.right + 8, y, panel.right - label_rect.right - 8, row_h)
+            self._note_brain_row(label_rect, "kc")
+            self._note_brain_row(scale_rect, "kc-scale")
+            self._with_row_clip(
+                screen,
+                label_rect,
+                lambda: self._mixed(
+                    screen,
+                    line,
+                    panel.x,
+                    y,
+                    "γ-d {4}%  α/β-p {4}%",
+                    VALUE,
+                    limit=label_rect.right,
+                ),
+            )
+            self._kc_tracks(screen, scale_rect, view.kc_gd_frac, view.kc_abp_frac)
+            return y + row_h
+        nxt = self._paint_line(
+            screen,
+            panel,
+            y,
+            "kc",
+            lambda: self._mixed(screen, line, panel.x, y, "γ-d {4}%  α/β-p {4}%", VALUE, limit=panel.right - 4),
+        )
         if nxt is None:
             return y
         y = nxt
-        bars_h = 64
-        if y + bars_h > panel.bottom or panel.w < 48:
+        band_h = 14
+        if y + band_h > panel.bottom or panel.w < 80:
             return y
-        bins = view.kc_bins
-        if bins is None or len(bins) == 0:
-            bins = np.zeros(48)
-        vals = np.asarray(bins, dtype=float).ravel()
-        vmax = float(vals.max()) if vals.size else 1.0
-        if vmax < 1e-6:
-            vmax = 1.0
-        n = len(vals)
-        gap = 2
-        cell = max(2, (panel.w - gap * (n - 1)) // n)
-        bars = pygame.Rect(panel.x, y, panel.w, bars_h)
-        self._note_brain_row(bars, "kc-bars")
-        base = bars.bottom - 4
-        top = bars.y + 2
-        span = max(1, bars_h - 8)
-        for i, value in enumerate(vals):
-            h = int(span * max(float(value) / vmax, 0.0))
-            rx = panel.x + i * (cell + gap)
-            if rx >= panel.right:
-                break
-            pygame.draw.rect(screen, BG_TOP, pygame.Rect(rx, top, max(1, cell), span))
-            pygame.draw.rect(screen, PEACH, pygame.Rect(rx, base - h, max(1, cell), max(h, 1)))
-        return y + bars_h + 4
+        band = pygame.Rect(panel.x, y, panel.w, band_h)
+        self._note_brain_row(band, "kc-scale")
+        self._kc_tracks(screen, band, view.kc_gd_frac, view.kc_abp_frac)
+        return y + band_h
+
+    def _kc_tracks(self, screen, band, gd, ab) -> None:
+        import pygame
+
+        gap = 12
+        track_h = 8
+        top = band.y + max(0, (band.h - track_h) // 2)
+        track_w = max(8, (band.w - gap) // 2)
+        self._kc_scale(screen, pygame.Rect(band.x, top, track_w, track_h), gd)
+        self._kc_scale(
+            screen,
+            pygame.Rect(band.x + track_w + gap, top, band.right - (band.x + track_w + gap), track_h),
+            ab,
+        )
+
+    def _mirror_bars(self, screen, rect, left, right, scale: float) -> None:
+        """One centre. Л grows left, П grows right. Approach is peach."""
+        import pygame
+
+        if rect.w < 8 or rect.h < 4:
+            return
+        pygame.draw.rect(screen, INSET, rect, border_radius=3)
+        pygame.draw.rect(screen, LINE, rect, width=1, border_radius=3)
+        mid = rect.x + rect.w // 2
+        half = max(1, rect.w // 2)
+        self._outward(screen, rect, mid, half, left, scale, -1)
+        self._outward(screen, rect, mid, half, right, scale, 1)
+        pygame.draw.line(screen, LINE, (mid, rect.y), (mid, rect.bottom - 1))
+
+    def _outward(self, screen, rect, mid: int, half: int, value, scale: float, sign: int) -> None:
+        """Fill away from ``mid``. ``sign`` −1 is the left half."""
+        import pygame
+
+        if value is None or scale <= 0:
+            return
+        share = abs(float(value)) / float(scale)
+        if share > 1.0:
+            share = 1.0
+        width = int(round(half * share))
+        if width <= 0:
+            return
+        color = PEACH if float(value) >= 0.0 else INK_DIM
+        if sign < 0:
+            box = pygame.Rect(mid - width, rect.y, width, rect.h)
+        else:
+            box = pygame.Rect(mid, rect.y, width, rect.h)
+        pygame.draw.rect(screen, color, box)
+
+    def _zero_bar(self, screen, rect, value) -> None:
+        """Yaw with zero in the middle. Left (positive) fills toward Л."""
+        import pygame
+
+        if rect.w < 8 or rect.h < 4:
+            return
+        pygame.draw.rect(screen, INSET, rect, border_radius=3)
+        pygame.draw.rect(screen, LINE, rect, width=1, border_radius=3)
+        mid = rect.x + rect.w // 2
+        if value is not None:
+            share = float(value)
+            if share > 1.0:
+                share = 1.0
+            elif share < -1.0:
+                share = -1.0
+            width = int(round((rect.w // 2) * abs(share)))
+            if width > 0:
+                if share >= 0.0:
+                    box = pygame.Rect(mid - width, rect.y, width, rect.h)
+                else:
+                    box = pygame.Rect(mid, rect.y, width, rect.h)
+                pygame.draw.rect(screen, PEACH, box)
+        pygame.draw.line(screen, LINE, (mid, rect.y), (mid, rect.bottom - 1))
+
+    def _kc_scale(self, screen, track, frac) -> None:
+        """0–20% track. The green band is the 5–10% sparsity the eye keeps."""
+        import pygame
+
+        if track.w < 8 or track.h < 4:
+            return
+        from .mb_constants import KC_FRAC_MAX, KC_FRAC_MIN
+
+        pygame.draw.rect(screen, INSET, track, border_radius=3)
+        pygame.draw.rect(screen, LINE, track, width=1, border_radius=3)
+        span = float(KC_FRAC_MAX) * 2.0
+        z0 = track.x + int(round(track.w * (float(KC_FRAC_MIN) / span)))
+        z1 = track.x + int(round(track.w * (float(KC_FRAC_MAX) / span)))
+        if z1 > z0:
+            zone = pygame.Rect(z0, track.y, max(1, z1 - z0), track.h)
+            pygame.draw.rect(screen, GREEN, zone)
+        if frac is not None:
+            share = float(frac) / span
+            if share < 0.0:
+                share = 0.0
+            elif share > 1.0:
+                share = 1.0
+            thumb_x = track.x + int(round((track.w - 1) * share))
+            pygame.draw.line(screen, PEACH, (thumb_x, track.y - 2), (thumb_x, track.bottom + 2), 2)
 
     def _draw_hebb(self, screen, view: MonitorView, panel) -> int:
         import pygame
@@ -4263,9 +4921,11 @@ class TrainMonitor:
             scaled = pygame.transform.smoothscale(surf, (inner.w, inner.h))
             screen.blit(scaled, inner.topleft)
         if error:
+            shown, quiet = _camera_caption(error)
+            ink = INK_DIM if quiet else RED
             y = rect.y + 40
-            for chunk in _wrap(error, 64):
-                screen.blit(self.font_sm.render(chunk, True, RED), (rect.x + 10, y))
+            for chunk in _wrap(shown, 64):
+                screen.blit(self.font_sm.render(chunk, True, ink), (rect.x + 10, y))
                 y += 16
         return inner
 
@@ -4388,6 +5048,18 @@ def _events_mark(events) -> tuple:
     last = events[-1]
     kind = last[1] if len(last) > 1 else ""
     return (len(events), str(kind))
+
+
+def _camera_caption(error: str) -> tuple:
+    """Short grey line for a dead onboard camera. The long text stays in the log."""
+    text = "" if error is None else str(error)
+    if not text:
+        return "", False
+    if text.startswith("камера борта"):
+        return text, True
+    if "Cannot reach" in text or "/camera.jpg" in text:
+        return "камера борта недоступна (8088)", True
+    return text, False
 
 
 def _wrap(text: str, width: int) -> list[str]:

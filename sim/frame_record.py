@@ -20,6 +20,7 @@ import numpy as np
 
 LABEL_WINDOW_S = 0.5
 SIMILAR_MEAN = 4.0
+YOLO_ERROR_TAG = "не собака / ошибка YOLO"
 _DOG = ("T", "D")
 _NONE = ("X", "N")
 
@@ -30,6 +31,36 @@ def _meta_has_label(meta: dict) -> bool:
     if not isinstance(operator, dict):
         return False
     return operator.get("weak_label") in ("dog", "no_dog")
+
+
+def yolo_boxes_json(boxes) -> list:
+    """Plain box records for a saved frame. Empty when YOLO drew nothing."""
+    rows = []
+    for box in list(boxes or []):
+        rows.append(
+            {
+                "x0": round(float(getattr(box, "x0", 0.0)), 4),
+                "y0": round(float(getattr(box, "y0", 0.0)), 4),
+                "x1": round(float(getattr(box, "x1", 0.0)), 4),
+                "y1": round(float(getattr(box, "y1", 0.0)), 4),
+                "conf": round(float(getattr(box, "conf", 0.0)), 4),
+                "kind": str(getattr(box, "kind", "") or ""),
+                "zone": str(getattr(box, "zone", "") or ""),
+            }
+        )
+    return rows
+
+
+def with_yolo_error(meta: dict, boxes) -> dict:
+    """Mark one frame as a YOLO mistake and attach the boxes from that frame."""
+    out = dict(meta or {})
+    operator = dict(out.get("operator") or {})
+    operator["weak_label"] = "no_dog"
+    operator["tag"] = YOLO_ERROR_TAG
+    out["operator"] = operator
+    out["tag"] = YOLO_ERROR_TAG
+    out["yolo_boxes"] = yolo_boxes_json(boxes)
+    return out
 
 
 def jpeg_complete(blob: bytes) -> bool:
@@ -270,7 +301,24 @@ class FrameRecorder:
             return False
         self._last_offer = clock
         try:
-            self._queue.put_nowait((bytes(jpeg), dict(meta), None if fp is None else np.array(fp, copy=True)))
+            self._queue.put_nowait((bytes(jpeg), dict(meta), None if fp is None else np.array(fp, copy=True), False))
+        except queue.Full:
+            return False
+        return True
+
+    def offer_tagged(self, jpeg: bytes, meta: dict, fp: np.ndarray | None) -> bool:
+        """Save this frame now. Skips the label window and the frame-rate slot.
+
+        Used for an explicit «не собака / ошибка YOLO» press. Recording still
+        has to be on. A duplicate picture is kept, because the operator asked.
+        """
+        if not jpeg_complete(jpeg):
+            return False
+        with self._lock:
+            if not self.enabled or self.session_dir is None:
+                return False
+        try:
+            self._queue.put_nowait((bytes(jpeg), dict(meta), None if fp is None else np.array(fp, copy=True), True))
         except queue.Full:
             return False
         return True
@@ -291,12 +339,13 @@ class FrameRecorder:
                 continue
             if item is None:
                 break
-            self._write(item[0], item[1], item[2])
+            force = bool(item[3]) if len(item) > 3 else False
+            self._write(item[0], item[1], item[2], force)
 
-    def _write(self, jpeg: bytes, meta: dict, fp: np.ndarray | None) -> None:
+    def _write(self, jpeg: bytes, meta: dict, fp: np.ndarray | None, force: bool = False) -> None:
         digest = hashlib.sha1(jpeg).digest()
         with self._lock:
-            if digest == self._last_digest or too_similar(self._last_fp, fp):
+            if not force and (digest == self._last_digest or too_similar(self._last_fp, fp)):
                 self._last_digest = digest
                 self._last_fp = fp
                 self.skipped += 1

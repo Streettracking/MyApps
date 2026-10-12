@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .hemifield import fly_turn
+from .hemifield import fly_turn, live_turn
 from .map_marks import bin_angle, feature_range
 from .raw_sense import FOV, N_AZ
 
@@ -421,9 +421,15 @@ class ApproachTrack:
         self.yaw_z = 0.0
         self._ema_l: float | None = None
         self._ema_r: float | None = None
+        self._ema_bl: float | None = None
+        self._ema_br: float | None = None
 
-    def note_sides(self, r_l: float, r_r: float) -> None:
-        """EMA of the two readouts. The mushroom bodies themselves are not smoothed."""
+    def note_sides(self, r_l: float, r_r: float, base_l: float | None = None, base_r: float | None = None) -> None:
+        """EMA of the two readouts. The mushroom bodies themselves are not smoothed.
+
+        Birth baselines select the live yaw. Without them the ratio law stays,
+        which is what a gain-only probe passes in.
+        """
         left = float(r_l)
         right = float(r_r)
         if self._ema_l is None:
@@ -435,7 +441,18 @@ class ApproachTrack:
         self.r_l = float(self._ema_l)
         self.r_r = float(self._ema_r)
         self.r_diff = self.r_l - self.r_r
-        self.yaw_z = fly_turn(self.r_l, self.r_r)
+        if base_l is None or base_r is None:
+            self.yaw_z = fly_turn(self.r_l, self.r_r)
+            return
+        born_l = float(base_l)
+        born_r = float(base_r)
+        if self._ema_bl is None:
+            self._ema_bl = born_l
+            self._ema_br = born_r
+        else:
+            self._ema_bl = SIDE_EMA * born_l + (1.0 - SIDE_EMA) * float(self._ema_bl)
+            self._ema_br = SIDE_EMA * born_r + (1.0 - SIDE_EMA) * float(self._ema_br)
+        self.yaw_z = live_turn(self.r_l, self.r_r, self._ema_bl, self._ema_br)
 
     def update(self, now: float, recognized: bool, sector: int | None) -> None:
         now = float(now)
@@ -630,11 +647,13 @@ class Pilot:
         r_r: float = 0.0,
         recognized_l: bool | None = None,
         recognized_r: bool | None = None,
+        base_l: float | None = None,
+        base_r: float | None = None,
     ) -> DriveCommand:
         ax = float(arrows[0]) if arrows else 0.0
         az = float(arrows[1]) if arrows else 0.0
         self.hint = ""
-        self.track.note_sides(r_l, r_r)
+        self.track.note_sides(r_l, r_r, base_l, base_r)
         if self.mode == "estop" or not link_ok:
             self.phase = "stop"
             self.who = "никто"
@@ -721,6 +740,8 @@ class Pilot:
                         r_r=r_r,
                         recognized_l=recognized_l,
                         recognized_r=recognized_r,
+                        base_l=base_l,
+                        base_r=base_r,
                     )
             self.phase = "stop"
             self.who = "никто" if self.held_stop else "оператор"

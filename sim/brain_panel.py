@@ -96,6 +96,126 @@ class PanelTrace:
             del mb.dan_events[:-EVENT_KEEP]
 
 
+def session_drift(mb) -> float:
+    """How far the live L2 sum has moved since this process loaded the weights.
+
+    ``drift_session0`` is the lifetime sum at load (0 at birth). The panel's
+    lifetime number is the saved file; this one is only the current run.
+    """
+    base = float(getattr(mb, "drift_session0", 0.0) or 0.0)
+    return float(live_drift(mb) - base)
+
+
+def live_drift(mb) -> float:
+    """Sum of the two eyes' KC→MBON L2 norms, read from the weights now.
+
+    ``last_drift`` used to keep the value from the last dopamine pulse, so the
+    panel could sit near 170 while a later ``weight_drift()`` on each eye had
+    already moved. Headless ``summary`` prints this same sum. It grows while
+    synapses move and the birth-weight floor and ceiling bound it: one eye
+    tops out near 95 if every γ-d synapse sits on the floor, so the sum can
+    flatten near 170. A run of a few minutes is still in the 40–70 band.
+    """
+    return float(mb.brain.weight_drift() + mb.brain_r.weight_drift())
+
+
+def drift_axis(series) -> tuple:
+    """Padded min and max. A flat series is not drawn on the top edge."""
+    vals = []
+    for item in series or []:
+        try:
+            vals.append(float(item[1]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    if not vals:
+        return 0.0, 1.0
+    lo = min(vals)
+    hi = max(vals)
+    span = hi - lo
+    pad = max(span * 0.5, max(abs(lo), abs(hi), 1.0) * 0.08, 1.0)
+    return lo - pad, hi + pad
+
+
+def kc_group_fracs(mb) -> tuple:
+    """Active fraction of γ-d and of α/β-p, both eyes together. None when absent."""
+
+    def one(kind: str):
+        on = 0
+        total = 0
+        for brain in (getattr(mb, "brain", None), getattr(mb, "brain_r", None)):
+            vis = getattr(brain, "vision", None)
+            if vis is None:
+                continue
+            if kind == "gd":
+                on += int(getattr(vis, "last_gd_on", 0))
+                total += int(getattr(vis, "n_gd", 0))
+            else:
+                on += int(getattr(vis, "last_abp_on", 0))
+                total += int(getattr(vis, "n_abp", 0))
+        if total <= 0:
+            return None
+        return float(on) / float(total)
+
+    return one("gd"), one("abp")
+
+
+def latest_object_drives(rows) -> tuple:
+    """Last approach−avoidance stored for the conspecific and for the cube."""
+    dog = None
+    cube = None
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name", ""))
+        try:
+            drive = float(row.get("drive"))
+        except (TypeError, ValueError):
+            continue
+        if name == "conspecific":
+            dog = drive
+        elif name == "control":
+            cube = drive
+    return dog, cube
+
+
+def panel_readout(mb, watch=None) -> dict:
+    """Fields the trainer panel paints from a live mushroom body. No learning."""
+    from .hemifield import live_turn
+
+    drive_l = float(getattr(mb, "r_l", 0.0) or 0.0)
+    drive_r = float(getattr(mb, "r_r", 0.0) or 0.0)
+    base_l = float(getattr(mb, "base_l", drive_l))
+    base_r = float(getattr(mb, "base_r", drive_r))
+    gd, ab = kc_group_fracs(mb)
+    dog, cube = latest_object_drives(getattr(mb, "object_drives", None))
+    index = None
+    seconds = 0.0
+    if watch is not None:
+        if dog is None:
+            dog = watch.dog
+        if cube is None:
+            cube = watch.cube
+        index = watch.index()
+        seconds = float(watch.total)
+    return {
+        "drive_l": drive_l,
+        "drive_r": drive_r,
+        "turn": float(live_turn(drive_l, drive_r, base_l, base_r)),
+        "stim_dog": dog,
+        "stim_cube": cube,
+        "pref_index": index,
+        "pref_seconds": seconds,
+        "kc_gd_frac": gd,
+        "kc_abp_frac": ab,
+        "drift": live_drift(mb),
+        "session_drift": session_drift(mb),
+        "pam_l": int(getattr(mb, "teacher_pam_l", 0)),
+        "pam_r": int(getattr(mb, "teacher_pam_r", 0)),
+        "ppl1_l": int(getattr(mb, "teacher_ppl1_l", 0)),
+        "ppl1_r": int(getattr(mb, "teacher_ppl1_r", 0)),
+    }
+
+
 def widget_status(mb, trace: PanelTrace) -> dict:
     """The brain-panel slice of ``GET /status``. Plain lists, no numpy."""
     return {
@@ -103,8 +223,9 @@ def widget_status(mb, trace: PanelTrace) -> dict:
         "dog_in_frame_series": _rows_json(trace.dog_series, CURVE_KEEP),
         "no_dog": _opt_float(trace.none_value),
         "no_dog_series": _rows_json(trace.none_series, CURVE_KEEP),
-        "kc_mbon_drift": float(mb.last_drift),
+        "kc_mbon_drift": live_drift(mb),
         "kc_mbon_drift_series": _rows_json(mb.drift_curve, DRIFT_KEEP),
+        "session_drift": session_drift(mb),
         "treats_session": int(mb.n_pam),
         "treats_total": int(mb.progress.base_pam + mb.n_pam),
         "kc_bins": _plain_floats(mb.last_kc_bins),
@@ -195,7 +316,22 @@ def brain_panel_from_status(status, age_s) -> tuple:
             int(status["ppl1_l"]),
             int(status["ppl1_r"]),
         ),
+        "pam_l": int(status["pam_l"]),
+        "pam_r": int(status["pam_r"]),
+        "ppl1_l": int(status["ppl1_l"]),
+        "ppl1_r": int(status["ppl1_r"]),
     }
+    _copy_optional_number(fields, status, "kc_active_frac_gd", "kc_gd_frac")
+    _copy_optional_number(fields, status, "kc_active_frac_abp", "kc_abp_frac")
+    _copy_optional_number(fields, status, "drive_l", "drive_l")
+    _copy_optional_number(fields, status, "drive_r", "drive_r")
+    _copy_optional_number(fields, status, "turn", "turn")
+    _copy_optional_number(fields, status, "session_drift", "session_drift")
+    dog, cube = latest_object_drives(status.get("object_drives"))
+    if dog is not None:
+        fields["stim_dog"] = dog
+    if cube is not None:
+        fields["stim_cube"] = cube
     if "n_ppl1" in status and _required_number(status.get("n_ppl1")) is not None:
         fields["n_ppl1"] = int(status["n_ppl1"])
     if "n_ppl1_total" in status and _required_number(status.get("n_ppl1_total")) is not None:
@@ -210,6 +346,15 @@ def _push(rows: list, t: float, value: float, keep: int) -> None:
     rows.append((float(t), float(value)))
     if len(rows) > int(keep):
         del rows[:-int(keep)]
+
+
+def _copy_optional_number(fields: dict, status: dict, source: str, dest: str) -> None:
+    if source not in status:
+        return
+    try:
+        fields[dest] = float(status[source])
+    except (TypeError, ValueError):
+        return
 
 
 def _opt_float(value):

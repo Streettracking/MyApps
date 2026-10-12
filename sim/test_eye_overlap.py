@@ -241,6 +241,8 @@ class StateAndStatusTests(unittest.TestCase):
         loop.forward_m = 3.0
         loop.mb.r_l = 5.0
         loop.mb.r_r = 5.0
+        loop._dog_in_frame = True
+        loop._yolo_t = now
         cmd = loop.tick(now)
         self.assertEqual(cmd.phase, "approach")
         self.assertAlmostEqual(cmd.x, 0.4)
@@ -251,7 +253,7 @@ class StateAndStatusTests(unittest.TestCase):
     def test_status_adds_the_ui_brain_fields(self):
         from robot.flybrain_onboard.app import BrainLoop
         from robot.flybrain_onboard.drive import SportDrive
-        from sim.hemifield import fly_turn
+        from sim.hemifield import live_turn
         from sim.mb_train import MbTrainer, default_npz
 
         brain = MbTrainer(default_npz(), seed=1, overlap=0.4)
@@ -292,7 +294,9 @@ class StateAndStatusTests(unittest.TestCase):
         self.assertEqual(quiet["ppl1_count"], 0)
         self.assertGreaterEqual(quiet["kc_active_frac"], 0.0)
         self.assertLessEqual(quiet["kc_active_frac"], 1.0)
-        self.assertAlmostEqual(quiet["turn"], fly_turn(quiet["drive_l"], quiet["drive_r"]))
+        self.assertAlmostEqual(
+            quiet["turn"], live_turn(quiet["drive_l"], quiet["drive_r"], loop.mb.base_l, loop.mb.base_r)
+        )
 
         loop.learn = True
         camera = np.zeros((16, 32, 3), dtype=np.uint8)
@@ -312,7 +316,9 @@ class StateAndStatusTests(unittest.TestCase):
         self.assertLessEqual(seen["kc_active_frac_abp"], 1.0)
         self.assertAlmostEqual(seen["drive_l"], loop.mb.brain.appetitive_drive(loop.mb.last_fwd.action_scores))
         self.assertAlmostEqual(seen["drive_r"], loop.mb.brain_r.appetitive_drive(loop.mb.last_fwd_r.action_scores))
-        self.assertAlmostEqual(seen["turn"], fly_turn(seen["drive_l"], seen["drive_r"]))
+        self.assertAlmostEqual(
+            seen["turn"], live_turn(seen["drive_l"], seen["drive_r"], loop.mb.base_l, loop.mb.base_r)
+        )
         self.assertFalse(seen["pam_event"])
         self.assertFalse(seen["ppl1_event"])
         self.assertEqual(seen["n_pam"], seen["pam_count"])
@@ -377,14 +383,21 @@ class OnboardEyeDriveTests(unittest.TestCase):
         loop.dist_m = 3.0
         loop.forward_m = 3.0
 
+    def _see(self, loop, now: float) -> None:
+        loop._dog_in_frame = True
+        loop._yolo_t = float(now)
+
     def test_both_eyes_walk_and_yaw_follows_the_readouts(self):
         loop = self._loop()
         self._arm(loop, 0.0)
+        self._see(loop, 0.0)
         loop.recognized = True
         loop.recognized_l = True
         loop.recognized_r = True
-        loop.mb.r_l = 8.0
-        loop.mb.r_r = 1.0
+        loop.mb.r_l = 480.0
+        loop.mb.r_r = 40.0
+        loop.mb.base_l = 480.0
+        loop.mb.base_r = 40.0
         cmd = loop.tick(0.0)
         self.assertEqual(cmd.phase, "approach")
         self.assertAlmostEqual(cmd.x, 0.4)
@@ -395,49 +408,63 @@ class OnboardEyeDriveTests(unittest.TestCase):
 
         other = self._loop()
         self._arm(other, 0.0)
+        self._see(other, 0.0)
         other.recognized = True
         other.recognized_l = True
         other.recognized_r = True
-        other.mb.r_l = 1.0
-        other.mb.r_r = 8.0
+        other.mb.r_l = 40.0
+        other.mb.r_r = 480.0
+        other.mb.base_l = 40.0
+        other.mb.base_r = 480.0
         cmd = other.tick(0.0)
         self.assertAlmostEqual(cmd.x, 0.4)
         self.assertLess(cmd.z, -0.2)
         self.assertEqual(other.status()["eyes_ru"], "ОБА ВИДЯТ → ИДУ")
 
-    def test_one_eye_turns_and_a_loss_searches_that_side(self):
+    def test_one_eye_with_a_target_follows_the_drive(self):
+        from sim.search_reflex import SEARCH_REFLEX_YAW
+
         loop = self._loop()
         self._arm(loop, 0.0)
+        self._see(loop, 0.0)
         loop.recognized_l = False
         loop.recognized_r = True
-        loop.mb.r_r = 6.0
+        loop.mb.r_l = 0.0
+        loop.mb.r_r = 480.0
+        loop.mb.base_l = 0.0
+        loop.mb.base_r = 480.0
         cmd = loop.tick(0.0)
-        self.assertEqual(cmd.phase, "align_r")
-        self.assertEqual(cmd.x, 0.0)
-        self.assertAlmostEqual(cmd.z, -SEARCH_TURN)
-        self.assertEqual(loop.drive.moves[-1][0], 0.0)
+        self.assertEqual(cmd.phase, "approach")
+        self.assertAlmostEqual(cmd.x, 0.4)
+        self.assertLess(cmd.z, -0.2)
         self.assertEqual(loop.status()["eyes_ru"], "ОДИН ГЛАЗ → ДОВОРОТ")
+        loop._dog_in_frame = False
         loop.recognized_r = False
         lost = loop.tick(0.2)
         self.assertEqual(lost.phase, "search")
         self.assertEqual(lost.x, 0.0)
-        self.assertLess(lost.z, 0.0)
+        self.assertAlmostEqual(lost.z, SEARCH_REFLEX_YAW)
+        self.assertTrue(loop.searching)
         self.assertEqual(loop.status()["last_seen_side"], "R")
         self.assertEqual(loop.status()["eyes_ru"], "НЕТ → ПОИСК")
 
         left = self._loop()
         self._arm(left, 1.0)
+        self._see(left, 1.0)
         left.recognized_l = True
         left.recognized_r = False
-        left.mb.r_l = 6.0
+        left.mb.r_l = 480.0
+        left.mb.r_r = 0.0
+        left.mb.base_l = 480.0
+        left.mb.base_r = 0.0
         turn = left.tick(1.0)
-        self.assertEqual(turn.phase, "align_l")
-        self.assertEqual(turn.x, 0.0)
-        self.assertAlmostEqual(turn.z, SEARCH_TURN)
+        self.assertEqual(turn.phase, "approach")
+        self.assertGreater(turn.z, 0.2)
+        left._dog_in_frame = False
         left.recognized_l = False
         found = left.tick(1.2)
         self.assertEqual(found.phase, "search")
-        self.assertGreater(found.z, 0.0)
+        self.assertAlmostEqual(found.z, SEARCH_REFLEX_YAW)
         self.assertEqual(left.status()["last_seen_side"], "L")
 
 
@@ -1086,13 +1113,14 @@ class PlasticityBiologyTests(unittest.TestCase):
 
         trainer.forward(probe_features("dog"))
         dog_g = trainer.brain.vision.last_gamma > 0
-        for vis, kc in (
-            (trainer.brain.vision, trainer.last_fwd.kc),
-            (trainer.brain_r.vision, trainer.last_fwd_r.kc),
+        mirror = trainer.brain.vision
+        for vis, kc, home in (
+            (trainer.brain.vision, trainer.last_fwd.kc, trainer.brain.vision),
+            (trainer.brain_r.vision, trainer.last_fwd_r.kc, mirror),
         ):
             _group_ok(vis.last_gamma)
             _group_ok(vis.last_abp)
-            self.assertEqual(int(((kc > 0) & ~vis.gamma_mask & ~vis.abp_mask).sum()), 0)
+            self.assertEqual(int(((kc > 0) & ~home.gamma_mask & ~home.abp_mask).sum()), 0)
 
         trainer.forward(probe_features("distractor"))
         other = trainer.brain.vision.last_gamma > 0
@@ -1154,6 +1182,25 @@ class PlasticityBiologyTests(unittest.TestCase):
         self.assertGreater(grown, birth)
         self.assertLessEqual(grown, float(ceil[idx]) + 1e-3)
         np.testing.assert_array_equal(quiet.brain.kc_mbon_w[abp], abp_before)
+
+    def test_identical_image_gives_the_same_sign(self):
+        from sim.hemifield import hemifield, live_turn
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.raw_sense import probe_features
+
+        trainer = MbTrainer(default_npz(), seed=1)
+        half = hemifield(probe_features("dog"), "L", 0.0)
+        _fwd_l, left = trainer._drive(trainer.brain, half, None)
+        _fwd_r, right = trainer._drive(trainer.brain_r, half, None)
+        self.assertGreater(left, 0.0)
+        self.assertGreater(right, 0.0)
+        self.assertAlmostEqual(right, left, places=3)
+        self.assertLess(abs(live_turn(left, right)), 0.05)
+        blank = hemifield(probe_features("empty"), "L", 0.0)
+        _empty_l, zero_l = trainer._drive(trainer.brain, blank, None)
+        _empty_r, zero_r = trainer._drive(trainer.brain_r, blank, None)
+        self.assertEqual(zero_l, 0.0)
+        self.assertEqual(zero_r, 0.0)
 
     def test_turn_is_left_drive_minus_right_drive(self):
         from sim.hemifield import fly_turn
