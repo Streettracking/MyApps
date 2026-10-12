@@ -1356,6 +1356,9 @@ def _drive_teacher(session: LiveSession, jpeg: bytes | None, frame_id, state: di
     session.teacher_counts = _teacher_counts(session, teacher)
     session.teacher_skips = teacher.skips_line()
     if sent_l in ("pam", "ppl1") or sent_r in ("pam", "ppl1"):
+        from .trainer_journal import note_ppl1_sent
+
+        note_ppl1_sent(session, sent_l, sent_r)
         if onboard is not None:
             send_teach(onboard, sent_l, sent_r)
         elif session.mb is not None:
@@ -1569,6 +1572,10 @@ def run_live_gui(
             operator_busy = bool(teach)
             if teach and onboard is not None:
                 onboard.post("treat" if teach == "pam" else "punish")
+                if teach == "ppl1":
+                    from .trainer_journal import journal_of
+
+                    journal_of(session).write("PPL1 отправлен (punish)")
                 teach = None
             elif teach and not session.learn and session.now() - session._learn_block_log > 1.0:
                 session._log("обучение выключено, T/X веса не меняют")
@@ -1598,6 +1605,9 @@ def run_live_gui(
             elif teach_now and waiting:
                 session.pending_teach = teach
             _drive_teacher(session, camera_jpeg, frame_id, teacher_state, operator_busy, onboard)
+            from .trainer_journal import journal_frame
+
+            journal_frame(session, inp)
             snap = None
             if inp.doggibot:
                 from .doggibot_snap import reserve_folder
