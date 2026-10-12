@@ -87,7 +87,25 @@ def ensure_stdio():
     if sys.stderr is None:
         sys.stderr = handle
     ensure_stdio.handle = handle
+    _mark_run(handle)
     return path
+
+
+def _mark_run(handle) -> None:
+    """Start and clean-exit lines with wall time and pid. No exit line means killed or native crash."""
+    import atexit
+    import os
+    import time
+
+    def stamp(word: str) -> None:
+        try:
+            handle.write("=== trainer %s %s pid=%d\n" % (word, time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid()))
+            handle.flush()
+        except Exception:
+            pass
+
+    stamp("start")
+    atexit.register(stamp, "exit")
 
 
 def install_crash_log():
