@@ -360,6 +360,21 @@ class BrainLoop:
                     or bool(data.get("hit_l"))
                     or bool(data.get("hit_r"))
                 )
+            elif op == "recalibrate":
+                # Applied by ingest on the main thread, so the calibrator deque
+                # is never cleared while observe() iterates it.
+                self._recal_pending = True
+                self._log("перекалибровка «УЗНАЮ»: базовая линия заново, 0/200, веса не тронуты")
+            elif op == "restart":
+                if getattr(self, "restart_requested", False):
+                    self._log("перезапуск уже идёт, повтор пропущен")
+                else:
+                    self.restart_requested = True
+                    self._stop_once()
+                    self.pilot.stop_auto()
+                    self.learn = False
+                    self.mb.learn = False
+                    self._log("перезапуск мозга: стоп, сохранение, выход для systemd")
             elif op == "heartbeat":
                 pass
 
@@ -370,6 +385,9 @@ class BrainLoop:
         self._prev_near = near
         self.frames_ok = True
         self.last_frame_t = float(now)
+        if getattr(self, "_recal_pending", False):
+            self._recal_pending = False
+            self.mb.recalibrate()
         self._pam_event = False
         self._ppl1_event = False
         self.mb.learn = self.learn
@@ -456,6 +474,9 @@ class BrainLoop:
         # Watch-only still finishes a stand the operator already asked for.
         # The HTTP thread only scheduled it.
         self._release_stand_lock(now)
+        if getattr(self, "restart_requested", False):
+            self._stop_once()
+            return DriveCommand(0.0, 0.0, True, "stop", "никто", "")
         link_ok = (now - self.last_hb) <= LINK_HOLD_S
         frames_ok = self.frames_ok and (now - self.last_frame_t) <= LINK_HOLD_S
         recent_manual = (now - self.last_manual_t) <= MANUAL_HOLD_S
@@ -612,6 +633,21 @@ class BrainLoop:
             self._last_send = now
             self._log_manual_move(sent[0], sent[2], code, now)
 
+    def finish_restart(self) -> int:
+        """Main thread, after ``restart`` was posted. Stop, save atomically, exit code.
+
+        The code is nonzero so ``Restart=on-failure`` brings a fresh process up.
+        Learning and autonomy start off in that process, as on every boot.
+        """
+        self._stop_once()
+        try:
+            self.drive.cancel_balance_timer()
+        except Exception:
+            pass
+        self.mb.save(self.state_path)
+        self._log("сохранено, выход с кодом %d, systemd перезапустит" % RESTART_EXIT_CODE)
+        return RESTART_EXIT_CODE
+
     def status(self) -> dict:
         flash = flash_payload(self.mb.flash)
         link_ok = (time.monotonic() - self.last_hb) <= LINK_HOLD_S
@@ -641,6 +677,9 @@ class BrainLoop:
                 "recognized": bool(self.recognized),
                 "confidence": self.confidence,
                 "confidence_ready": self.confidence_ready,
+                "calib_n": 0 if getattr(self, "_recal_pending", False) else int(self.mb.calib_progress()[0]),
+                "calib_total": int(self.mb.calib_progress()[1]),
+                "restarting": bool(getattr(self, "restart_requested", False)),
                 "readout": self.readout,
                 "sector": self.sector,
                 "sector_smooth": self.pilot.track.sector_smooth,
@@ -700,6 +739,10 @@ class BrainLoop:
             }
             payload.update(widget_status(self.mb, self.panel))
             return payload
+
+
+# EX_TEMPFAIL. Nonzero on purpose: flybrain.service has Restart=on-failure.
+RESTART_EXIT_CODE = 75
 
 
 def _yolo_vec(value):

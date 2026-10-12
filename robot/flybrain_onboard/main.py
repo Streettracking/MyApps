@@ -103,6 +103,7 @@ def main(argv=None) -> int:
     server = serve(brain, args.port)
     print(f"flybrain on :{args.port}  preview {args.preview}  state {state}", flush=True)
     last_save = time.monotonic()
+    exit_code = 0
     try:
         while True:
             now = time.monotonic()
@@ -113,6 +114,10 @@ def main(argv=None) -> int:
             if camera is not None and brain_lidar is not None:
                 brain.ingest(camera, brain_lidar, now)
             brain.tick(now)
+            if getattr(brain, "restart_requested", False):
+                # POST /cmd {"op": "restart"}: stop, atomic save, nonzero exit.
+                exit_code = brain.finish_restart()
+                break
             if stop["stop"]:
                 break
             if now - last_save >= 30.0:
@@ -126,7 +131,8 @@ def main(argv=None) -> int:
         brain.halt()
         eyes.stop()
         server.shutdown()
-    return 0
+        server.server_close()
+    return exit_code
 
 
 if __name__ == "__main__":

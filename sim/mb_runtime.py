@@ -319,7 +319,21 @@ class MushroomBodyRuntime:
         if extra:
             for key, value in extra.items():
                 payload[key] = as_plain(value)
-        np.savez(dest, **payload)
+        # Atomic: write a sibling temp file, then os.replace. A crash or a
+        # restart mid-save leaves the previous file intact. np.savez appended
+        # ".npz" to a bare name, so the final name keeps that rule.
+        import os
+
+        final = dest if dest.name.endswith(".npz") else dest.with_name(dest.name + ".npz")
+        tmp = final.with_name(final.name + ".tmp")
+        with open(tmp, "wb") as fh:
+            np.savez(fh, **payload)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, final)
 
     def load_mb(self, path: str | Path) -> tuple[int, str]:
         z = open_npz(path)

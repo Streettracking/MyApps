@@ -115,6 +115,8 @@ class RecognizeTrainSim:
         self._learn_block_log = -10.0
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
+        self._mb_args = dict(npz=npz or default_npz(), seed=seed, eta=eta, dan=dan, overlap=overlap)
+        self._restarting = False
         if learner == "mb":
             self.mb = MbTrainer(
                 npz or default_npz(),
@@ -367,6 +369,51 @@ class RecognizeTrainSim:
         self.lidar_bank.clear(float(self.world.t))
         self._log("карта лидара симулятора очищена")
 
+    def recalibrate(self) -> None:
+        """«↻ перекалибровать»: only the 200-frame «УЗНАЮ» baseline starts over."""
+        if self.mb is None:
+            self._log("перекалибровка только у грибовидного тела")
+            return
+        self.mb.recalibrate()
+        self._was_rec = False
+        self._log("перекалибровка «УЗНАЮ»: 0/200, веса и счётчики не тронуты")
+
+    def restart_brain(self) -> bool:
+        """«ПЕРЕЗАПУСК МОЗГА»: stop, save, a fresh MbTrainer from the saved file.
+
+        Same as the onboard restart: learning and autonomy are off afterwards.
+        A request while one is running is ignored, so there is never a second brain.
+        """
+        if self._restarting:
+            self._log("перезапуск уже идёт, повтор пропущен")
+            return False
+        if self.mb is None:
+            self._log("перезапуск только у грибовидного тела")
+            return False
+        self._restarting = True
+        try:
+            self.pilot.stop_auto()
+            self.learn = False
+            self.save()
+            a = self._mb_args
+            self.mb = MbTrainer(
+                a["npz"],
+                seed=a["seed"],
+                eta=a["eta"],
+                dan=a["dan"],
+                overlap=a["overlap"],
+                camera_only=self.camera_only,
+            )
+            self.mb.learn = False
+            self.load()
+            self.mb.learn = False
+            self.learn = False
+            self.pilot.stop_auto()
+            self._log("мозг перезапущен: обучение и автономия выключены")
+        finally:
+            self._restarting = False
+        return True
+
     def reset(self) -> None:
         if self.mb is not None:
             self.mb.reset()
@@ -430,6 +477,8 @@ class RecognizeTrainSim:
                 recognized=conf.recognized,
                 confidence=conf.percent,
                 confidence_ready=conf.ready,
+                calib_n=self.mb.calib_progress()[0],
+                calib_total=self.mb.calib_progress()[1],
                 session_time=prog.session_time,
                 total_time=prog.base_time + prog.session_time,
                 total_pam=prog.base_pam + self.mb.n_pam,
@@ -838,6 +887,10 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
             session.reset()
         if inp.lidar_reset:
             session.reset_lidar()
+        if inp.recalibrate:
+            session.recalibrate()
+        if inp.brain_restart:
+            session.restart_brain()
         if inp.lidar_toggle:
             session.toggle_lidar_fresh()
         if inp.flash_toggle:

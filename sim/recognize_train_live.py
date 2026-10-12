@@ -314,6 +314,8 @@ class LiveSession:
         self.layout = None
         self.mb: MbTrainer | None = None
         self.recognizer: ConspecificRecognizer | None = None
+        self._mb_args = dict(npz=npz or default_npz(), seed=seed, eta=eta, dan=dan, overlap=overlap)
+        self._restarting = False
         if onboard:
             self.learner_kind = "mb"
             self.learn = False
@@ -559,6 +561,51 @@ class LiveSession:
             self._log("прототип сброшен")
         self._prev_camera = None
         self._prev_near = None
+
+    def recalibrate(self) -> None:
+        """«↻ перекалибровать»: only the 200-frame «УЗНАЮ» baseline starts over."""
+        if self.mb is None:
+            self._log("перекалибровка только у грибовидного тела")
+            return
+        self.mb.recalibrate()
+        self._was_rec = False
+        self._log("перекалибровка «УЗНАЮ»: 0/200, веса и счётчики не тронуты")
+
+    def restart_brain(self) -> bool:
+        """«ПЕРЕЗАПУСК МОЗГА»: stop, save, a fresh MbTrainer from the saved file.
+
+        Same as the onboard restart: learning and autonomy are off afterwards.
+        A request while one is running is ignored, so there is never a second brain.
+        """
+        if self._restarting:
+            self._log("перезапуск уже идёт, повтор пропущен")
+            return False
+        if self.mb is None:
+            self._log("перезапуск только у грибовидного тела")
+            return False
+        self._restarting = True
+        try:
+            self.pilot.stop_auto()
+            self.learn = False
+            self.save()
+            a = self._mb_args
+            self.mb = MbTrainer(
+                a["npz"],
+                seed=a["seed"],
+                eta=a["eta"],
+                dan=a["dan"],
+                overlap=a["overlap"],
+                camera_only=self.camera_only,
+            )
+            self.mb.learn = False
+            self.load()
+            self.mb.learn = False
+            self.learn = False
+            self.pilot.stop_auto()
+            self._log("мозг перезапущен: обучение и автономия выключены")
+        finally:
+            self._restarting = False
+        return True
 
     def label_text(self) -> str:
         if self.operator == "dog":
@@ -1196,6 +1243,23 @@ def run_live_gui(
                 )
             elif inp.lidar_reset and session.onboard:
                 session._log("свежий лидар ведёт борт, это окно его не сбрасывает")
+            if inp.recalibrate:
+                if onboard is not None:
+                    onboard.post("recalibrate")
+                    session._log("перекалибровка «УЗНАЮ» на борту: 0/200, веса не тронуты")
+                else:
+                    session.recalibrate()
+            if inp.brain_restart:
+                if onboard is not None:
+                    if (onboard.status or {}).get("restarting"):
+                        session._log("перезапуск на борту уже идёт, повтор пропущен")
+                    else:
+                        onboard.post("restart")
+                        session.learn = False
+                        session.pilot.stop_auto()
+                        session._log("перезапуск мозга на борту: systemd поднимет заново, обучение и автономия выключены")
+                else:
+                    session.restart_brain()
             if inp.lidar_toggle and not session.onboard:
                 session.toggle_lidar_fresh(time.monotonic())
             if inp.flash_toggle:
@@ -1555,6 +1619,8 @@ def _live_view(
             recognized=conf.recognized,
             confidence=conf.percent,
             confidence_ready=conf.ready,
+            calib_n=session.mb.calib_progress()[0],
+            calib_total=session.mb.calib_progress()[1],
             session_time=prog.session_time,
             total_time=prog.base_time + prog.session_time,
             total_pam=prog.base_pam + session.mb.n_pam,
@@ -1606,6 +1672,8 @@ def _live_view(
             recognized=bool(remote.get("recognized")),
             confidence=float(remote.get("confidence") or 0.0),
             confidence_ready=bool(remote.get("confidence_ready")),
+            calib_n=int(remote["calib_n"]) if "calib_n" in remote else 200,
+            calib_total=int(remote.get("calib_total") or 200),
             overlap=float(session.overlap),
             eye_l_recognized=bool(session.eye_l_recognized),
             eye_r_recognized=bool(session.eye_r_recognized),

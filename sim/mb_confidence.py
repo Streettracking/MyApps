@@ -47,6 +47,14 @@ class ConfidenceCalibrator:
         self.recognized = False
         self.last = Confidence()
 
+    def progress(self) -> int:
+        """Frames in the baseline window, 0..WINDOW. «калибровка N/200»."""
+        return min(len(self.readouts), WINDOW)
+
+    @property
+    def calibrating(self) -> bool:
+        return len(self.readouts) < WINDOW
+
     def _baseline(self) -> tuple[float, float, float, bool] | None:
         if len(self.readouts) < WARMUP:
             return None

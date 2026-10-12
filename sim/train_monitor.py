@@ -152,6 +152,8 @@ class MonitorInput:
     punish: bool = False
     beep_toggle: bool = False
     lidar_reset: bool = False
+    recalibrate: bool = False
+    brain_restart: bool = False
     lidar_toggle: bool = False
     flash_toggle: bool = False
     autonomy_toggle: bool = False
@@ -169,6 +171,10 @@ class MonitorInput:
     punish_down: bool = False
     focused: bool = True
     teacher_weight: float | None = None
+
+
+# «ПЕРЕЗАПУСК МОЗГА» asks «точно?»; the second click must land within this.
+RESTART_CONFIRM_S = 3.0
 
 
 @dataclass
@@ -210,6 +216,9 @@ class MonitorView:
     recognized: bool = False
     confidence: float = 0.0
     confidence_ready: bool = False
+    # «калибровка N/200»: N < total means the «УЗНАЮ» baseline is still filling.
+    calib_n: int = 200
+    calib_total: int = 200
     session_time: float = 0.0
     total_time: float = 0.0
     total_pam: int = 0
@@ -980,6 +989,11 @@ class TrainMonitor:
             self.stand_down_rect = self._zero()
             self.recovery_rect = self._zero()
             self.lidar_reset_rect = self._zero()
+            self.brain_restart_rect = self._zero()
+        if not hasattr(self, "recal_rect"):
+            self.recal_rect = self._zero()
+        if not hasattr(self, "_restart_armed_at"):
+            self._restart_armed_at = -10.0
 
         lid_leaf = self._dock_leaves.get("lidar")
         lid_inner = None
@@ -1753,6 +1767,10 @@ class TrainMonitor:
             inp.yolo_error = True
         elif self.lidar_reset_rect.collidepoint(pos):
             inp.lidar_reset = True
+        elif getattr(self, "brain_restart_rect", None) is not None and self.brain_restart_rect.w >= 8 and self.brain_restart_rect.collidepoint(pos):
+            self._press_restart(inp)
+        elif getattr(self, "recal_rect", None) is not None and self.recal_rect.w >= 4 and self.recal_rect.collidepoint(pos):
+            inp.recalibrate = True
         elif self.lidar_fresh_rect.collidepoint(pos):
             inp.lidar_toggle = True
         elif self.learn_rect.collidepoint(pos):
@@ -2802,6 +2820,7 @@ class TrainMonitor:
             ("stand_down", ("ЛЕЧЬ",), "-", False),
             ("recovery", ("ПОДЪЁМ",), "", False),
             ("lidar_reset", ("СБРОС ЛИДАРА",), "C", False),
+            ("brain_restart", ("ПЕРЕЗАПУСК МОЗГА", "точно? ещё раз"), "", False),
         )
         gap = 8
         widths = [self._keyed_button_width(labels, key, lamp) for _name, labels, key, lamp in specs]
@@ -2822,6 +2841,7 @@ class TrainMonitor:
         self.stand_down_rect = rects["stand_down"]
         self.recovery_rect = rects["recovery"]
         self.lidar_reset_rect = rects["lidar_reset"]
+        self.brain_restart_rect = rects["brain_restart"]
 
     def _draw_lidar_block(self, screen, view: MonitorView, content) -> None:
         import pygame
@@ -3602,6 +3622,62 @@ class TrainMonitor:
         self._button(screen, self.stand_down_rect, "ЛЕЧЬ", None, self.stand_down_rect.collidepoint(mouse), key="-")
         self._button(screen, self.recovery_rect, "ПОДЪЁМ", None, self.recovery_rect.collidepoint(mouse))
         self._lidar_reset_button(screen)
+        self._brain_restart_button(screen)
+
+    def _press_restart(self, inp) -> None:
+        """First click arms «точно?». A second within RESTART_CONFIRM_S fires once."""
+        import time as _time
+
+        now = _time.monotonic()
+        if now - float(getattr(self, "_restart_armed_at", -10.0)) <= RESTART_CONFIRM_S:
+            self._restart_armed_at = -10.0
+            inp.brain_restart = True
+        else:
+            self._restart_armed_at = now
+
+    def restart_armed(self) -> bool:
+        import time as _time
+
+        return _time.monotonic() - float(getattr(self, "_restart_armed_at", -10.0)) <= RESTART_CONFIRM_S
+
+    def _brain_restart_button(self, screen) -> None:
+        rect = getattr(self, "brain_restart_rect", None)
+        if rect is None or rect.w < 8:
+            return
+        if self.restart_armed():
+            self._button(screen, rect, "точно? ещё раз", None, False, label_color=ESTOP_LABEL, fill=AMBER)
+            return
+        self._button(screen, rect, "ПЕРЕЗАПУСК МОЗГА", None, rect.collidepoint(self._mouse()))
+
+    def _calib_strip(self, screen, inner, height: int, view: MonitorView) -> None:
+        """«калибровка N/200» and a small «↻» button at the right end of the «УЗНАЮ» veil."""
+        import math
+
+        import pygame
+
+        from .tabnum import cell_px
+
+        size = 22
+        btn = pygame.Rect(inner.right - size - 8, inner.y + (height - size) // 2, size, size)
+        if btn.x < inner.x + inner.w // 2 + 200:
+            self.recal_rect = self._zero()
+            return
+        hot = btn.collidepoint(self._mouse())
+        pygame.draw.rect(screen, CARD, btn, border_radius=5)
+        pygame.draw.rect(screen, PEACH if hot else LINE, btn, 1, border_radius=5)
+        cx, cy = btn.center
+        rad = 6
+        pygame.draw.arc(screen, LABEL, pygame.Rect(cx - rad, cy - rad, 2 * rad, 2 * rad), math.radians(70), math.radians(350), 1)
+        ax = cx + rad * math.cos(math.radians(70))
+        ay = cy - rad * math.sin(math.radians(70))
+        pygame.draw.polygon(screen, LABEL, [(ax + 4, ay), (ax - 1, ay - 3), (ax - 1, ay + 3)])
+        self.recal_rect = btn
+        n = max(0, min(int(view.calib_n), int(view.calib_total)))
+        digits = "%3d/%d" % (n, int(view.calib_total))
+        dx = btn.x - 8 - cell_px(14) * len(digits)
+        self._cells(screen, digits, dx, inner.y + height // 2 - 8, INK_DIM)
+        word = self.font_tiny.render("калибровка", True, INK_DIM)
+        screen.blit(word, (dx - 6 - word.get_width(), inner.y + (height - word.get_height()) // 2))
 
     def _record_button(self, screen, view: MonitorView) -> None:
         import pygame
@@ -3811,6 +3887,11 @@ class TrainMonitor:
             overlay.blit(self.font_sm.render("%", True, PEACH), (ox + 4 * cell, oy))
         screen.blit(overlay, inner.topleft)
 
+    def _calibrating(self, view: MonitorView) -> bool:
+        on = view.learner == "mb" and int(view.calib_n) < int(view.calib_total)
+        self._calib_view = on
+        return on
+
     def _eye_lamp_color(self, recognized: bool, ready: bool, percent: float) -> tuple:
         """Recognition only. Teacher PAM/PPL1 is a separate lamp on the camera."""
         if recognized:
@@ -3870,7 +3951,7 @@ class TrainMonitor:
                 pygame.Rect(inner.x, inner.y, mid - inner.x, height),
                 "Л",
                 view.eye_l_recognized,
-                view.eye_l_ready,
+                view.eye_l_ready and not self._calibrating(view),
                 view.eye_l_confidence,
                 view.teacher_flash_l,
                 sees_l,
@@ -3880,12 +3961,13 @@ class TrainMonitor:
                 pygame.Rect(mid, inner.y, inner.right - mid, height),
                 "П",
                 view.eye_r_recognized,
-                view.eye_r_ready,
+                view.eye_r_ready and not self._calibrating(view),
                 view.eye_r_confidence,
                 view.teacher_flash_r,
                 sees_r,
             ),
         }
+        self._calib_strip(screen, inner, height, view)
 
     def _eye_plaque(
         self,
@@ -3901,11 +3983,20 @@ class TrainMonitor:
         from .tabnum import cell_px
 
         recog = (rect.x + 18, rect.centery)
-        self._lamp(screen, recog, self._eye_lamp_color(recognized, ready, percent), 7)
+        calibrating = not ready and getattr(self, "_calib_view", False)
+        self._lamp(screen, recog, LAMP_OFF if calibrating else self._eye_lamp_color(recognized, ready, percent), 7)
         word = "УЗНАЮ" if recognized else "—"
         text_x = rect.x + 34
-        self._cells(screen, format_plaque(name, word), text_x, rect.centery - 8, VALUE)
         teacher_x = text_x + cell_px(14) * len(format_plaque(name, word)) + 16
+        if calibrating:
+            # Grey «калибровка» in place of the word until the 200-frame baseline is full.
+            self._cells(screen, name, text_x, rect.centery - 8, VALUE)
+            grey = self.font_sm.render("калибровка", True, INK_DIM)
+            gx = text_x + cell_px(14) * 3
+            screen.blit(grey, (gx, rect.centery - grey.get_height() // 2))
+            teacher_x = max(teacher_x, gx + grey.get_width() + 16)
+        else:
+            self._cells(screen, format_plaque(name, word), text_x, rect.centery - 8, VALUE)
         teacher = (teacher_x, rect.centery)
         flashing = flash in ("pam", "ppl1")
         self._lamp(screen, teacher, self._teacher_lamp_color(flash, sees), 8 if flashing else 6)
@@ -4010,6 +4101,10 @@ class TrainMonitor:
         screen.blit(self.font_ind.render(phrase, True, tone), (rx, y))
         from .tabnum import cell_px, signed
 
+        if int(view.calib_n) < int(view.calib_total):
+            grey = self.font_sm.render("калибровка", True, INK_DIM)
+            screen.blit(grey, (rx + col_w - grey.get_width(), y))
+            return
         pct = (signed(view.confidence, 4) + "%") if view.confidence_ready else "    …"
         self._cells(screen, pct, rx + col_w - cell_px(14) * len(pct), y, tone)
 

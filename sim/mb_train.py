@@ -23,7 +23,7 @@ from .hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield
 from .kc_pathways import VisualPathway, lobula_channels, medulla_channels
 from .raw_sense import drop_lidar
 from .learn_flash import LearnFlash, MbLayout, build_layout, record_teacher_step
-from .mb_confidence import Confidence, ConfidenceCalibrator, TrainProgress
+from .mb_confidence import WINDOW as CAL_WINDOW, Confidence, ConfidenceCalibrator, TrainProgress
 from .mb_runtime import MBForward, MushroomBodyRuntime
 from .npz_compat import open_npz
 from .raw_sense import RawProjector, probe_features
@@ -439,6 +439,24 @@ class MbTrainer:
         self.conf_l = Confidence()
         self.conf_r = Confidence()
         self.probe_init = self.probe()
+
+    def recalibrate(self) -> None:
+        """Restart the 200-frame «УЗНАЮ» baseline of the joint and both eye calibrators.
+
+        Only the calibrator windows and the latched words are cleared. KC→MBON
+        weights, familiarity, PAM/PPL1/novelty counters, progress totals, and
+        the learn flag stay exactly as they are.
+        """
+        self.cal.reset()
+        self.cal_l.reset()
+        self.cal_r.reset()
+        self.conf = Confidence()
+        self.conf_l = Confidence()
+        self.conf_r = Confidence()
+
+    def calib_progress(self) -> tuple[int, int]:
+        """``(N, 200)`` for «калибровка N/200». N counts the joint calibrator."""
+        return int(self.cal.progress()), int(CAL_WINDOW)
 
     def save(self, path: Path) -> None:
         extra = self.progress.export_arrays(self.n_pam, self.n_ppl1, self.n_novelty)
