@@ -822,9 +822,93 @@ def _apply_approach(session, lead, forward_m, now: float | None = None) -> None:
     session.teacher_status = teacher_status_line(state, str(getattr(session, "kin_label", KIN_LABEL_DEFAULT) or ""), forward_m)
 
 
-def teacher_halt_now(inp, remote=None) -> bool:
+FOCUS_CHECK_S = 0.2
+
+
+def _foreground_pid() -> int | None:
+    """PID that owns the foreground window (Windows only), else None."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        pid = wintypes.DWORD(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value) or None
+    except Exception:
+        return None
+
+
+def _brain_pid(session) -> int | None:
+    view = getattr(session, "_brain_view", None)
+    if view is None or not getattr(view, "alive", False):
+        return None
+    proc = getattr(view, "proc", None)
+    pid = getattr(proc, "pid", None)
+    return int(pid) if pid else None
+
+
+def effective_focus(session, inp, now: float | None = None) -> bool:
+    """Window focused, or the foreground window is our 3D brain viewer. Cached ~5x/s."""
+    if getattr(inp, "focused", True):
+        return True
+    if os.name != "nt":
+        return False
+    now = _mono() if now is None else float(now)
+    cached = getattr(session, "_fg_cache", None)
+    if cached is not None and now - cached[0] < FOCUS_CHECK_S:
+        return cached[1]
+    brain = _brain_pid(session)
+    ours = brain is not None and _foreground_pid() == brain
+    session._fg_cache = (now, bool(ours))
+    return bool(ours)
+
+
+# Trainer keys read from Windows while the 3D brain window has the keyboard.
+VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN, VK_SPACE, VK_E = 0x25, 0x26, 0x27, 0x28, 0x20, 0x45
+
+
+def _key_down(vk: int) -> bool:
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.user32.GetAsyncKeyState(int(vk)) & 0x8000)
+    except Exception:
+        return False
+
+
+def brain_keys_into(session, inp, now: float | None = None) -> None:
+    """Brain window in front: arrows, Space and E act as in the trainer window."""
+    if getattr(inp, "focused", True) or not effective_focus(session, inp, now):
+        session._brain_keys_prev = (False, False)
+        return
+    if _key_down(VK_UP):
+        inp.steer_x += 1.0
+    if _key_down(VK_DOWN):
+        inp.steer_x -= 1.0
+    if _key_down(VK_LEFT):
+        inp.steer_z += 1.0
+    if _key_down(VK_RIGHT):
+        inp.steer_z -= 1.0
+    space, e_key = _key_down(VK_SPACE), _key_down(VK_E)
+    prev_space, prev_e = getattr(session, "_brain_keys_prev", (False, False))
+    if space and not prev_space:
+        inp.stop = True
+    if e_key and not prev_e:
+        inp.estop = True
+    session._brain_keys_prev = (space, e_key)
+
+
+def teacher_halt_now(inp, remote=None, focused=None) -> bool:
     """E-STOP, stop, takeover, an arrow, or focus lost: the teacher stands at once."""
-    if not getattr(inp, "focused", True):
+    if focused is None:
+        focused = getattr(inp, "focused", True)
+    if not focused:
         return True
     if getattr(inp, "estop", False) or getattr(inp, "stop", False) or getattr(inp, "takeover", False):
         return True
@@ -979,10 +1063,11 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         eye_l, eye_r = None, None
     else:
         eye_l, eye_r = session.mb.eye_recognized()
+    ours = effective_focus(session, inp, now)
     cmd = session.pilot.command(
         session.now(),
         (inp.steer_x, inp.steer_z),
-        focused=inp.focused,
+        focused=ours,
         frames_ok=frames_ok,
         link_ok=True,
         recognized=session.recognized_now and session.learner_kind == "mb",
@@ -994,7 +1079,7 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         recognized_l=eye_l,
         recognized_r=eye_r,
     )
-    session._teacher_halt = teacher_halt_now(inp)
+    session._teacher_halt = teacher_halt_now(inp, focused=ours)
     cmd = blend_local_command(
         session,
         cmd,
@@ -1081,7 +1166,7 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
     _mirror_remote(session, onboard.status)
     _note_bridge(session, now, state)
     remote = session.remote or {}
-    session._teacher_halt = teacher_halt_now(inp, remote)
+    session._teacher_halt = teacher_halt_now(inp, remote, effective_focus(session, inp, now))
     publish_teacher_aim(
         session,
         onboard,
@@ -1345,6 +1430,7 @@ def run_live_gui(
     try:
         while True:
             inp = mon.pump()
+            brain_keys_into(session, inp)
             if inp.quit:
                 break
             if inp.record_toggle:
