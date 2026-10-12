@@ -649,8 +649,8 @@ class BrainPanelStatusTests(unittest.TestCase):
             content = mon._content_of("brain")
             plate = offline_plate(_scheme_rgb("card"), _scheme_rgb("ink_dim"))
             color = mon.screen.get_at((content.centerx, content.centery))
-            self.assertEqual(tuple(color[:3]), _scheme_rgb("card"))
-            self.assertNotEqual(tuple(color[:3]), plate)
+            self.assertEqual(tuple(color[:3]), plate)
+            self.assertNotEqual(plate, _scheme_rgb("card"))
         finally:
             pygame.quit()
 

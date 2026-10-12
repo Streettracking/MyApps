@@ -3343,9 +3343,10 @@ class TrainMonitor:
             # restarts a brain that is already up. It is not a launch from
             # dead. Do not add a start command here.
             self._brain_panel_cache = None
-            import pygame
+            from .brain_panel import offline_plate
 
-            pygame.draw.rect(screen, CARD, body)
+            plate = offline_plate(_scheme_rgb("card"), _scheme_rgb("ink_dim"))
+            pygame.draw.rect(screen, plate, body)
             line = self.font.render("Мозг на .213 не запущен", True, LABEL)
             screen.blit(line, (body.x + 12, body.y + 12))
             return
