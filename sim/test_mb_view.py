@@ -397,6 +397,9 @@ class ClientChromeTests(unittest.TestCase):
         self.assertIn("enable_dpi_awareness()", monitor)
         self.assertLess(monitor.index("enable_dpi_awareness()"), monitor.index("pygame.init()"))
         self.assertIn("WINDOWSIZECHANGED", monitor)
+        self.assertIn("WINDOWMAXIMIZED", monitor)
+        self.assertIn("get_surface", monitor)
+        self.assertNotIn("from_display_module", monitor)
 
     def test_dock_span_fills_the_visible_width_at_windows_dpi(self):
         from sim.train_monitor import MIN_CONTENT_W, WIN_W, dock_span, fit_window, scroll_limits
@@ -425,9 +428,6 @@ class ClientChromeTests(unittest.TestCase):
             self.assertGreaterEqual(span, 640)
             self.assertLessEqual(span, WIN_W - 12)
             self.assertAlmostEqual(right, pixels, delta=1.5, msg=(dpi, ww, span, right, pixels))
-        self.assertIn("WINDOWMAXIMIZED", monitor)
-        self.assertIn("get_surface", monitor)
-        self.assertNotIn("from_display_module", monitor)
 
 
 class BrainTests(unittest.TestCase):
