@@ -113,6 +113,7 @@ class BrainLoop:
         self._yolo_r = None
         self._yolo_t = -1e9
         self._dog_in_frame = False
+        self.searching = False
         self.panel = PanelTrace()
         self._lock = threading.Lock()
         self._log("наблюдение: SportClient не трогаем, пока нет автономии или перехвата")
@@ -375,6 +376,8 @@ class BrainLoop:
         self.mb.learn = self.learn
         self._refresh_hold(float(now), False)
         yolo_fresh = float(now) - self._yolo_t <= AIM_HOLD_S
+        seen_now = bool(yolo_fresh and self._dog_in_frame)
+        self.searching = self.pilot.mode == "auto" and not seen_now
         fwd = self.mb.forward(
             feat,
             yolo_l=self._yolo_l if yolo_fresh else None,
@@ -405,7 +408,7 @@ class BrainLoop:
         self._teach_r = None
         self._taught_l = None
         self._taught_r = None
-        if self.mb.learning_hold:
+        if self.mb.learning_hold or self.searching:
             kind = None
             side_l = None
             side_r = None
@@ -432,7 +435,8 @@ class BrainLoop:
             pulsed_l = side_l in ("pam", "ppl1")
             pulsed_r = side_r in ("pam", "ppl1")
             self._note_dan(side_l, side_r)
-        self.mb.settle(pulsed_l, pulsed_r)
+        if not self.searching:
+            self.mb.settle(pulsed_l, pulsed_r)
         with self._lock:
             self.recognized = seen
             self.sector = self.marks.aim_sector if seen else None
@@ -514,6 +518,14 @@ class BrainLoop:
             recognized_l=recognized_l,
             recognized_r=recognized_r,
         )
+        from sim.search_reflex import cover_command
+
+        seen = (now - self._yolo_t) <= AIM_HOLD_S and bool(self._dog_in_frame)
+        if self.pilot.mode == "auto" and cmd.phase != "stop":
+            cmd, self.searching = cover_command(cmd, seen, r_l, r_r, dist_m, forward_m)
+            self.pilot.phase = cmd.phase
+        elif self.pilot.mode != "auto":
+            self.searching = False
         cmd = self._blend_teacher(cmd, now, forward_m)
         self._emit(cmd, now)
         return cmd

@@ -271,6 +271,8 @@ class LiveSession:
         self.dan = dan
         self.state_path = state_path
         self.learn = True
+        self.searching = False
+        self.target_in_view = False
         self.operator: str | None = None
         self.peer_curve: list[tuple[float, float]] = []
         self.other_curve: list[tuple[float, float]] = []
@@ -435,13 +437,17 @@ class LiveSession:
                 abs(float(getattr(self, "cmd_x", 0.0))) + abs(float(getattr(self, "cmd_z", 0.0))) > 1e-6
             )
             self.mb.note_motion_hold(stopped, moving, self.now())
-            if self.mb.learning_hold:
+            boxes = getattr(self, "teacher_boxes", None) or ()
+            self.searching = bool(self.pilot.autonomy) and not boxes
+            self.target_in_view = bool(boxes)
+            if self.mb.learning_hold or self.searching:
                 kind = None
             if kind == "pam":
                 self.treat_flash = True
             self.mb.teach(fwd, kind, self.now())
             pulsed = kind in ("pam", "ppl1")
-            self.mb.settle(pulsed, pulsed)
+            if not self.searching:
+                self.mb.settle(pulsed, pulsed)
             self._log_teach(kind)
             if (
                 conf.ready
@@ -636,7 +642,7 @@ def _apply_live_keys(session: LiveSession, inp, onboard: OnboardLink | None) -> 
         elif not session.pilot.start_auto(session.now()):
             session._log("E-STOP держит стоп. M переводит в ручное")
         else:
-            session._log("автономия: поиск в одну сторону, руль %s" % ("билатерально" if session.pilot.steer == "bilateral" else "секторы"))
+            session._log("автономия: медленный поиск, пока в кадре пусто, руль %s" % ("билатерально" if session.pilot.steer == "bilateral" else "секторы"))
     if inp.steer_toggle and session.learner_kind == "mb":
         if onboard is not None:
             current = str(session.remote.get("steer") or session.pilot.steer)
@@ -848,6 +854,22 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         recognized_l=eye_l,
         recognized_r=eye_r,
     )
+    from .search_reflex import cover_command, yolo_boxes_seen
+
+    if session.pilot.autonomy and session.learner_kind == "mb" and cmd.phase != "stop":
+        seen = yolo_boxes_seen(getattr(session, "teacher_boxes", None))
+        cmd, session.searching = cover_command(
+            cmd,
+            seen,
+            0.0 if session.mb is None else float(session.mb.r_l),
+            0.0 if session.mb is None else float(session.mb.r_r),
+            session.aim_dist,
+            session.forward_m,
+        )
+        session.pilot.phase = cmd.phase
+        session.target_in_view = bool(seen)
+    else:
+        session.searching = False
     cmd = blend_local_command(
         session,
         cmd,
@@ -1506,6 +1528,7 @@ def _live_view(
         teacher_flash_l=str(getattr(session, "teacher_flash_l_show", "") or ""),
         teacher_flash_r=str(getattr(session, "teacher_flash_r_show", "") or ""),
         teacher_boxes=list(getattr(session, "teacher_boxes", ()) or ()),
+        search_lamp=not bool(getattr(session, "teacher_boxes", None)),
         teacher_weight=float(getattr(session, "teacher_weight", 0.0) or 0.0),
         lead_plaque=_live_lead_plaque(session),
     )

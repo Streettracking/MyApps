@@ -241,6 +241,8 @@ class StateAndStatusTests(unittest.TestCase):
         loop.forward_m = 3.0
         loop.mb.r_l = 5.0
         loop.mb.r_r = 5.0
+        loop._dog_in_frame = True
+        loop._yolo_t = now
         cmd = loop.tick(now)
         self.assertEqual(cmd.phase, "approach")
         self.assertAlmostEqual(cmd.x, 0.4)
@@ -377,9 +379,14 @@ class OnboardEyeDriveTests(unittest.TestCase):
         loop.dist_m = 3.0
         loop.forward_m = 3.0
 
+    def _see(self, loop, now: float) -> None:
+        loop._dog_in_frame = True
+        loop._yolo_t = float(now)
+
     def test_both_eyes_walk_and_yaw_follows_the_readouts(self):
         loop = self._loop()
         self._arm(loop, 0.0)
+        self._see(loop, 0.0)
         loop.recognized = True
         loop.recognized_l = True
         loop.recognized_r = True
@@ -395,6 +402,7 @@ class OnboardEyeDriveTests(unittest.TestCase):
 
         other = self._loop()
         self._arm(other, 0.0)
+        self._see(other, 0.0)
         other.recognized = True
         other.recognized_l = True
         other.recognized_r = True
@@ -405,39 +413,46 @@ class OnboardEyeDriveTests(unittest.TestCase):
         self.assertLess(cmd.z, -0.2)
         self.assertEqual(other.status()["eyes_ru"], "ОБА ВИДЯТ → ИДУ")
 
-    def test_one_eye_turns_and_a_loss_searches_that_side(self):
+    def test_one_eye_with_a_target_follows_the_drive(self):
+        from sim.search_reflex import SEARCH_REFLEX_YAW
+
         loop = self._loop()
         self._arm(loop, 0.0)
+        self._see(loop, 0.0)
         loop.recognized_l = False
         loop.recognized_r = True
+        loop.mb.r_l = 0.0
         loop.mb.r_r = 6.0
         cmd = loop.tick(0.0)
-        self.assertEqual(cmd.phase, "align_r")
-        self.assertEqual(cmd.x, 0.0)
-        self.assertAlmostEqual(cmd.z, -SEARCH_TURN)
-        self.assertEqual(loop.drive.moves[-1][0], 0.0)
+        self.assertEqual(cmd.phase, "approach")
+        self.assertAlmostEqual(cmd.x, 0.4)
+        self.assertLess(cmd.z, -0.2)
         self.assertEqual(loop.status()["eyes_ru"], "ОДИН ГЛАЗ → ДОВОРОТ")
+        loop._dog_in_frame = False
         loop.recognized_r = False
         lost = loop.tick(0.2)
         self.assertEqual(lost.phase, "search")
         self.assertEqual(lost.x, 0.0)
-        self.assertLess(lost.z, 0.0)
+        self.assertAlmostEqual(lost.z, SEARCH_REFLEX_YAW)
+        self.assertTrue(loop.searching)
         self.assertEqual(loop.status()["last_seen_side"], "R")
         self.assertEqual(loop.status()["eyes_ru"], "НЕТ → ПОИСК")
 
         left = self._loop()
         self._arm(left, 1.0)
+        self._see(left, 1.0)
         left.recognized_l = True
         left.recognized_r = False
         left.mb.r_l = 6.0
+        left.mb.r_r = 0.0
         turn = left.tick(1.0)
-        self.assertEqual(turn.phase, "align_l")
-        self.assertEqual(turn.x, 0.0)
-        self.assertAlmostEqual(turn.z, SEARCH_TURN)
+        self.assertEqual(turn.phase, "approach")
+        self.assertGreater(turn.z, 0.2)
+        left._dog_in_frame = False
         left.recognized_l = False
         found = left.tick(1.2)
         self.assertEqual(found.phase, "search")
-        self.assertGreater(found.z, 0.0)
+        self.assertAlmostEqual(found.z, SEARCH_REFLEX_YAW)
         self.assertEqual(left.status()["last_seen_side"], "L")
 
 

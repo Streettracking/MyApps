@@ -81,6 +81,8 @@ class RecognizeTrainSim:
         self.learn = True
         self.paused = False
         self.freeze_peers = False
+        self.searching = False
+        self.target_in_view = False
         self.peer_curve: list[tuple[float, float]] = []
         self.other_curve: list[tuple[float, float]] = []
         self.metric_curve: list[dict] = []
@@ -259,13 +261,15 @@ class RecognizeTrainSim:
             stopped = self.paused or self.pilot.mode == "estop" or bool(self.pilot.held_stop)
             moving = (not stopped) and (abs(float(steer_x)) + abs(float(steer_z)) > 1e-6)
             self.mb.note_motion_hold(stopped, moving, float(self.world.t))
-            if self.mb.learning_hold:
+            if self.mb.learning_hold or self.searching:
                 kind = None
             if kind == "pam":
                 self.treat_flash = True
             self.mb.teach(fwd, kind if self.dan == "teacher" else None, float(self.world.t))
             pulsed = kind in ("pam", "ppl1") and self.dan == "teacher"
-            self.mb.settle(pulsed, pulsed)
+            # The scan is innate. Settle would still walk the weights.
+            if not self.searching:
+                self.mb.settle(pulsed, pulsed)
             self.mb.progress.tick(self.world.cfg.dt, learn)
             self.mb.progress.note_label(self.operator, value, conf.recognized, conf.ready)
             if kind == "pam" and (self.mb.n_pam <= 2 or self.mb.n_pam % 15 == 0):
@@ -323,6 +327,8 @@ class RecognizeTrainSim:
             self.peer_curve.append(point)
         else:
             self.other_curve.append(point)
+        boxes = getattr(self, "teacher_boxes", None) or ()
+        self.target_in_view = bool(boxes) or bool(hit.dog)
         self.step_i += 1
         if self.step_i % 10 == 0:
             self._record_metric()
@@ -509,6 +515,7 @@ class RecognizeTrainSim:
                 eye_l_ready=bool(conf_l.ready),
                 eye_r_ready=bool(conf_r.ready),
                 phase_ru=phase_label(self.pilot.phase, self.pilot.steer, self.pilot.search_sign),
+                search_lamp=not bool(self.target_in_view),
                 recog_line=recog_label(self.camera_only),
                 eyes_line=format_eyes_line(
                     self.pilot.track.r_l,
@@ -658,7 +665,7 @@ def _apply_pilot_keys(session: RecognizeTrainSim, inp, now: float) -> None:
         elif not session.pilot.start_auto(now):
             session._log("E-STOP держит стоп. M переводит в ручное")
         else:
-            session._log("автономия: поиск в одну сторону, руль %s" % _steer_name(session.pilot.steer))
+            session._log("автономия: медленный поиск, пока в кадре пусто, руль %s" % _steer_name(session.pilot.steer))
     if inp.steer_toggle and session.learner_kind == "mb":
         mode = session.pilot.toggle_steer()
         session._log("руль: %s" % _steer_name(mode))
@@ -707,6 +714,21 @@ def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, floa
         recognized_l=eye_l,
         recognized_r=eye_r,
     )
+    from .search_reflex import cover_command
+
+    autonomy = bool(session.pilot.autonomy) and session.learner_kind == "mb"
+    if autonomy and cmd.phase != "stop":
+        cmd, session.searching = cover_command(
+            cmd,
+            bool(session.target_in_view),
+            r_l,
+            r_r,
+            session.aim_dist,
+            session.forward_m,
+        )
+        session.pilot.phase = cmd.phase
+    else:
+        session.searching = False
     from .recognize_train_live import blend_local_command
 
     cmd = blend_local_command(
@@ -909,6 +931,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
                 jpeg = b""
         _drive_teacher(session, jpeg or None, sim_frame, teacher_state, bool(teach), None)
         view.teacher_boxes = list(getattr(session, "teacher_boxes", ()) or ())
+        if teacher is not None and getattr(teacher, "on", False):
+            session.target_in_view = bool(session.teacher_boxes)
+        view.search_lamp = not bool(session.target_in_view)
         view.yolo_state = str(getattr(session, "yolo_state", "") or "")
         view.teacher_counts = str(getattr(session, "teacher_counts", "") or "")
         view.teacher_skips = str(getattr(session, "teacher_skips", "") or "")
