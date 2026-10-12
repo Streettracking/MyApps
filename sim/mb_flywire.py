@@ -6,8 +6,10 @@ neuropil mesh. No CAVE token. When the file is missing, the window keeps the
 soma point cloud.
 
 Display axes, baked into the file: smaller FlyWire x is anatomical left
-(negative x, «глаз Л» / recognized_L), smaller y is dorsal, larger z is
-anterior. Optic tags: 0 central, 1 left lobe, 2 right lobe.
+(negative x, «зрит. доля Л» / recognized_L), smaller y is dorsal, larger z is
+anterior. Optic tags: 0 central, 1 left lobe, 2 right lobe. The vertical
+lobe labels follow the upper arm of the skeletons (larger y, the top of the
+default view). LAL and the descending neuron have no ids in this file.
 """
 
 from __future__ import annotations
@@ -178,15 +180,193 @@ def available() -> bool:
 
 
 def lobe_anchors(scene: FlyScene):
-    """Optic lobes. Tag 1 is anatomical left, «глаз Л» / recognized_L."""
+    """Optic lobes at the lateral edge. Tag 1 is anatomical left."""
+    from .mb_view3d import OPTIC_L, OPTIC_R
+
     found = []
-    for tag, side, label in ((1, 1, "глаз Л"), (2, 0, "глаз П")):
+    for tag, side, label in ((1, 1, OPTIC_L), (2, 0, OPTIC_R)):
         mask = scene.optic == tag
         if not np.any(mask):
             continue
-        pos = scene.vertices[mask].mean(axis=0).astype(np.float64)
+        pts = scene.vertices[mask]
+        if side == 1:
+            edge = pts[pts[:, 0] <= np.percentile(pts[:, 0], 8)]
+        else:
+            edge = pts[pts[:, 0] >= np.percentile(pts[:, 0], 92)]
+        if len(edge) == 0:
+            edge = pts
+        pos = edge.mean(axis=0).astype(np.float64)
         found.append({"tag": tag, "side": side, "label": label, "pos": pos})
     return found
+
+
+def _kind_points(scene: FlyScene, kind: int, side: int) -> np.ndarray:
+    cache = getattr(scene, "_kind_points", None)
+    if cache is None:
+        cache = {}
+        scene._kind_points = cache
+    key = (int(kind), int(side))
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
+    mask = (scene.neuron_kind == kind) & (scene.neuron_side == side)
+    chunks = []
+    for index in np.flatnonzero(mask):
+        edges = scene.sk_edges[int(scene.neuron_ptr[index]) : int(scene.neuron_ptr[index + 1])]
+        if len(edges) == 0:
+            continue
+        ids = np.unique(edges.reshape(-1))
+        chunks.append(scene.sk_points[ids])
+    hit = np.concatenate(chunks, axis=0).astype(np.float64) if chunks else np.zeros((0, 3), dtype=np.float64)
+    cache[key] = hit
+    return hit
+
+
+def _mean_band(pts: np.ndarray, column: int, low: float, high: float) -> np.ndarray:
+    if len(pts) == 0:
+        return np.zeros(3, dtype=np.float64)
+    lo = float(np.percentile(pts[:, column], low))
+    hi = float(np.percentile(pts[:, column], high))
+    band = pts[(pts[:, column] >= lo) & (pts[:, column] <= hi)]
+    if len(band) == 0:
+        return pts.mean(axis=0)
+    return band.mean(axis=0)
+
+
+def _vertical_tip(pts: np.ndarray) -> np.ndarray:
+    """Upper arm on the default camera: the high-y tail of the skeleton."""
+    return _mean_band(pts, 1, 88.0, 100.0)
+
+
+def _medial_tip(pts: np.ndarray, side: int) -> np.ndarray:
+    if side == 1:
+        return _mean_band(pts, 0, 88.0, 100.0)
+    return _mean_band(pts, 0, 0.0, 12.0)
+
+
+def _posterior(pts: np.ndarray) -> np.ndarray:
+    return _mean_band(pts, 2, 0.0, 15.0)
+
+
+def _peduncle(pts: np.ndarray, side: int) -> np.ndarray:
+    if len(pts) == 0:
+        return np.zeros(3, dtype=np.float64)
+    z0 = float(np.percentile(pts[:, 2], 35))
+    z1 = float(np.percentile(pts[:, 2], 65))
+    shaft = pts[(pts[:, 2] >= z0) & (pts[:, 2] <= z1)]
+    if len(shaft) < 8:
+        shaft = pts
+    if side == 1:
+        keep = shaft[shaft[:, 0] <= np.percentile(shaft[:, 0], 40)]
+    else:
+        keep = shaft[shaft[:, 0] >= np.percentile(shaft[:, 0], 60)]
+    if len(keep) == 0:
+        keep = shaft
+    return keep.mean(axis=0)
+
+
+def anatomy_anchors(scene: FlyScene, rec_l: bool = False, rec_r: bool = False):
+    """Coarse names always, lobe names on the detail level.
+
+    LAL and DN are not in the npz. They are placed on the midline, LAL just
+    under the lobes and DN further toward the lower brain. ``approx`` is set.
+    """
+    from .mb_view3d import LABEL_DN, LABEL_LAL, LABEL_MB
+
+    cached = getattr(scene, "_anatomy", None)
+    if cached is None:
+        items = []
+        for lobe in lobe_anchors(scene):
+            items.append({
+                "label": lobe["label"],
+                "pos": np.asarray(lobe["pos"], dtype=np.float64),
+                "level": "coarse",
+                "side": int(lobe["side"]),
+                "approx": False,
+                "tag": int(lobe["tag"]),
+            })
+        kc_chunks = []
+        for side in (1, 0):
+            parts = [_kind_points(scene, kind, side) for kind in (KIND_KC_G, KIND_KC_AB, KIND_KC_APB)]
+            parts = [block for block in parts if len(block)]
+            if not parts:
+                continue
+            kc = np.concatenate(parts, axis=0)
+            kc_chunks.append(kc)
+            gamma = _kind_points(scene, KIND_KC_G, side)
+            alpha_beta = _kind_points(scene, KIND_KC_AB, side)
+            alpha_prime = _kind_points(scene, KIND_KC_APB, side)
+            detail = {
+                "чашечка": _posterior(kc),
+                "ножка": _peduncle(kc, side),
+                "γ": _medial_tip(gamma, side) if len(gamma) else _medial_tip(kc, side),
+                "α": _vertical_tip(alpha_beta) if len(alpha_beta) else _vertical_tip(kc),
+                "β": _medial_tip(alpha_beta, side) if len(alpha_beta) else _medial_tip(kc, side),
+                "α′": _vertical_tip(alpha_prime) if len(alpha_prime) else _vertical_tip(kc),
+                "β′": _medial_tip(alpha_prime, side) if len(alpha_prime) else _medial_tip(kc, side),
+            }
+            for label, pos in detail.items():
+                items.append({"label": label, "pos": np.asarray(pos, dtype=np.float64), "level": "detail", "side": side, "approx": False})
+            pam = _kind_points(scene, KIND_PAM, side)
+            ppl = _kind_points(scene, KIND_PPL1, side)
+            mbon = _kind_points(scene, KIND_MBON, side)
+            if len(pam) == 0:
+                pam_pos = np.mean(np.vstack((detail["β"], detail["β′"], detail["γ"])), axis=0)
+            else:
+                pam_pos = pam.mean(axis=0)
+            if len(ppl) == 0:
+                ppl_pos = np.mean(np.vstack((detail["α"], detail["α′"], detail["ножка"])), axis=0)
+            else:
+                ppl_pos = ppl.mean(axis=0)
+            if len(mbon) == 0:
+                mbon_pos = np.mean(np.vstack((detail["α"], detail["β"], detail["γ"])), axis=0)
+            else:
+                mbon_pos = mbon.mean(axis=0)
+            items.append({"label": "PAM", "pos": np.asarray(pam_pos, dtype=np.float64), "level": "detail", "side": side, "approx": False})
+            items.append({"label": "PPL1", "pos": np.asarray(ppl_pos, dtype=np.float64), "level": "detail", "side": side, "approx": False})
+            items.append({"label": "MBON", "pos": np.asarray(mbon_pos, dtype=np.float64), "level": "detail", "side": side, "approx": False})
+        if kc_chunks:
+            mb = np.concatenate(kc_chunks, axis=0).mean(axis=0)
+        else:
+            mb = np.zeros(3, dtype=np.float64)
+        items.append({
+            "label": LABEL_MB,
+            "pos": np.asarray(mb, dtype=np.float64),
+            "level": "coarse",
+            "side": -1,
+            "approx": False,
+            "out": (0.0, -1.0),
+        })
+        # No FlyWire root for the lateral accessory lobe or a descending neuron.
+        items.append({
+            "label": LABEL_LAL,
+            "pos": np.array([0.0, 0.02, -0.02], dtype=np.float64),
+            "level": "coarse",
+            "side": -1,
+            "approx": True,
+            "out": (-0.55, 1.0),
+        })
+        items.append({
+            "label": LABEL_DN,
+            "pos": np.array([0.0, -0.32, -0.12], dtype=np.float64),
+            "level": "coarse",
+            "side": -1,
+            "approx": True,
+            "out": (0.65, 1.0),
+        })
+        scene._anatomy = items
+        cached = items
+    out = []
+    for item in cached:
+        copy = dict(item)
+        if copy["label"].endswith("Л"):
+            copy["hot"] = bool(rec_l)
+        elif copy["label"].endswith("П"):
+            copy["hot"] = bool(rec_r)
+        else:
+            copy["hot"] = False
+        out.append(copy)
+    return out
 
 
 def forward_arrow(scene: FlyScene):
@@ -630,66 +810,18 @@ def _draw_indexed(surface, sx, sy, dep, edges, indices, color, w, h, verts=None,
         pygame.draw.line(surface, rgb, (x0, y0), (x1, y1), 1)
 
 
-def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool, frames: bool, hint: str | None = None) -> None:
-    import pygame
+def _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, _auto: bool, frames: bool, hint: str | None = None, details: bool = False, pointer=None) -> None:
+    from .mb_view3d import VIEW_HINT, draw_callouts, draw_view_chrome
 
-    from .mb_view3d import VIEW_HINT, _project
-
-    w, h = surface.get_size()
-    cx, cy, fov = _camera(w, h)
-    font = pygame.font.Font(None, 20)
-    small = pygame.font.Font(None, 16)
-    tiny = pygame.font.Font(None, 15)
-    label_font = pygame.font.Font(None, 18)
-    surface.blit(font.render("грибовидное тело", True, _INK), (16, 12))
-    note = "оболочка FlyWire   скелеты KC γ / αβ / a'b'   MBON   PAM   PPL1"
-    surface.blit(small.render(note, True, _INK), (16, 34))
-    surface.blit(small.render("глаз Л и глаз П — зрительные доли, светятся при узнавании", True, _INK), (16, 52))
-    if hint is None:
-        hint = VIEW_HINT
-        if frames:
-            hint += " вкл"
-    surface.blit(tiny.render(hint, True, _HINT), (12, h - 20))
     rec_l = bool(packet.get("rec_l"))
     rec_r = bool(packet.get("rec_r"))
-    for item in lobe_anchors(scene):
-        recognized = rec_l if item["side"] == 1 else rec_r
-        pos = item["pos"].reshape(1, 3).copy()
-        pos[0, 0] += -0.10 if item["side"] == 1 else 0.10
-        pos[0, 1] += 0.08
-        px, py, dep = _project(pos, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
-        if float(dep[0]) <= 0.35:
-            continue
-        color = (186, 220, 238) if recognized else _INK
-        text = label_font.render(item["label"], True, color)
-        x = int(px[0])
-        y = int(py[0])
-        if item["side"] == 1:
-            x -= text.get_width() + 4
-        else:
-            x += 4
-        surface.blit(text, (x, y - text.get_height() // 2))
-    start, tip = forward_arrow(scene)
-    pts = np.vstack((start, tip))
-    px, py, dep = _project(pts, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
-    if float(dep[0]) <= 0.35 or float(dep[1]) <= 0.35:
-        return
-    color = _ARROW
-    x0, y0 = int(px[0]), int(py[0])
-    x1, y1 = int(px[1]), int(py[1])
-    pygame.draw.line(surface, color, (x0, y0), (x1, y1), 1)
-    dx, dy = x1 - x0, y1 - y0
-    norm = (dx * dx + dy * dy) ** 0.5 or 1.0
-    ux, uy = dx / norm, dy / norm
-    left = (int(x1 - ux * 8 - uy * 4), int(y1 - uy * 8 + ux * 4))
-    right = (int(x1 - ux * 8 + uy * 4), int(y1 - uy * 8 - ux * 4))
-    pygame.draw.line(surface, color, (x1, y1), left, 1)
-    pygame.draw.line(surface, color, (x1, y1), right, 1)
-    caption = label_font.render("вперёд", True, _INK)
-    surface.blit(caption, (x1 - caption.get_width() // 2, y1 - caption.get_height() - 4))
+    anchors = anatomy_anchors(scene, rec_l, rec_r)
+    shell = scene.vertices[::3]
+    draw_callouts(surface, anchors, shell, yaw, pitch, dist, pan_x, pan_y, details, pointer)
+    draw_view_chrome(surface, yaw, pitch, dist, details, VIEW_HINT if hint is None else hint)
 
 
-def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None, software_only: bool = False) -> bool:
+def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None, software_only: bool = False, details: bool = False, pointer=None) -> bool:
     global _LAST_PAINT
     if not _gl_caller_ok():
         _LAST_PAINT = "skip"
@@ -720,7 +852,7 @@ def paint_scene(surface, packet: dict, yaw: float, pitch: float, dist: float, au
         if not gl_frame_size_ok(w, h):
             return False
         _paint_software(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, frames, fast)
-    _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, auto, frames, hint)
+    _overlay(surface, scene, packet, yaw, pitch, dist, pan_x, pan_y, auto, frames, hint, details, pointer)
     return True
 
 

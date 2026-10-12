@@ -471,8 +471,10 @@ class BrainTests(unittest.TestCase):
         self.assertLess(float(left[:, 0].mean()), 0.0)
         self.assertGreater(float(right[:, 0].mean()), 0.0)
         anchors = {item["side"]: item for item in lobe_anchors(scene)}
-        self.assertEqual(anchors[1]["label"], "глаз Л")
-        self.assertEqual(anchors[0]["label"], "глаз П")
+        self.assertEqual(anchors[1]["label"], "зрит. доля Л")
+        self.assertEqual(anchors[0]["label"], "зрит. доля П")
+        self.assertLess(float(anchors[1]["pos"][0]), float(left[:, 0].mean()))
+        self.assertGreater(float(anchors[0]["pos"][0]), float(right[:, 0].mean()))
         self.assertLess(float(anchors[1]["pos"][0]), float(anchors[0]["pos"][0]))
         start, tip = forward_arrow(scene)
         self.assertGreater(float(tip[2]), float(start[2]))
@@ -597,8 +599,8 @@ class BrainTests(unittest.TestCase):
         cloud = BrainCloud()
         eyes, arrow = eye_layout(cloud)
         by_side = {item["side"]: item for item in eyes}
-        self.assertEqual(by_side[1]["label"], "глаз Л")
-        self.assertEqual(by_side[0]["label"], "глаз П")
+        self.assertEqual(by_side[1]["label"], "зрит. доля Л")
+        self.assertEqual(by_side[0]["label"], "зрит. доля П")
         left_kc = cloud.kc_pos[cloud.kc_side == 1]
         right_kc = cloud.kc_pos[cloud.kc_side == 0]
         self.assertLess(float(by_side[1]["pos"][0]), float(left_kc[:, 0].mean()))
@@ -987,11 +989,8 @@ class WindowPinTests(unittest.TestCase):
         self.assertNotIn("from_display_module", viewer)
         fly = Path(view.__file__).resolve().parent.joinpath("mb_flywire.py").read_text(encoding="utf-8")
         self.assertIn("VIEW_HINT", fly)
-        self.assertIn("поверх окон", view.VIEW_HINT)
-        self.assertIn("ЛКМ", view.VIEW_HINT)
-        self.assertIn("ПКМ", view.VIEW_HINT)
-        self.assertIn("колёсико", view.VIEW_HINT)
-        self.assertIn("Home", view.VIEW_HINT)
+        self.assertEqual(view.VIEW_HINT, "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс")
+        self.assertNotIn("поверх окон", view.VIEW_HINT)
         self.assertNotIn("стрелки", view.VIEW_HINT)
         self.assertNotIn("WASD", view.VIEW_HINT)
         self.assertEqual(pin.PIN_TIP, "поверх окон")
@@ -1184,6 +1183,108 @@ class WindowPinTests(unittest.TestCase):
         self.assertIn("лакомство PAM", prose)
         self.assertIn("T/X учить", SIM_KEYS)
         self.assertNotIn("поверх", SIM_KEYS)
+
+
+class CalloutTests(unittest.TestCase):
+    def test_two_levels_leaders_and_the_facing_badge(self):
+        import math
+
+        import numpy as np
+
+        from sim.mb_flywire import anatomy_anchors, load_scene
+        from sim.mb_view3d import (
+            COARSE_LABELS,
+            DETAIL_LABELS,
+            DIST0,
+            PITCH0,
+            VIEW_HINT,
+            YAW0,
+            BrainCloud,
+            _outside_box,
+            _project,
+            consume_details,
+            details_hit_rect,
+            facing_label,
+            hit_details,
+            layout_callouts,
+            schematic_anchors,
+        )
+        from sim.window_pin import pin_button_rect
+
+        self.assertEqual(VIEW_HINT, "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс")
+        self.assertEqual(facing_label(YAW0, PITCH0, DIST0), "вид сзади")
+        self.assertEqual(facing_label(YAW0 + math.pi, PITCH0, DIST0), "вид спереди")
+
+        size = (960, 700)
+        pin = pin_button_rect(size)
+        pin_box = (pin[0], pin[1], pin[0] + pin[2], pin[1] + pin[3])
+        box = details_hit_rect(size)
+        self.assertFalse(
+            box[0] < pin_box[2] and pin_box[0] < box[0] + box[2] and box[1] < pin_box[3] and pin_box[1] < box[1] + box[3]
+        )
+        self.assertTrue(hit_details(size, (box[0] + 4, box[1] + 4)))
+        handled, nxt = consume_details(False, button=1, pos=(box[0] + 4, box[1] + 4), size=size)
+        self.assertTrue(handled)
+        self.assertTrue(nxt)
+        handled, nxt = consume_details(False, button=1, pos=(400, 400), size=size)
+        self.assertFalse(handled)
+        self.assertFalse(nxt)
+
+        cloud = BrainCloud()
+        schematic = {(item["label"], item["side"]): item for item in schematic_anchors(cloud)}
+        self.assertGreater(float(schematic[("α", 1)]["pos"][1]), float(schematic[("β", 1)]["pos"][1]))
+        self.assertLess(abs(float(schematic[("β", 1)]["pos"][0])), abs(float(schematic[("α", 1)]["pos"][0])))
+        self.assertLess(abs(float(schematic[("γ", 1)]["pos"][0])), abs(float(schematic[("ножка", 1)]["pos"][0])))
+        self.assertLess(float(schematic[("чашечка", 1)]["pos"][2]), float(schematic[("ножка", 1)]["pos"][2]))
+        self.assertTrue(schematic[("LAL", -1)]["approx"])
+        self.assertTrue(schematic[("DN → поворот", -1)]["approx"])
+        self.assertLess(float(schematic[("DN → поворот", -1)]["pos"][1]), float(schematic[("LAL", -1)]["pos"][1]))
+
+        scene = load_scene()
+        self.assertIsNotNone(scene)
+        anchors = anatomy_anchors(scene)
+        placed = {(item["label"], item["side"]): item for item in anchors}
+        alpha = placed[("α", 1)]["pos"]
+        beta = placed[("β", 1)]["pos"]
+        self.assertGreater(float(alpha[1]), float(beta[1]))
+        self.assertLess(abs(float(beta[0])), abs(float(alpha[0])))
+        self.assertLess(abs(float(placed[("γ", 1)]["pos"][0])), abs(float(placed[("ножка", 1)]["pos"][0])))
+        self.assertLess(float(placed[("чашечка", 1)]["pos"][2]), float(placed[("ножка", 1)]["pos"][2]))
+        self.assertTrue(placed[("LAL", -1)]["approx"])
+        self.assertTrue(placed[("DN → поворот", -1)]["approx"])
+        self.assertLess(float(placed[("зрит. доля Л", 1)]["pos"][0]), 0.0)
+        self.assertGreater(float(placed[("зрит. доля П", 0)]["pos"][0]), 0.0)
+        _sx, sy, _dep = _project(
+            np.vstack((alpha, beta)),
+            YAW0,
+            PITCH0,
+            float(scene.fit_dist),
+            480.0,
+            360.0,
+            500.0,
+        )
+        self.assertLess(float(sy[0]), float(sy[1]))
+
+        shell = scene.vertices[::3]
+        coarse, box, shown = layout_callouts(anchors, shell, YAW0, PITCH0, float(scene.fit_dist), size)
+        self.assertFalse(shown)
+        self.assertEqual({item["label"] for item in coarse}, set(COARSE_LABELS))
+        for item in coarse:
+            self.assertTrue(_outside_box(item["rect"], box))
+            self.assertGreater(item["rect"][2] - item["rect"][0], item["rect"][3] - item["rect"][1])
+        detail, box, shown = layout_callouts(
+            anchors, shell, YAW0, PITCH0, float(scene.fit_dist), size, details=True
+        )
+        self.assertTrue(shown)
+        self.assertTrue(set(DETAIL_LABELS) <= {item["label"] for item in detail})
+        self.assertTrue(set(COARSE_LABELS) <= {item["label"] for item in detail})
+        for item in detail:
+            self.assertTrue(_outside_box(item["rect"], box))
+        hover, _box, shown = layout_callouts(
+            anchors, shell, YAW0, PITCH0, float(scene.fit_dist), size, pointer=(480, 360)
+        )
+        self.assertTrue(shown)
+        self.assertTrue(set(DETAIL_LABELS) <= {item["label"] for item in hover})
 
 
 if __name__ == "__main__":

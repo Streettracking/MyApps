@@ -665,10 +665,10 @@ class SideOfFrameTests(unittest.TestCase):
         cloud = BrainCloud()
         eyes, _arrow = eye_layout(cloud)
         placed = {item["label"]: np.asarray(item["pos"], dtype=np.float64) for item in eyes}
-        self.assertLess(float(placed["глаз Л"][0]), 0.0)
-        self.assertGreater(float(placed["глаз П"][0]), 0.0)
+        self.assertLess(float(placed["зрит. доля Л"][0]), 0.0)
+        self.assertGreater(float(placed["зрит. доля П"][0]), 0.0)
         screen_x, _screen_y, depth = _project(
-            np.vstack((placed["глаз Л"], placed["глаз П"])),
+            np.vstack((placed["зрит. доля Л"], placed["зрит. доля П"])),
             YAW0,
             PITCH0,
             DIST0,
@@ -693,7 +693,7 @@ class SideOfFrameTests(unittest.TestCase):
         """The fly's left is the right side of this unmirrored frame.
 
         Object there → left optic lobe → left mushroom body → turn left.
-        «глаз Л» is the fly's left, so a view from the front puts it on the
+        «зрит. доля Л» is the fly's left, so a view from the front puts it on the
         right of the screen. Image-left still feeds the right eye; that map
         is the other test and is not swapped.
         """
@@ -735,12 +735,12 @@ class SideOfFrameTests(unittest.TestCase):
         cloud = BrainCloud()
         eyes, _arrow = eye_layout(cloud)
         placed = {item["label"]: np.asarray(item["pos"], dtype=np.float64) for item in eyes}
-        self.assertLess(float(placed["глаз Л"][0]), 0.0)
-        self.assertGreater(float(placed["глаз П"][0]), 0.0)
-        self.assertLess(float(placed["глаз Л"][0]), float(placed["глаз П"][0]))
+        self.assertLess(float(placed["зрит. доля Л"][0]), 0.0)
+        self.assertGreater(float(placed["зрит. доля П"][0]), 0.0)
+        self.assertLess(float(placed["зрит. доля Л"][0]), float(placed["зрит. доля П"][0]))
         front = YAW0 + math.pi
         screen_x, _sy, depth = _project(
-            np.vstack((placed["глаз Л"], placed["глаз П"])),
+            np.vstack((placed["зрит. доля Л"], placed["зрит. доля П"])),
             front,
             PITCH0,
             DIST0,
@@ -757,10 +757,10 @@ class SideOfFrameTests(unittest.TestCase):
         scene = load_scene()
         self.assertIsNotNone(scene)
         anchors = {item["label"]: item for item in lobe_anchors(scene)}
-        left_lobe = np.asarray(anchors["глаз Л"]["pos"], dtype=np.float64)
-        right_lobe = np.asarray(anchors["глаз П"]["pos"], dtype=np.float64)
-        self.assertEqual(anchors["глаз Л"]["tag"], 1)
-        self.assertEqual(anchors["глаз Л"]["side"], 1)
+        left_lobe = np.asarray(anchors["зрит. доля Л"]["pos"], dtype=np.float64)
+        right_lobe = np.asarray(anchors["зрит. доля П"]["pos"], dtype=np.float64)
+        self.assertEqual(anchors["зрит. доля Л"]["tag"], 1)
+        self.assertEqual(anchors["зрит. доля Л"]["side"], 1)
         self.assertLess(float(left_lobe[0]), 0.0)
         self.assertGreater(float(right_lobe[0]), 0.0)
         lobe_x, _ly, _ld = _project(

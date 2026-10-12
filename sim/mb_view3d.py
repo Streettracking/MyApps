@@ -80,7 +80,14 @@ DIST0 = 3.05
 # Nearly straight up or down, short of the flip at ±90°.
 PITCH_LIM = 89.0 * math.pi / 180.0
 PAN_KEY = 0.07
-VIEW_HINT = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   Home сброс   F каркас   T поверх окон"
+VIEW_HINT = "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс"
+OPTIC_L = "зрит. доля Л"
+OPTIC_R = "зрит. доля П"
+LABEL_MB = "грибовидное тело"
+LABEL_LAL = "LAL"
+LABEL_DN = "DN → поворот"
+COARSE_LABELS = (OPTIC_L, OPTIC_R, LABEL_MB, LABEL_LAL, LABEL_DN)
+DETAIL_LABELS = ("чашечка", "ножка", "γ", "α", "β", "α′", "β′", "PAM", "PPL1", "MBON")
 
 
 def artifact_dir() -> Path:
@@ -653,7 +660,244 @@ def note_packet_theme(packet) -> None:
         set_view_theme(packet.get("theme"))
 
 
-def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None, software_only: bool = False) -> None:
+def facing_label(yaw: float, pitch: float, dist: float = DIST0) -> str:
+    """«вид спереди» when the anterior pole is closer than the posterior one."""
+    axis = np.array([[0.0, 0.0, -1.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    _sx, _sy, depth = _project(axis, float(yaw), float(pitch), float(dist), 0.0, 0.0, 1.0)
+    if float(depth[1]) < float(depth[0]):
+        return "вид спереди"
+    return "вид сзади"
+
+
+def details_hit_rect(size) -> tuple:
+    """Top-left «детали» checkbox. The pin stays in the opposite corner."""
+    return (8, 8, 88, 22)
+
+
+def facing_badge_rect(size) -> tuple:
+    return (8, 32, 118, 18)
+
+
+def hint_band_rect(size) -> tuple:
+    width, height = int(size[0]), int(size[1])
+    return (0, max(0, height - 24), width, 24)
+
+
+def hit_details(size, pos) -> bool:
+    if pos is None:
+        return False
+    x, y, w, h = details_hit_rect(size)
+    px, py = int(pos[0]), int(pos[1])
+    return x <= px < x + w and y <= py < y + h
+
+
+def consume_details(details_on: bool, button: int = 0, pos=None, size=None):
+    """Left click on «детали». A handled click must not start a drag."""
+    if int(button) == 1 and size is not None and hit_details(size, pos):
+        return True, not bool(details_on)
+    return False, bool(details_on)
+
+
+def _ui_font(px: int):
+    """A new font each call. A cached one dies when a test quits pygame.
+
+    The default bitmap font draws a box for the arrow and the prime, so a
+    face that has «→», «′» and Greek is preferred.
+    """
+    import pygame
+
+    if not pygame.font.get_init():
+        pygame.font.init()
+    point = max(12, int(px) - 4)
+    for name in ("dejavusans", "noto sans", "liberation sans", "arial", "segoe ui"):
+        path = pygame.font.match_font(name)
+        if path:
+            return pygame.font.Font(path, point)
+    return pygame.font.Font(None, int(px))
+
+
+def _shell_box(sx, sy, dep, width: int, height: int):
+    if len(sx) == 0:
+        return None
+    ok = (dep > 0.35) & (sx > -400.0) & (sx < float(width) + 400.0) & (sy > -400.0) & (sy < float(height) + 400.0)
+    if not np.any(ok):
+        return None
+    return (
+        float(np.min(sx[ok])),
+        float(np.min(sy[ok])),
+        float(np.max(sx[ok])),
+        float(np.max(sy[ok])),
+    )
+
+
+def _rects_overlap(a, b, gap: float = 3.0) -> bool:
+    return not (a[2] < b[0] - gap or b[2] < a[0] - gap or a[3] < b[1] - gap or b[3] < a[1] - gap)
+
+
+def _outside_box(rect, box, gap: float = 6.0) -> bool:
+    if box is None:
+        return True
+    return rect[2] < box[0] - gap or rect[0] > box[2] + gap or rect[3] < box[1] - gap or rect[1] > box[3] + gap
+
+
+def _inside_safe(rect, width: int, height: int, reserved) -> bool:
+    if rect[0] < 4 or rect[1] < 4 or rect[2] > width - 4 or rect[3] > height - 4:
+        return False
+    for item in reserved:
+        if _rects_overlap(rect, item, 2.0):
+            return False
+    return True
+
+
+def _leader_end(rect, ax: float, ay: float):
+    cx = (rect[0] + rect[2]) * 0.5
+    cy = (rect[1] + rect[3]) * 0.5
+    if abs(cx - ax) >= abs(cy - ay):
+        x = rect[0] if ax < cx else rect[2]
+        return float(x), float(cy)
+    y = rect[1] if ay < cy else rect[3]
+    return float(cx), float(y)
+
+
+def model_hover(pointer, box) -> bool:
+    """Pointer over the brain or the band where a callout can sit."""
+    if pointer is None or box is None:
+        return False
+    pad = 120.0
+    x, y = float(pointer[0]), float(pointer[1])
+    return (box[0] - pad) <= x <= (box[2] + pad) and (box[1] - pad) <= y <= (box[3] + pad)
+
+
+def _place_label(ax, ay, tw, th, direction, box, size, reserved, placed):
+    width, height = int(size[0]), int(size[1])
+    dx, dy = float(direction[0]), float(direction[1])
+    norm = math.hypot(dx, dy) or 1.0
+    dx, dy = dx / norm, dy / norm
+    for spread in (0.0, 0.45, -0.45, 0.9, -0.9, 1.35, -1.35, 1.8, -1.8):
+        cs, sn = math.cos(spread), math.sin(spread)
+        ux, uy = dx * cs - dy * sn, dx * sn + dy * cs
+        for dist_px in range(16, 340, 8):
+            cxp = ax + ux * dist_px
+            cyp = ay + uy * dist_px
+            rect = (cxp - tw * 0.5, cyp - th * 0.5, cxp + tw * 0.5, cyp + th * 0.5)
+            if not _outside_box(rect, box):
+                continue
+            if not _inside_safe(rect, width, height, reserved):
+                continue
+            if any(_rects_overlap(rect, item) for item in placed):
+                continue
+            return rect
+    return None
+
+
+def chrome_reserved(size) -> list:
+    from .window_pin import pin_button_rect
+
+    pin = pin_button_rect(size)
+    pin_box = (float(pin[0]), float(pin[1]), float(pin[0] + pin[2]), float(pin[1] + pin[3]))
+    boxes = []
+    for rect in (details_hit_rect(size), facing_badge_rect(size), hint_band_rect(size)):
+        boxes.append((float(rect[0]), float(rect[1]), float(rect[0] + rect[2]), float(rect[1] + rect[3])))
+    boxes.append(pin_box)
+    return boxes
+
+
+def layout_callouts(anchors, shell, yaw, pitch, dist, size, pan_x=0.0, pan_y=0.0, details: bool = False, pointer=None):
+    """Screen-space callouts. Glyphs stay upright; text stays off the shell."""
+    width, height = int(size[0]), int(size[1])
+    if width < 8 or height < 8 or not anchors:
+        return [], None, False
+    cx, cy, fov = width * 0.50, height * 0.54, float(min(width, height)) * 1.05
+    shell_pts = np.asarray(shell, dtype=np.float64).reshape(-1, 3) if shell is not None else np.zeros((0, 3))
+    if len(shell_pts):
+        ssx, ssy, sdep = _project(shell_pts, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+        box = _shell_box(ssx, ssy, sdep, width, height)
+    else:
+        box = None
+    show_detail = bool(details) or model_hover(pointer, box)
+    font = _ui_font(18)
+    reserved = chrome_reserved((width, height))
+    placed = []
+    out = []
+    center = None if box is None else ((box[0] + box[2]) * 0.5, (box[1] + box[3]) * 0.5)
+    ordered = sorted(anchors, key=lambda item: 0 if item.get("level") != "detail" else 1)
+    for item in ordered:
+        if item.get("level") == "detail" and not show_detail:
+            continue
+        pos = np.asarray(item["pos"], dtype=np.float64).reshape(1, 3)
+        px, py, dep = _project(pos, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+        if float(dep[0]) <= 0.35:
+            continue
+        ax, ay = float(px[0]), float(py[0])
+        text = str(item["label"])
+        tw, th = font.size(text)
+        prefer = item.get("out")
+        if prefer is not None:
+            direction = prefer
+        elif center is None:
+            direction = (0.0, -1.0)
+        else:
+            direction = (ax - center[0], ay - center[1])
+            if math.hypot(direction[0], direction[1]) < 18.0:
+                direction = (0.0, -1.0)
+        rect = _place_label(ax, ay, float(tw), float(th), direction, box, (width, height), reserved, placed)
+        if rect is None:
+            continue
+        placed.append(rect)
+        out.append({
+            "label": text,
+            "rect": rect,
+            "anchor": (ax, ay),
+            "leader": _leader_end(rect, ax, ay),
+            "level": item.get("level") or "coarse",
+            "side": item.get("side"),
+            "hot": bool(item.get("hot")),
+        })
+    return out, box, show_detail
+
+
+def draw_callouts(surface, anchors, shell, yaw, pitch, dist, pan_x=0.0, pan_y=0.0, details: bool = False, pointer=None) -> list:
+    """Thin gray leaders. The text is a pygame blit, so it does not spin with the model."""
+    import pygame
+
+    laid, _box, _show = layout_callouts(
+        anchors, shell, yaw, pitch, dist, surface.get_size(), pan_x, pan_y, details, pointer
+    )
+    font = _ui_font(18)
+    for item in laid:
+        end = item["leader"]
+        start = item["anchor"]
+        if math.hypot(end[0] - start[0], end[1] - start[1]) >= 4.0:
+            pygame.draw.line(surface, _HINT, (int(start[0]), int(start[1])), (int(end[0]), int(end[1])), 1)
+        if item.get("hot"):
+            color = (36, 104, 148) if _VIEW_THEME == "light" else (186, 220, 238)
+        else:
+            color = _INK
+        text = font.render(item["label"], True, color)
+        surface.blit(text, (int(item["rect"][0]), int(item["rect"][1])))
+    return laid
+
+
+def draw_view_chrome(surface, yaw, pitch, dist, details: bool = False, hint: str | None = None) -> None:
+    """Corner checkbox, facing badge, and the mouse hint. None of them rotate."""
+    import pygame
+
+    width, height = surface.get_size()
+    box = details_hit_rect((width, height))
+    pygame.draw.rect(surface, _INK, pygame.Rect(box[0], box[1] + 4, 13, 13), 1)
+    if details:
+        pygame.draw.rect(surface, _INK, pygame.Rect(box[0] + 3, box[1] + 7, 7, 7))
+    font = _ui_font(16)
+    surface.blit(font.render("детали", True, _INK), (box[0] + 18, box[1] + 3))
+    badge = facing_badge_rect((width, height))
+    surface.blit(_ui_font(15).render(facing_label(yaw, pitch, dist), True, _HINT), (badge[0], badge[1]))
+    if hint is None:
+        hint = VIEW_HINT
+    tiny = _ui_font(15)
+    surface.blit(tiny.render(hint, True, _HINT), (12, height - 20))
+
+
+def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, dist: float, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, hint: str | None = None, software_only: bool = False, details: bool = False, pointer=None) -> None:
     """Perspective view. FlyWire shell when the cache exists, else the soma cloud."""
     from .mb_flywire import paint_scene
     from .sdl_thread import require_main_thread
@@ -661,24 +905,16 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     require_main_thread()
     note_packet_theme(packet)
 
-    if paint_scene(surface, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast, hint=hint, software_only=software_only):
+    if paint_scene(
+        surface, packet, yaw, pitch, dist,
+        auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast,
+        hint=hint, software_only=software_only, details=details, pointer=pointer,
+    ):
         return
     import pygame
 
     w, h = surface.get_size()
     surface.blit(_background(w, h), (0, 0))
-    font = pygame.font.Font(None, 20)
-    small = pygame.font.Font(None, 16)
-    title = "грибовидное тело"
-    surface.blit(font.render(title, True, _INK), (16, 12))
-    note = "Л/П полушария   серые KC   свечение — кадр   янтарь MBON   зелёный PAM   красный PPL1"
-    surface.blit(small.render(note, True, _INK), (16, 34))
-    surface.blit(small.render("чашечка, ножка, доли α/β α′/β′ γ", True, _INK), (16, 52))
-    hint = VIEW_HINT
-    if frames:
-        hint += " вкл"
-    tiny = pygame.font.Font(None, 15)
-    surface.blit(tiny.render(hint, True, _HINT), (12, h - 20))
     cx, cy, fov = w * 0.50, h * 0.54, min(w, h) * 1.05
     kc_l = _flags(cloud.n_kc, packet.get("kc_l"))
     kc_r = _flags(cloud.n_kc, packet.get("kc_r"))
@@ -738,8 +974,10 @@ def paint(surface, cloud: BrainCloud, packet: dict, yaw: float, pitch: float, di
     _draw_spheres(surface, cloud.pam_pos, cloud.pam_side, "pam", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h, pan_x, pan_y)
     _draw_spheres(surface, cloud.ppl_pos, cloud.ppl_side, "ppl1", r_l, r_r, flash_l, flash_r, yaw, pitch, dist, cx, cy, fov, w, h, pan_x, pan_y)
     _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
-    _draw_eyes(surface, cloud, rec_l, rec_r, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
-    _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x, pan_y)
+    anchors = schematic_anchors(cloud, rec_l, rec_r)
+    shell = cloud.kc_pos
+    draw_callouts(surface, anchors, shell, yaw, pitch, dist, pan_x, pan_y, details, pointer)
+    draw_view_chrome(surface, yaw, pitch, dist, details, hint)
 
 
 def _fog(color, t: float):
@@ -856,16 +1094,91 @@ def _draw_edges(surface, cloud, packet, yaw, pitch, dist, cx, cy, fov, pan_x: fl
     surface.blit(layer, (0, 0))
 
 
-def eye_layout(cloud: BrainCloud):
-    """Eyes sit lateral to their own hemisphere and look anterior (+z).
+def _anchor_world(name: str, left: bool) -> np.ndarray:
+    point = _ANCHOR[name]
+    return np.array(_world(float(point[0]), float(point[1]), float(point[2]), left), dtype=np.float64)
 
-    Anatomical left is «глаз Л» / MB_L, the same side as the trainer plaque Л
-    (image right, the dog's left eye). Image left is «глаз П». Negative x is
-    the fly's left, so a view from the front puts «Л» on the right of the
-    screen. The default camera looks from behind, where «Л» is on the viewer's left.
+
+def schematic_anchors(cloud: BrainCloud, rec_l: bool = False, rec_r: bool = False):
+    """Soma-cloud labels. Same names as the FlyWire window.
+
+    LAL and DN are not in the soma table. They sit on the midline, ventral
+    of the lobes, and are marked approximate.
+    """
+    items = []
+    eyes, _arrow = eye_layout(cloud)
+    for eye in eyes:
+        items.append({
+            "label": eye["label"],
+            "pos": np.asarray(eye["pos"], dtype=np.float64),
+            "level": "coarse",
+            "side": int(eye["side"]),
+            "approx": False,
+            "hot": bool(rec_l if int(eye["side"]) == 1 else rec_r),
+        })
+    if len(cloud.kc_pos):
+        items.append({
+            "label": LABEL_MB,
+            "pos": np.asarray(cloud.kc_pos.mean(axis=0), dtype=np.float64),
+            "level": "coarse",
+            "side": -1,
+            "approx": False,
+            "out": (0.0, -1.0),
+        })
+    lobe_y = float(_ANCHOR["g"][1]) * _UM
+    ped_z = float(_ANCHOR["ped"][2]) * _UM
+    items.append({
+        "label": LABEL_LAL,
+        "pos": np.array([0.0, lobe_y - 0.22, ped_z], dtype=np.float64),
+        "level": "coarse",
+        "side": -1,
+        "approx": True,
+        "out": (-0.45, 1.0),
+    })
+    items.append({
+        "label": LABEL_DN,
+        "pos": np.array([0.0, lobe_y - 0.55, ped_z - 0.15], dtype=np.float64),
+        "level": "coarse",
+        "side": -1,
+        "approx": True,
+        "out": (0.55, 1.0),
+    })
+    part = {
+        "чашечка": "ca",
+        "ножка": "ped",
+        "γ": "g",
+        "α": "a",
+        "β": "b",
+        "α′": "ap",
+        "β′": "bp",
+    }
+    for left in (True, False):
+        side = 1 if left else 0
+        placed = {}
+        for label, key in part.items():
+            pos = _anchor_world(key, left)
+            placed[label] = pos
+            items.append({"label": label, "pos": pos, "level": "detail", "side": side, "approx": False})
+        horizontal = np.mean(np.vstack((placed["β"], placed["β′"], placed["γ"])), axis=0)
+        vertical = np.mean(np.vstack((placed["α"], placed["α′"], placed["ножка"])), axis=0)
+        lobes = np.mean(np.vstack(tuple(placed.values())), axis=0)
+        items.append({"label": "PAM", "pos": horizontal, "level": "detail", "side": side, "approx": False})
+        items.append({"label": "PPL1", "pos": vertical, "level": "detail", "side": side, "approx": False})
+        items.append({"label": "MBON", "pos": lobes, "level": "detail", "side": side, "approx": False})
+    return items
+
+
+def eye_layout(cloud: BrainCloud):
+    """Optic lobes sit lateral to their own hemisphere and look anterior (+z).
+
+    Anatomical left is «зрит. доля Л» / MB_L, the same side as the trainer
+    plaque Л (image right, the dog's left eye). Image left is «зрит. доля П».
+    Negative x is the fly's left, so a view from the front puts «Л» on the
+    right of the screen. The default camera looks from behind, where «Л» is
+    on the viewer's left.
     """
     eyes = []
-    for side, label in ((1, "глаз Л"), (0, "глаз П")):
+    for side, label in ((1, OPTIC_L), (0, OPTIC_R)):
         mask = cloud.kc_side == side
         if not np.any(mask):
             continue
@@ -984,7 +1297,7 @@ def _draw_side_labels(surface, cloud, yaw, pitch, dist, cx, cy, fov, pan_x: floa
         surface.blit(label, (int(px[0]) - label.get_width() // 2, int(py[0]) - label.get_height() // 2))
 
 
-def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = YAW0, pitch: float = PITCH0, dist: float | None = None, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False):
+def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = YAW0, pitch: float = PITCH0, dist: float | None = None, auto: bool = True, pan_x: float = 0.0, pan_y: float = 0.0, frames: bool = False, fast: bool = False, details: bool = False, pointer=None):
     import pygame
 
     from .mb_flywire import load_scene
@@ -997,7 +1310,11 @@ def render_frame(cloud: BrainCloud, packet: dict, size=(960, 700), yaw: float = 
         dist = float(scene.fit_dist) if scene is not None else DIST0
     pygame.font.init()
     surface = pygame.Surface(size)
-    paint(surface, cloud, packet, yaw, pitch, dist, auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast)
+    paint(
+        surface, cloud, packet, yaw, pitch, dist,
+        auto=auto, pan_x=pan_x, pan_y=pan_y, frames=frames, fast=fast,
+        details=details, pointer=pointer,
+    )
     return surface
 
 
@@ -1376,6 +1693,7 @@ def run_viewer(port: int = VIEW_PORT) -> int:
         orbit.home_dist = float(scene.fit_dist)
         orbit.dist = float(scene.fit_dist)
     frames = [False]
+    details = [False]
     drag = None
     shot = os.environ.get("MB_VIEW_SHOT") or ""
     shot_done = False
@@ -1404,17 +1722,23 @@ def run_viewer(port: int = VIEW_PORT) -> int:
                 elif event.type == pygame.KEYDOWN:
                     _keys(orbit, event, frames)
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 2, 3):
-                    handled, nxt = consume_pin(
-                        pinned[0], button=event.button, pos=event.pos, size=window.get_size()
+                    handled, nxt = consume_details(
+                        details[0], button=event.button, pos=event.pos, size=window.get_size()
                     )
                     if handled:
-                        pinned[0] = nxt
-                        set_always_on_top(pinned[0])
-                        _remember_viewer(window, pinned[0])
+                        details[0] = nxt
                     else:
-                        shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
-                        drag = ("pan" if event.button != 1 or shifted else "orbit", event.pos)
-                        orbit.idle = 0.0
+                        handled, nxt = consume_pin(
+                            pinned[0], button=event.button, pos=event.pos, size=window.get_size()
+                        )
+                        if handled:
+                            pinned[0] = nxt
+                            set_always_on_top(pinned[0])
+                            _remember_viewer(window, pinned[0])
+                        else:
+                            shifted = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                            drag = ("pan" if event.button != 1 or shifted else "orbit", event.pos)
+                            orbit.idle = 0.0
                 elif event.type == pygame.MOUSEBUTTONUP and event.button in (1, 2, 3):
                     drag = None
                 elif event.type == pygame.MOUSEMOTION and drag is not None:
@@ -1445,7 +1769,11 @@ def run_viewer(port: int = VIEW_PORT) -> int:
                 packet = fresh
             dt = clock.tick(30) / 1000.0
             orbit.tick(dt, drag is not None)
-            paint(window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist, auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y, frames=frames[0], fast=True)
+            paint(
+                window, cloud, packet, orbit.yaw, orbit.pitch, orbit.dist,
+                auto=orbit.auto, pan_x=orbit.pan_x, pan_y=orbit.pan_y, frames=frames[0], fast=True,
+                details=details[0], pointer=pygame.mouse.get_pos(),
+            )
             draw_pin_button(window, pinned[0], hover=hit_pin(window.get_size(), pygame.mouse.get_pos()))
             pygame.display.flip()
             if shot and not shot_done:
