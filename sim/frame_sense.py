@@ -92,6 +92,18 @@ def _decode_with_pygame(data: bytes) -> np.ndarray:
     return owned
 
 
+def _sector_span(index: int, width: int) -> tuple[int, int]:
+    """Columns of one azimuth bin.
+
+    Sector 0 is the right edge of the field. An unmirrored frame puts that
+    edge on the right, so the strip is read from the right.
+    """
+    src = N_AZ - 1 - int(index)
+    x0 = int(src * width / N_AZ)
+    x1 = max(x0 + 1, int((src + 1) * width / N_AZ))
+    return x0, x1
+
+
 def _sector_means(image: np.ndarray, y0: int, y1: int) -> np.ndarray:
     h, w = image.shape[:2]
     y0 = int(np.clip(y0, 0, h))
@@ -99,8 +111,7 @@ def _sector_means(image: np.ndarray, y0: int, y1: int) -> np.ndarray:
     band = image[y0:y1].astype(np.float32) / 255.0
     out = np.zeros((N_AZ, 3), dtype=np.float32)
     for i in range(N_AZ):
-        x0 = int(i * w / N_AZ)
-        x1 = max(x0 + 1, int((i + 1) * w / N_AZ))
+        x0, x1 = _sector_span(i, w)
         out[i] = band[:, x0:x1].mean(axis=(0, 1))
     return out
 
@@ -172,8 +183,7 @@ def features_from_frames(
         w = upper.shape[1]
         mot = np.zeros(N_AZ, dtype=np.float32)
         for i in range(N_AZ):
-            x0 = int(i * w / N_AZ)
-            x1 = max(x0 + 1, int((i + 1) * w / N_AZ))
+            x0, x1 = _sector_span(i, w)
             mot[i] = float(upper[:, x0:x1].mean())
         mot = np.clip((mot - np.median(mot)) * 4.0, 0.0, 1.0)
         feat[OFF_MOTION : OFF_MOTION + N_AZ] = mot
@@ -204,7 +214,8 @@ def sim_previews(agent, world, trail=None) -> tuple[np.ndarray, np.ndarray]:
         if bx is None or dist > SEE_M or dist < 1e-3:
             return
         col_w = cw / N_AZ
-        cx = int((bx + 0.5) * col_w)
+        # Sector 0 is ego-right. Paint it on the right of an unmirrored frame.
+        cx = int((N_AZ - 1 - bx + 0.5) * col_w)
         half = max(6, int(col_w * (0.55 + radius / max(dist, 0.4))))
         if body:
             top = int(horizon * 0.25)

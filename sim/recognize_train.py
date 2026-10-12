@@ -342,7 +342,10 @@ class RecognizeTrainSim:
         if not Path(self.state_path).is_file():
             raise FileNotFoundError(self.state_path)
         if self.mb is not None:
-            self.mb.load(self.state_path)
+            if not self.mb.load(self.state_path):
+                self._weights_from_disk = False
+                self._log(self.mb.load_note)
+                return
             self.dan = self.mb.dan
             self._weights_from_disk = True
             self._lidar_saved = self.mb.saved_lidar_refresh

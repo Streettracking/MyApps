@@ -63,10 +63,10 @@ def _hits(box: DetBox, left: float, right: float, area_min: float = AREA_MIN) ->
 
 
 def zone_of(box: DetBox, overlap: float, area_min: float = AREA_MIN) -> str:
-    """«Л», «П», or «Л+П». Image left is П (MB_R). Image right is Л (MB_L)."""
+    """«Л», «П», or «Л+П». Image left is Л (MB_L). Image right is П (MB_R)."""
     lo, hi = overlap_bands(overlap)
-    hit_l = _hits(box, lo, 1.0, area_min)
-    hit_r = _hits(box, 0.0, hi, area_min)
+    hit_l = _hits(box, 0.0, hi, area_min)
+    hit_r = _hits(box, lo, 1.0, area_min)
     if hit_l and hit_r:
         return "Л+П"
     if hit_l:
@@ -101,11 +101,11 @@ def hemisphere_hits(
         if float(box.conf) < float(conf_min):
             continue
         if center_only:
-            hit_l = hit_l or _center_in(box, lo, 1.0)
-            hit_r = hit_r or _center_in(box, 0.0, hi)
+            hit_l = hit_l or _center_in(box, 0.0, hi)
+            hit_r = hit_r or _center_in(box, lo, 1.0)
         else:
-            hit_l = hit_l or _hits(box, lo, 1.0, area_min)
-            hit_r = hit_r or _hits(box, 0.0, hi, area_min)
+            hit_l = hit_l or _hits(box, 0.0, hi, area_min)
+            hit_r = hit_r or _hits(box, lo, 1.0, area_min)
     return hit_l, hit_r
 
 

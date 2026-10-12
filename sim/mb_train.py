@@ -9,6 +9,7 @@ Monitor labels never enter either rule.
 from __future__ import annotations
 
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +61,9 @@ class MbTrainer:
             raise ValueError(dan)
         self.dan = dan
         self.seed = int(seed)
+        self._birth_dan = self.dan
+        self._birth_seed = self.seed
+        self.load_note = ""
         self.brain = MushroomBodyRuntime(npz, eta=eta, seed=seed)
         # Same connectome, own KC→MBON weights. MB_L is ``brain``, MB_R is ``brain_r``.
         self.brain_r = MushroomBodyRuntime(npz, eta=eta, seed=seed)
@@ -315,14 +319,20 @@ class MbTrainer:
         self.brain.save_mb(path, self.seed, self.dan, extra=extra)
 
     def _take_right(self, path: Path) -> None:
-        """Right-hand weights. An older single-MB file is copied into both halves."""
+        """Right-hand weights. An older single-MB file is copied into both halves.
+
+        A right-hand vector whose shape does not match is a different format.
+        The caller then keeps the birth weights and leaves the file on disk.
+        """
         with open_npz(path) as z:
             if "kc_mbon_w_r" in z.files:
                 w = np.asarray(z["kc_mbon_w_r"], dtype=np.float32)
-                if w.shape == self.brain_r.kc_mbon_w.shape:
-                    self.brain_r.kc_mbon_w = w
-                else:
-                    self.brain_r.kc_mbon_w = self.brain.kc_mbon_w.copy()
+                if w.shape != self.brain_r.kc_mbon_w.shape:
+                    raise ValueError(
+                        "форма правого KC→MBON %s не совпала с мозгом %s"
+                        % (w.shape, self.brain_r.kc_mbon_w.shape)
+                    )
+                self.brain_r.kc_mbon_w = w
                 fam = np.asarray(z["kc_fam_r"], dtype=np.float32) if "kc_fam_r" in z.files else None
                 if fam is not None and fam.shape == self.brain_r.kc_fam.shape:
                     self.brain_r.kc_fam = fam
@@ -332,7 +342,29 @@ class MbTrainer:
                 self.brain_r.kc_mbon_w = self.brain.kc_mbon_w.copy()
                 self.brain_r.kc_fam = self.brain.kc_fam.copy()
 
-    def load(self, path: Path) -> None:
+    def _abandon_load(self) -> None:
+        self.seed = self._birth_seed
+        self.dan = self._birth_dan
+        self.proj = RawProjector(self.brain.n_pn, seed=self.seed + 17)
+        self.reset()
+
+    def load(self, path: Path) -> bool:
+        """Load KC→MBON weights. False keeps the birth weights and the file.
+
+        A matching file still loads, including an older one that has no
+        right-hand vector. A shape that does not match, or a file that
+        cannot be read, starts clean and sets ``load_note``.
+        """
+        self.load_note = ""
+        try:
+            self._load_file(path)
+        except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile) as exc:
+            self._abandon_load()
+            self.load_note = "файл весов не загружен (%s), старт с чистых весов, файл не удалён" % exc
+            return False
+        return True
+
+    def _load_file(self, path: Path) -> None:
         seed, dan = self.brain.load_mb(path)
         self.seed = seed
         self.proj = RawProjector(self.brain.n_pn, seed=seed + 17)

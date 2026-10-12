@@ -50,9 +50,9 @@ def clamp_overlap(overlap: float) -> float:
 
 
 def overlap_bands(overlap: float) -> tuple[float, float]:
-    """Image fractions of the shared zone. Image left is the robot's right eye.
+    """Image fractions of the shared zone. Image left is the robot's left eye.
 
-    Returns ``(lo, hi)``. ``[0, lo)`` is П only, ``[lo, hi)`` is Л+П, ``[hi, 1]`` is Л.
+    Returns ``(lo, hi)``. ``[0, lo)`` is Л only, ``[lo, hi)`` is Л+П, ``[hi, 1]`` is П.
     ``overlap`` 0.4 is ``(0.3, 0.7)``. Zero overlap is the midline, ``(0.5, 0.5)``.
     """
     half = 0.5 * clamp_overlap(overlap)

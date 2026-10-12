@@ -430,7 +430,7 @@ class OverlayTests(unittest.TestCase):
         )
         self.assertGreater(int(green.sum()), 20)
         self.assertGreater(int(gray.sum()), 20)
-        self.assertGreater(float(np.where(green)[0].mean()), float(np.where(gray)[0].mean()))
+        self.assertLess(float(np.where(green)[0].mean()), float(np.where(gray)[0].mean()))
         shot = Path("/opt/cursor/artifacts/eyes_onboard.png")
         shot.parent.mkdir(parents=True, exist_ok=True)
         monitor.save_screenshot(str(shot))
@@ -601,13 +601,14 @@ class OnboardThemeTests(unittest.TestCase):
                     sys.modules[name] = mod
 
 class SideOfFrameTests(unittest.TestCase):
-    def test_left_columns_feed_the_right_eye_and_right_columns_the_left(self):
-        """Image left is the dog's right. The JPEG is not mirrored.
+    def test_left_columns_feed_the_left_eye_and_right_columns_the_right(self):
+        """Image left is the dog's left. The JPEG is not mirrored.
 
-        A compact object in the left columns reaches MB_R / П and a negative
-        yaw. The right columns reach MB_L / Л and a positive yaw. The 3D
-        labels sit on those same sides, and the default camera does not
-        mirror x: it looks forward from behind the brain.
+        A compact object in the left columns reaches MB_L / Л and a positive
+        yaw. The right columns reach MB_R / П and a negative yaw. The 3D
+        labels sit on those same anatomical sides. The default camera does
+        not mirror x: it looks forward from behind the brain, and a view
+        from the front still puts «Л» on the right of that screen.
         """
         from sim.frame_sense import features_from_frames
         from sim.hemifield import bilateral_yaw
@@ -635,19 +636,19 @@ class SideOfFrameTests(unittest.TestCase):
         right_feat, _ego, _near = features_from_frames(frame("right"), None)
         left_body = body(left_feat)
         right_body = body(right_feat)
-        self.assertGreater(left_body[0], left_body[7])
-        self.assertGreater(right_body[7], right_body[0])
-        self.assertGreater(_energy(hemifield(left_feat, "R", DEFAULT_OVERLAP)), 0.0)
-        self.assertEqual(_energy(hemifield(left_feat, "L", DEFAULT_OVERLAP)), 0.0)
-        self.assertGreater(_energy(hemifield(right_feat, "L", DEFAULT_OVERLAP)), 0.0)
-        self.assertEqual(_energy(hemifield(right_feat, "R", DEFAULT_OVERLAP)), 0.0)
+        self.assertGreater(left_body[7], left_body[0])
+        self.assertGreater(right_body[0], right_body[7])
+        self.assertGreater(_energy(hemifield(left_feat, "L", DEFAULT_OVERLAP)), 0.0)
+        self.assertEqual(_energy(hemifield(left_feat, "R", DEFAULT_OVERLAP)), 0.0)
+        self.assertGreater(_energy(hemifield(right_feat, "R", DEFAULT_OVERLAP)), 0.0)
+        self.assertEqual(_energy(hemifield(right_feat, "L", DEFAULT_OVERLAP)), 0.0)
 
         left_box = DetBox(0.02, 0.1, 0.22, 0.4, 0.9)
         right_box = DetBox(0.78, 0.1, 0.98, 0.4, 0.9)
-        self.assertEqual(hemisphere_hits([left_box], DEFAULT_OVERLAP, center_only=True), (False, True))
-        self.assertEqual(hemisphere_hits([right_box], DEFAULT_OVERLAP, center_only=True), (True, False))
-        self.assertEqual(zone_of(left_box, DEFAULT_OVERLAP), "П")
-        self.assertEqual(zone_of(right_box, DEFAULT_OVERLAP), "Л")
+        self.assertEqual(hemisphere_hits([left_box], DEFAULT_OVERLAP, center_only=True), (True, False))
+        self.assertEqual(hemisphere_hits([right_box], DEFAULT_OVERLAP, center_only=True), (False, True))
+        self.assertEqual(zone_of(left_box, DEFAULT_OVERLAP), "Л")
+        self.assertEqual(zone_of(right_box, DEFAULT_OVERLAP), "П")
 
         self.assertGreater(bilateral_yaw(1.0, 0.0), 0.0)
         self.assertLess(bilateral_yaw(0.0, 1.0), 0.0)
@@ -690,12 +691,11 @@ class SideOfFrameTests(unittest.TestCase):
         self.assertNotIn("rec_r", left)
 
     def test_object_on_the_flys_left_turns_left(self):
-        """The fly's left is the right side of this unmirrored frame.
+        """The fly's left is the left side of this unmirrored frame.
 
         Object there → left optic lobe → left mushroom body → turn left.
-        «зрит. доля Л» is the fly's left, so a view from the front puts it on the
-        right of the screen. Image-left still feeds the right eye; that map
-        is the other test and is not swapped.
+        «зрит. доля Л» is the fly's left (negative x), so a view from the
+        front puts it on the right of the 3D screen.
         """
         import math
 
@@ -708,7 +708,7 @@ class SideOfFrameTests(unittest.TestCase):
         from sim.raw_sense import N_AZ, OFF_BODY
 
         image = np.zeros((80, 160, 3), dtype=np.uint8)
-        image[8:28, 132:156] = 255
+        image[8:28, 4:28] = 255
         feat, _ego, _near = features_from_frames(image, None)
         energy = np.zeros(N_AZ, dtype=np.float64)
         for index in range(N_AZ):
@@ -773,6 +773,76 @@ class SideOfFrameTests(unittest.TestCase):
             500.0,
         )
         self.assertGreater(float(lobe_x[0]), float(lobe_x[1]))
+
+
+class DepressionTests(unittest.TestCase):
+    def test_dopamine_only_weakens_its_own_compartment(self):
+        from sim.mb_runtime import ACTIONS, MBForward
+        from sim.mb_train import MbTrainer, default_npz
+
+        sample = MbTrainer(default_npz(), seed=1).brain
+        kc = np.ones(sample.n_kc, dtype=np.float32)
+        mbon, scores = sample.scores_of_kc(kc)
+        fwd = MBForward(
+            pn=np.zeros(sample.n_pn, dtype=np.float32),
+            kc=kc,
+            mbon=mbon,
+            action="Explore",
+            action_scores=scores,
+        )
+        approach = [ACTIONS.index("Approach_A"), ACTIONS.index("Approach_B")]
+        avoid = [ACTIONS.index("Avoid_A"), ACTIONS.index("Avoid_B")]
+        post = sample.mbon_action[sample.kc_mbon_post]
+
+        def delta(sign: float) -> np.ndarray:
+            fresh = MbTrainer(default_npz(), seed=1).brain
+            before = fresh.kc_mbon_w.copy()
+            fresh.plasticity(fwd, sign)
+            return fresh.kc_mbon_w - before
+
+        pam = delta(1.0)
+        self.assertTrue(bool(np.all(pam <= 1e-6)))
+        self.assertGreater(int(np.sum((pam < -1e-6) & np.isin(post, avoid))), 0)
+        self.assertEqual(int(np.sum((np.abs(pam) > 1e-6) & np.isin(post, approach))), 0)
+
+        punish = delta(-1.0)
+        self.assertTrue(bool(np.all(punish <= 1e-6)))
+        self.assertGreater(int(np.sum((punish < -1e-6) & np.isin(post, approach))), 0)
+        self.assertEqual(int(np.sum((np.abs(punish) > 1e-6) & np.isin(post, avoid))), 0)
+
+
+class WeightFileTests(unittest.TestCase):
+    def test_a_mismatched_file_starts_clean_and_is_not_deleted(self):
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.npz_compat import open_npz
+
+        born = MbTrainer(default_npz(), seed=1)
+        left0 = born.brain.kc_mbon_w.copy()
+        right0 = born.brain_r.kc_mbon_w.copy()
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "mb_train_state.npz"
+            born.save(path)
+            with open_npz(path) as saved:
+                payload = {key: np.array(saved[key]) for key in saved.files}
+            payload["kc_mbon_w"] = np.zeros(3, dtype=np.float32)
+            np.savez(path, **payload)
+            other = MbTrainer(default_npz(), seed=1)
+            self.assertFalse(other.load(path))
+            self.assertIn("не загружен", other.load_note)
+            self.assertIn("не удалён", other.load_note)
+            self.assertTrue(path.is_file())
+            np.testing.assert_array_equal(other.brain.kc_mbon_w, left0)
+            np.testing.assert_array_equal(other.brain_r.kc_mbon_w, right0)
+
+            born.save(path)
+            with open_npz(path) as saved:
+                legacy = {key: np.array(saved[key]) for key in saved.files if key != "kc_mbon_w_r"}
+            np.savez(path, **legacy)
+            kept = MbTrainer(default_npz(), seed=1)
+            self.assertTrue(kept.load(path))
+            self.assertEqual(kept.load_note, "")
+            np.testing.assert_array_equal(kept.brain.kc_mbon_w, born.brain.kc_mbon_w)
+            np.testing.assert_array_equal(kept.brain_r.kc_mbon_w, born.brain.kc_mbon_w)
 
 
 if __name__ == "__main__":

@@ -556,10 +556,12 @@ def make_brain(
 
     path = Path(state_path)
     if path.is_file():
-        mb.load(path)
+        if mb.load(path):
+            loop._log("загружены веса KC→MBON")
+        else:
+            loop._log(mb.load_note)
         mb.learn = False
         loop.learn = False
-        loop._log("загружены веса KC→MBON")
     return loop
 
 

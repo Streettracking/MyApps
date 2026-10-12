@@ -1172,7 +1172,7 @@ def eye_layout(cloud: BrainCloud):
     """Optic lobes sit lateral to their own hemisphere and look anterior (+z).
 
     Anatomical left is «зрит. доля Л» / MB_L, the same side as the trainer
-    plaque Л (image right, the dog's left eye). Image left is «зрит. доля П».
+    plaque Л (image left, the dog's left eye). Image right is «зрит. доля П».
     Negative x is the fly's left, so a view from the front puts «Л» on the
     right of the screen. The default camera looks from behind, where «Л» is
     on the viewer's left.

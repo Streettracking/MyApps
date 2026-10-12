@@ -114,6 +114,34 @@ class HemisphereTests(unittest.TestCase):
         self.assertGreater(float(feat[OFF_LIDAR + 3]), 0.0)
 
 
+class StepTests(unittest.TestCase):
+    def test_brain_step_is_unchanged_when_lidar_changes(self):
+        def step(lidar: float):
+            brain = MbTrainer(default_npz(), seed=3, camera_only=True)
+            brain.learn = True
+            feat = _scene().copy()
+            feat[OFF_LIDAR:] = 0.0
+            feat[OFF_LIDAR + 2] = lidar
+            feat[OFF_CLOSE + 2] = lidar * 0.5
+            brain.forward(feat)
+            brain.observe(feat, brain.last_readout)
+            brain.teach_sides("ppl1", "pam", 1.0)
+            return brain, feat
+
+        quiet, near = step(0.05)
+        loud, far = step(0.95)
+        np.testing.assert_array_equal(quiet.brain.kc_mbon_w, loud.brain.kc_mbon_w)
+        np.testing.assert_array_equal(quiet.brain_r.kc_mbon_w, loud.brain_r.kc_mbon_w)
+        self.assertEqual(quiet.r_l, loud.r_l)
+        self.assertEqual(quiet.r_r, loud.r_r)
+        self.assertEqual(quiet.last_readout, loud.last_readout)
+        self.assertEqual(quiet.teacher_ppl1_l, loud.teacher_ppl1_l)
+        self.assertEqual(quiet.teacher_pam_r, loud.teacher_pam_r)
+        self.assertGreater(float(far[OFF_LIDAR + 2]), float(near[OFF_LIDAR + 2]))
+        self.assertAlmostEqual(float(far[OFF_CLOSE + 2]), 0.95 * 0.5)
+        self.assertIsNotNone(forward_clearance(_scene()))
+
+
 class PanelTests(unittest.TestCase):
     def test_panel_draws_the_camera_only_line(self):
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -139,6 +167,43 @@ class PanelTests(unittest.TestCase):
         monitor.save_screenshot(str(shot))
         import pygame
 
+        pygame.quit()
+
+    def test_lidar_card_keeps_the_picture_and_says_it_does_not_teach(self):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        import pygame
+
+        pygame.init()
+        from sim.train_monitor import INK_DIM, LIDAR_LEARN_NOTE, MonitorView, TrainMonitor
+
+        self.assertEqual(LIDAR_LEARN_NOTE, "в обучении не участвует")
+        monitor = TrainMonitor("lidar note")
+        camera = np.zeros((96, 160, 3), dtype=np.uint8)
+        camera[:] = (18, 22, 28)
+        lidar = np.zeros((80, 80, 3), dtype=np.uint8)
+        lidar[20:60, 20:60] = (30, 80, 140)
+        view = MonitorView(
+            camera=camera,
+            lidar=lidar,
+            learner="mb",
+            fly_line="R_L +1   R_R +1   Δ +0   z +0.00  билатерально",
+            range_line="вектор +0°  дальн 2.0 м  вперёд 2.4 м",
+        )
+        monitor.draw(view)
+        rect = monitor.lidar_learn_rect
+        self.assertGreater(rect.w, 8)
+        self.assertGreater(rect.h, 4)
+        self.assertTrue(monitor.lid_rect.colliderect(rect))
+        self.assertIsNotNone(monitor.lid_inner)
+        frame = pygame.surfarray.array3d(monitor.screen)
+        patch = frame[rect.x : rect.x + rect.w, rect.y : rect.y + rect.h]
+        ink = np.array([int(channel) for channel in INK_DIM], dtype=np.int16)
+        distance = np.abs(patch.astype(np.int16) - ink).sum(axis=2)
+        self.assertGreater(int(np.sum(distance < 40)), 8)
+        shot = Path("/opt/cursor/artifacts/lidar_note.png")
+        shot.parent.mkdir(parents=True, exist_ok=True)
+        monitor.save_screenshot(str(shot))
         pygame.quit()
 
 

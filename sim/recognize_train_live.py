@@ -518,7 +518,10 @@ class LiveSession:
         if not Path(self.state_path).is_file():
             raise FileNotFoundError(self.state_path)
         if self.mb is not None:
-            self.mb.load(self.state_path)
+            if not self.mb.load(self.state_path):
+                self._weights_from_disk = False
+                self._log(self.mb.load_note)
+                return
             self.dan = self.mb.dan
             self._was_rec = bool(self.mb.conf.recognized)
             self._weights_from_disk = True

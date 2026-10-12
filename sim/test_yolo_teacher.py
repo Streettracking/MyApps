@@ -61,11 +61,11 @@ class _Quiet(BaseHTTPRequestHandler):
 class ZoneTests(unittest.TestCase):
     def test_labels_follow_the_hemifields(self):
         overlap = 0.4
-        right_edge = DetBox(0.02, 0.2, 0.2, 0.8, 0.9)
-        left_edge = DetBox(0.8, 0.2, 0.98, 0.8, 0.9)
+        image_left = DetBox(0.02, 0.2, 0.2, 0.8, 0.9)
+        image_right = DetBox(0.8, 0.2, 0.98, 0.8, 0.9)
         middle = DetBox(0.4, 0.2, 0.6, 0.8, 0.9)
-        self.assertEqual(zone_of(right_edge, overlap), "П")
-        self.assertEqual(zone_of(left_edge, overlap), "Л")
+        self.assertEqual(zone_of(image_left, overlap), "Л")
+        self.assertEqual(zone_of(image_right, overlap), "П")
         self.assertEqual(zone_of(middle, overlap), "Л+П")
 
     def test_false_recognize_is_ppl1_and_a_quiet_miss_is_nothing(self):
@@ -110,8 +110,8 @@ class ChannelTests(unittest.TestCase):
                 if runtime.boxes:
                     break
                 time.sleep(0.02)
-            self.assertEqual(zone_of(runtime.boxes[0], 0.4), "П")
-            self.assertEqual(kinds, (None, "pam"))
+            self.assertEqual(zone_of(runtime.boxes[0], 0.4), "Л")
+            self.assertEqual(kinds, ("pam", None))
             posted = []
 
             class Link:
@@ -120,7 +120,7 @@ class ChannelTests(unittest.TestCase):
                     return {}
 
             send_teach(Link(), kinds[0], kinds[1])
-            self.assertEqual(posted, [("teach_sides", {"left": "", "right": "pam"})])
+            self.assertEqual(posted, [("teach_sides", {"left": "pam", "right": ""})])
             self.assertNotIn("move", [item[0] for item in posted])
             runtime.note_learning(False)
             self.assertEqual(runtime.visible_boxes(False), [])
@@ -231,7 +231,7 @@ class KeyTests(unittest.TestCase):
             learning_on=True,
             yolo_state="смотрит",
             teacher_counts="учитель: PAM_L 0 / PAM_R 1 / PPL1_L 0 / PPL1_R 0",
-            teacher_boxes=[DetBox(0.04, 0.15, 0.32, 0.85, 0.91, "П")],
+            teacher_boxes=[DetBox(0.04, 0.15, 0.32, 0.85, 0.91, "Л")],
             keys_hint="A авто  K руль  Y учитель  H рамки  F11 экран",
             phase_ru="поиск ←",
             last_seen_side="L",
@@ -291,9 +291,9 @@ class PunishTests(unittest.TestCase):
         self.assertEqual(runtime.collect(0.0, 0.4, True, False, True, False), ("ppl1", None))
         spill = DetBox(0.05, 0.1, 0.45, 0.9, 0.92)
         self.assertEqual(hemisphere_hits([spill], 0.4, 0.5, center_only=False), (True, True))
-        self.assertEqual(hemisphere_hits([spill], 0.4, 0.5, center_only=True), (False, True))
+        self.assertEqual(hemisphere_hits([spill], 0.4, 0.5, center_only=True), (True, False))
         runtime = _ready([spill])
-        self.assertEqual(runtime.collect(0.0, 0.4, True, False, True, False), ("ppl1", "pam"))
+        self.assertEqual(runtime.collect(0.0, 0.4, True, False, True, False), ("pam", None))
         middle = DetBox(0.42, 0.2, 0.58, 0.8, 0.88)
         self.assertEqual(hemisphere_hits([middle], 0.4, 0.5, center_only=True), (True, True))
         runtime = _ready([middle])
@@ -306,7 +306,7 @@ class PunishTests(unittest.TestCase):
         self.assertEqual(gate.filter(0.1, "ppl1", "ppl1"), ("ppl1", "ppl1"))
         self.assertEqual(gate.filter(0.2, "ppl1", None), (None, None))
         self.assertEqual(gate.filter(0.49, "pam", None), (None, None))
-        dog = DetBox(0.80, 0.2, 0.96, 0.8, 0.93)
+        dog = DetBox(0.04, 0.2, 0.22, 0.8, 0.93)
         runtime = _ready([dog])
         self.assertEqual(runtime.collect(0.0, 0.4, True, False, True, False), ("pam", None))
         runtime._teach_boxes = []
@@ -529,15 +529,15 @@ class FlashTests(unittest.TestCase):
         shot.parent.mkdir(parents=True, exist_ok=True)
         mon.save_screenshot(str(shot))
         frame = pygame.surfarray.array3d(mon.screen)
-        right = mon.eye_lamps["Л"]
-        left = mon.eye_lamps["П"]
-        self.assertGreater(right["teacher"][0], left["teacher"][0])
-        self.assertGreater(_filled(frame, right["teacher"], (217, 136, 128)), 12)
-        self.assertGreater(_filled(frame, left["teacher"], (141, 181, 150)), 12)
-        self.assertLess(_filled(frame, left["recog"], (141, 181, 150)), 8)
-        self.assertLess(_filled(frame, left["recog"], (217, 136, 128)), 8)
-        self.assertGreater(_filled(frame, right["recog"], (141, 181, 150)), 12)
-        self.assertLess(_filled(frame, right["recog"], (217, 136, 128)), 8)
+        fly_l = mon.eye_lamps["Л"]
+        fly_r = mon.eye_lamps["П"]
+        self.assertLess(fly_l["teacher"][0], fly_r["teacher"][0])
+        self.assertGreater(_filled(frame, fly_l["teacher"], (217, 136, 128)), 12)
+        self.assertGreater(_filled(frame, fly_r["teacher"], (141, 181, 150)), 12)
+        self.assertLess(_filled(frame, fly_r["recog"], (141, 181, 150)), 8)
+        self.assertLess(_filled(frame, fly_r["recog"], (217, 136, 128)), 8)
+        self.assertGreater(_filled(frame, fly_l["recog"], (141, 181, 150)), 12)
+        self.assertLess(_filled(frame, fly_l["recog"], (217, 136, 128)), 8)
         banner = (mon.panel_rect.x + 10, mon.panel_rect.y + 12)
         self.assertLess(_filled(frame, banner, (217, 136, 128), radius=6), 6)
         self.assertLess(_filled(frame, banner, (141, 181, 150), radius=6), 6)
@@ -573,10 +573,10 @@ class FlashTests(unittest.TestCase):
         frame = pygame.surfarray.array3d(mon.screen)
         from sim.train_monitor import TEACHER
 
-        self.assertGreater(_filled(frame, mon.eye_lamps["Л"]["teacher"], TEACHER), 8)
-        self.assertLess(_filled(frame, mon.eye_lamps["П"]["teacher"], TEACHER), 8)
-        self.assertLess(_filled(frame, mon.eye_lamps["Л"]["teacher"], (201, 120, 91)), 8)
-        self.assertGreater(_ring(frame, mon.eye_lamps["П"]["teacher"]), 8)
+        self.assertGreater(_filled(frame, mon.eye_lamps["П"]["teacher"], TEACHER), 8)
+        self.assertLess(_filled(frame, mon.eye_lamps["Л"]["teacher"], TEACHER), 8)
+        self.assertLess(_filled(frame, mon.eye_lamps["П"]["teacher"], (201, 120, 91)), 8)
+        self.assertGreater(_ring(frame, mon.eye_lamps["Л"]["teacher"]), 8)
         mon.draw(MonitorView(teacher_boxes=[DetBox(0.45, 0.2, 0.55, 0.8, 0.4)], **shared))
         frame = pygame.surfarray.array3d(mon.screen)
         self.assertGreater(_ring(frame, mon.eye_lamps["Л"]["teacher"]), 8)
@@ -612,7 +612,7 @@ class FlashTests(unittest.TestCase):
         lamp = (mon.teacher_rect.x + 18, mon.teacher_rect.centery)
         self.assertGreater(_filled(frame, lamp, TEACHER), 8)
         self.assertLess(_filled(frame, lamp, (201, 120, 91)), 8)
-        self.assertGreater(_filled(frame, mon.eye_lamps["Л"]["teacher"], TEACHER), 8)
+        self.assertGreater(_filled(frame, mon.eye_lamps["П"]["teacher"], TEACHER), 8)
         mon.draw(MonitorView(**shared))
         frame = pygame.surfarray.array3d(mon.screen)
         self.assertGreater(_filled(frame, lamp, (201, 120, 91)), 8)
@@ -759,7 +759,7 @@ class FixedColumnTests(unittest.TestCase):
                     signed(3 if scale == 0 else 28),
                     phrase("лимит" if scale == 0 else "нет ответа YOLO", 36),
                 ),
-                teacher_boxes=[DetBox(0.62, 0.2, 0.84, 0.8, 0.51 if scale == 0 else 0.93, "Л")],
+                teacher_boxes=[DetBox(0.62, 0.2, 0.84, 0.8, 0.51 if scale == 0 else 0.93, "П")],
                 n_pam=pam,
                 n_ppl1=1 if scale == 0 else 40,
                 total_pam=pam,
@@ -930,15 +930,25 @@ class QuietLaunchTests(unittest.TestCase):
 
 
 class _Box:
-    def __init__(self, x0, x1, conf=0.9):
+    def __init__(self, x0, x1, conf=0.9, y0=0.2, y1=0.8):
         self.x0 = x0
         self.x1 = x1
-        self.y0 = 0.2
-        self.y1 = 0.8
+        self.y0 = y0
+        self.y1 = y1
         self.conf = conf
 
 
 class TeacherLeadTests(unittest.TestCase):
+    def test_close_comes_from_the_box_and_lidar_is_not_a_source(self):
+        from sim.stimuli import camera_stimuli, learning_sources
+
+        self.assertEqual(learning_sources(), ("yolo_bbox",))
+        self.assertNotIn("lidar", learning_sources())
+        close, _grew, _area = camera_stimuli([_Box(0.4, 0.55)], None)
+        self.assertFalse(close)
+        close, _grew, _area = camera_stimuli([_Box(0.2, 0.8, y0=0.05, y1=0.95)], None)
+        self.assertTrue(close)
+
     def test_mix_and_plaque(self):
         from sim.teacher_lead import lead_plaque, mix_velocity
 
@@ -957,10 +967,10 @@ class TeacherLeadTests(unittest.TestCase):
 
         lead = TeacherLead()
         speed, yaw = lead.update_from_boxes(0.0, [_Box(0.05, 0.25)], 3.0, 3.0)
-        self.assertLess(yaw, 0.0)
+        self.assertGreater(yaw, 0.0)
         self.assertEqual(speed, 0.0)
         speed, yaw = lead.update_from_boxes(0.2, [_Box(0.75, 0.95)], 3.0, 3.0)
-        self.assertGreater(yaw, 0.0)
+        self.assertLess(yaw, 0.0)
         speed, yaw = lead.update_from_boxes(0.4, [_Box(0.45, 0.55)], 3.0, 3.0)
         self.assertAlmostEqual(yaw, 0.0)
         self.assertAlmostEqual(speed, X_MAX)
@@ -969,11 +979,11 @@ class TeacherLeadTests(unittest.TestCase):
         self.assertAlmostEqual(yaw, 0.0)
         speed, yaw = lead.update_from_boxes(1.0, [], 3.0, 3.0)
         self.assertEqual(speed, 0.0)
-        self.assertGreater(yaw, 0.0)
+        self.assertLess(yaw, 0.0)
         other = TeacherLead()
         other.update_from_boxes(0.0, [_Box(0.05, 0.25)], 3.0, 3.0)
         speed, yaw = other.update_from_boxes(0.2, [], 3.0, 3.0)
-        self.assertLess(yaw, 0.0)
+        self.assertGreater(yaw, 0.0)
 
     def test_estop_and_lidar_beat_the_teacher(self):
         from sim.teacher_lead import apply_guards, mix_velocity
@@ -987,8 +997,7 @@ class TeacherLeadTests(unittest.TestCase):
         self.assertFalse(held[2])
 
     def test_outcome_rewards_and_a_match_does_not(self):
-        from sim.pilot import STOP_M
-        from sim.teacher_lead import TeacherLead, commands_match, outcome_kinds
+        from sim.teacher_lead import TeacherLead, apply_guards, commands_match, outcome_kinds
 
         self.assertEqual(
             outcome_kinds(True, False, True, False, False, False),
@@ -1027,33 +1036,45 @@ class TeacherLeadTests(unittest.TestCase):
         self.assertEqual(quiet.action_kinds(1.0, True, False), (None, None))
 
         closing = TeacherLead()
-        closing.update_from_boxes(0.0, [_Box(0.75, 0.95)], 3.0, 3.0)
-        closing.set_hits(True, False)
+        closing.update_from_boxes(0.0, [_Box(0.75, 0.85)], 3.0, 3.0)
+        closing.set_hits(False, True)
         self.assertEqual(closing.action_kinds(0.0, True, True), (None, None))
-        closing.update_from_boxes(0.6, [_Box(0.75, 0.95)], 2.4, 3.0)
-        closing.set_hits(True, False)
+        closing.update_from_boxes(0.6, [_Box(0.70, 0.90)], 3.0, 3.0)
+        closing.set_hits(False, True)
         self.assertTrue(closing.approaching)
-        self.assertEqual(closing.action_kinds(0.6, True, True), ("pam", None))
+        self.assertFalse(closing.too_close)
+        self.assertEqual(closing.action_kinds(0.6, True, True), (None, "pam"))
 
         lost = TeacherLead()
         lost.update_from_boxes(0.0, [_Box(0.05, 0.25)], 3.0, 3.0)
-        lost.set_hits(False, True)
+        lost.set_hits(True, False)
         lost.update_from_boxes(0.6, [], 3.0, 3.0)
         lost.set_hits(False, False)
         self.assertTrue(lost.lost)
-        self.assertEqual(lost.action_kinds(0.6, True, True), (None, "ppl1"))
+        self.assertEqual(lost.action_kinds(0.6, True, True), ("ppl1", None))
 
+        large = _Box(0.25, 0.75, y0=0.05, y1=0.95)
         close = TeacherLead()
-        close.update_from_boxes(0.0, [_Box(0.45, 0.55)], STOP_M, 3.0)
+        close.update_from_boxes(0.0, [large], 3.0, 3.0)
         close.set_hits(True, True)
         self.assertTrue(close.too_close)
         self.assertEqual(close.action_kinds(0.0, True, True), ("ppl1", "ppl1"))
+        close.update_from_boxes(0.6, [large], 0.4, 0.3)
+        close.set_hits(True, True)
+        self.assertTrue(close.too_close)
 
         blocked = TeacherLead()
-        blocked.update_from_boxes(0.0, [_Box(0.75, 0.95)], 3.0, 0.8)
-        blocked.set_hits(True, False)
-        self.assertTrue(blocked.too_close)
-        self.assertEqual(blocked.action_kinds(0.0, True, True), ("ppl1", None))
+        blocked.update_from_boxes(0.0, [_Box(0.75, 0.85)], 3.0, 3.0)
+        blocked.set_hits(False, True)
+        self.assertFalse(blocked.too_close)
+        blocked.update_from_boxes(0.6, [_Box(0.75, 0.85)], 0.4, 0.8)
+        blocked.set_hits(False, True)
+        self.assertFalse(blocked.too_close)
+        self.assertFalse(blocked.approaching)
+        self.assertEqual(blocked.action_kinds(0.6, True, True), (None, None))
+        held_reflex = apply_guards(0.4, 0.3, False, 0.8)
+        self.assertEqual(held_reflex[0], 0.0)
+        self.assertAlmostEqual(held_reflex[1], 0.3)
 
         other_kind = TeacherLead()
         other_kind.hit_l = True

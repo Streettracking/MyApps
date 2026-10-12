@@ -1,7 +1,7 @@
 """Teacher drive mixed with the fly. The mushroom-body split is not touched.
 
-Image left is the dog's right, so a box on the left of the frame yaws right
-(negative z). Image right yaws left. A centred box walks forward and stops
+Image left is the dog's left, so a box on the left of the frame yaws left
+(positive z). Image right yaws right. A centred box walks forward and stops
 at one metre. A lost box searches toward the side where it was last seen.
 
 The sent command is ``weight * teacher + (1 - weight) * fly``. Weight 0 is
@@ -18,6 +18,7 @@ metric only.
 from __future__ import annotations
 
 from .pilot import STOP_M, X_MAX, Z_MAX, SLOW_X, clamp_velocity, scrub_range, search_yaw
+from .stimuli import camera_stimuli
 
 TEACHER_WEIGHT_DEFAULT = 0.0
 MATCH_WINDOW_S = 8.0
@@ -27,8 +28,6 @@ CENTER_BAND = 0.06
 WIDE_OFFSET = 0.18
 AIM_HOLD_S = 0.50
 PAM_GAP_S = 0.50
-# A closer range sample counts as an approach. Jitter below this does not.
-APPROACH_EPS_M = 0.05
 
 
 def clamp_weight(weight: float) -> float:
@@ -136,11 +135,11 @@ def outcome_kinds(
     last_l: bool = False,
     last_r: bool = False,
 ) -> tuple[str | None, str | None]:
-    """PAM for an approach or a centred dog. PPL1 for a loss or a close call.
+    """PAM for an approach or a centred dog. PPL1 for a loss or a large box.
 
     The eye that sees the dog gets the pulse. A loss uses the eye that saw
-    it last. A dangerous close wins over a treat. Command agreement is not
-    an input.
+    it last. A box that fills the frame wins over a treat. Lidar range is
+    not an input. Command agreement is not an input.
     """
     if lost:
         return ("ppl1" if last_l else None), ("ppl1" if last_r else None)
@@ -154,14 +153,14 @@ def outcome_kinds(
 
 
 def sign_for_center(cx: float | None) -> float | None:
-    """Image left is the dog's right, so the search sign is negative there."""
+    """Image left is the dog's left, so the search sign is positive there."""
     if cx is None:
         return None
     offset = float(cx) - 0.5
     if offset < -1e-6:
-        return -1.0
-    if offset > 1e-6:
         return 1.0
+    if offset > 1e-6:
+        return -1.0
     return None
 
 
@@ -186,7 +185,7 @@ def teacher_velocity(
     else:
         span = 0.5 - CENTER_BAND
         excess = offset - (CENTER_BAND if offset > 0.0 else -CENTER_BAND)
-        yaw = clamp_velocity(0.0, excess / span * Z_MAX)[1]
+        yaw = clamp_velocity(0.0, -excess / span * Z_MAX)[1]
         centred = False
     dist = scrub_range(dist_m)
     ahead = scrub_range(forward_m)
@@ -281,6 +280,7 @@ class TeacherLead:
         self.lost = False
         self.too_close = False
         self._prev_dist: float | None = None
+        self._prev_area: float | None = None
         self.search_sign = 1.0
         self._last_side_cx: float | None = None
         self._search_locked = False
@@ -311,12 +311,16 @@ class TeacherLead:
             self.too_close = False
         else:
             dist = scrub_range(dist_m)
-            prev = self._prev_dist
-            self.approaching = dist is not None and prev is not None and dist < prev - APPROACH_EPS_M
             if dist is not None:
                 self._prev_dist = dist
             self.centered = abs(float(cx) - 0.5) <= CENTER_BAND + 1e-9
-            self.too_close = (dist is not None and dist <= STOP_M) or lidar_blocks(forward_m)
+            # Closeness and approach are camera stimuli. Lidar still stops
+            # the wheels in teacher_velocity and apply_guards, not here.
+            close, grew, area = camera_stimuli(boxes, self._prev_area, conf_min)
+            self.too_close = close
+            self.approaching = grew
+            if area is not None:
+                self._prev_area = area
             self.lost = False
         if cx is None:
             if not self._search_locked:

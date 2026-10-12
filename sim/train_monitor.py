@@ -103,6 +103,7 @@ from .tabnum import (
 )
 
 WIN_W = 1920
+LIDAR_LEARN_NOTE = "в обучении не участвует"
 WIN_H = 1080
 MIN_SCALE = 0.75
 MIN_CONTENT_W = int(round(WIN_W * MIN_SCALE))  # 1440
@@ -2741,12 +2742,28 @@ class TrainMonitor:
         if column is None or column.w < 8:
             return
         top = self.lidar_fresh_rect.bottom + 6
+        top = self._lidar_learn_note(screen, column, top, content.bottom)
         if view.lidar_warning and top + 18 <= content.bottom:
             warn = self.font_sm.render(view.lidar_warning[:42], True, AMBER)
             if column.x + warn.get_width() <= content.right:
                 screen.blit(warn, (column.x, top))
                 top += warn.get_height() + 4
         self._lidar_table(screen, view, column, top, content.bottom)
+
+    def _lidar_learn_note(self, screen, column, top: int, bottom: int) -> int:
+        """Grey line: lidar is shown, and it does not teach. The table stays below."""
+        import pygame
+
+        glyph = self.font_tiny.render(LIDAR_LEARN_NOTE, True, INK_DIM)
+        height = glyph.get_height()
+        if top + height > int(bottom) or column.w < 8:
+            self.lidar_learn_rect = pygame.Rect(column.x, top, 0, 0)
+            return top
+        screen.blit(glyph, (column.x, top))
+        rect = pygame.Rect(column.x, top, min(column.w, glyph.get_width()), height)
+        self.lidar_learn_rect = rect
+        self._keep_glyphs([rect])
+        return top + height + 4
 
     def _lidar_table(self, screen, view: MonitorView, column, top: int, bottom: int) -> None:
         """Label, monospace number, unit. A row that does not fit is omitted whole."""
@@ -3611,7 +3628,7 @@ class TrainMonitor:
         return LAMP_OFF
 
     def _teacher_sees(self, view: MonitorView) -> tuple:
-        """``(sees_L, sees_R)`` from box centres. Image right is Л, image left is П."""
+        """``(sees_L, sees_R)`` from box centres. Image left is Л, image right is П."""
         from .yolo_teacher import DEFAULT_CONF, hemisphere_hits
 
         return hemisphere_hits(
@@ -3642,7 +3659,7 @@ class TrainMonitor:
     def _eye_plaques(self, screen, inner, view: MonitorView) -> None:
         """Recognition lamp and a teacher lamp on the preview.
 
-        Image left is П, image right is Л. The teacher lamp sits beside
+        Image left is Л, image right is П. The teacher lamp sits beside
         «узнаю»: green flash is PAM, red is PPL1, blue is a dog in that
         eye's field, an empty ring is no dog.
         """
@@ -3656,25 +3673,25 @@ class TrainMonitor:
         screen.blit(veil, (inner.x, inner.y))
         sees_l, sees_r = self._teacher_sees(view)
         self.eye_lamps = {
-            "П": self._eye_plaque(
-                screen,
-                pygame.Rect(inner.x, inner.y, mid - inner.x, height),
-                "П",
-                view.eye_r_recognized,
-                view.eye_r_ready,
-                view.eye_r_confidence,
-                view.teacher_flash_r,
-                sees_r,
-            ),
             "Л": self._eye_plaque(
                 screen,
-                pygame.Rect(mid, inner.y, inner.right - mid, height),
+                pygame.Rect(inner.x, inner.y, mid - inner.x, height),
                 "Л",
                 view.eye_l_recognized,
                 view.eye_l_ready,
                 view.eye_l_confidence,
                 view.teacher_flash_l,
                 sees_l,
+            ),
+            "П": self._eye_plaque(
+                screen,
+                pygame.Rect(mid, inner.y, inner.right - mid, height),
+                "П",
+                view.eye_r_recognized,
+                view.eye_r_ready,
+                view.eye_r_confidence,
+                view.teacher_flash_r,
+                sees_r,
             ),
         }
 
@@ -4232,7 +4249,7 @@ class TrainMonitor:
     def _camera_overlap(self, screen, inner, view: MonitorView) -> None:
         """Binocular zone and one «УЗНАЮ» per eye. The camera array is not written.
 
-        Image left is the robot's right eye (П). Image right is the left eye (Л).
+        Image left is the robot's left eye (Л). Image right is the right eye (П).
         The shared band has a thin peach boundary on each side.
         """
         import pygame
@@ -4251,10 +4268,10 @@ class TrainMonitor:
             pygame.draw.line(screen, PEACH, (mid, inner.y + 1), (mid, inner.bottom - 1), 1)
             x0 = mid
             x1 = mid
-        self._zone_tag(screen, inner.x, x0, inner, "П")
+        self._zone_tag(screen, inner.x, x0, inner, "Л")
         if x1 > x0 + 18:
             self._zone_tag(screen, x0, x1, inner, "Л+П")
-        self._zone_tag(screen, x1, inner.right, inner, "Л")
+        self._zone_tag(screen, x1, inner.right, inner, "П")
         from .tabnum import cell_px
 
         pct = format_overlap(view.overlap)
@@ -4285,8 +4302,8 @@ class TrainMonitor:
     def _camera_halves(self, screen, inner, view: MonitorView) -> None:
         """Centre line on the displayed camera. The JPEG is not touched.
 
-        Sector 0 is the left columns and the robot's right, so the picture's
-        left half is П / R_R and the right half is Л / R_L.
+        Sector 0 is the right columns and the robot's right, so the picture's
+        left half is Л / R_L and the right half is П / R_R.
         """
         import pygame
 
@@ -4299,8 +4316,8 @@ class TrainMonitor:
             and view.hemi_r is not None
         )
         pygame.draw.line(screen, PEACH, (mid, inner.y + 1), (mid, inner.bottom - 1), 1)
-        self._half_tag(screen, right, "Л", view.hemi_l if show else None)
-        self._half_tag(screen, left, "П", view.hemi_r if show else None)
+        self._half_tag(screen, left, "Л", view.hemi_l if show else None)
+        self._half_tag(screen, right, "П", view.hemi_r if show else None)
 
     def _wash(self, screen, rect, color: tuple[int, int, int]) -> None:
         import pygame

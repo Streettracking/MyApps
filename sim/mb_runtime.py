@@ -175,10 +175,16 @@ class MushroomBodyRuntime:
         return MBForward(pn=pn, kc=kc, mbon=mbon, action=action, action_scores=scores)
 
     def plasticity(self, last: MBForward, r: float) -> None:
+        """Dopamine depresses KC→MBON synapses of KCs that were active.
+
+        The change stays inside that dopamine neuron's compartment. PAM
+        (r>0, appetitive mask) reaches avoidance MBONs, so a reward weakens
+        avoidance and the paired pattern approaches. PPL1 (r<0, aversive
+        mask) reaches approach MBONs, so punishment weakens approach.
+        The opposite synapse is not potentiated. Weights stay non-negative.
+        """
         if abs(r) < 1e-9 or last.kc.sum() <= 0 or len(self.kc_mbon_w) == 0:
             return
-        # Aversive (r<0): weaken KC->approach-like, strengthen avoid-like on masked edges
-        # Appetitive (r>0): opposite
         kc = last.kc
         pre_act = kc[self.kc_mbon_pre]
         active = pre_act > 0
@@ -191,22 +197,17 @@ class MushroomBodyRuntime:
 
         if r < 0:
             mask = self.mask_av & active
-            # depress approach, potentiate avoid
             dec = mask & np.isin(post_action, list(approach_ids))
-            inc = mask & np.isin(post_action, list(avoid_ids))
             self.kc_mbon_w[dec] -= self.eta * abs(r) * pre_act[dec]
-            self.kc_mbon_w[inc] += self.eta * abs(r) * pre_act[inc]
         else:
             mask = self.mask_ap & active
-            inc = mask & np.isin(post_action, list(approach_ids))
             dec = mask & np.isin(post_action, list(avoid_ids))
-            self.kc_mbon_w[inc] += self.eta * r * pre_act[inc]
             self.kc_mbon_w[dec] -= self.eta * r * pre_act[dec]
 
         np.clip(self.kc_mbon_w, 0.0, None, out=self.kc_mbon_w)
 
     def appetitive_drive(self, scores: np.ndarray) -> float:
-        """Approach MBON sum minus avoid MBON sum. PAM pushes this up for the paired pattern."""
+        """Approach MBON sum minus avoid MBON sum. PAM raises this by weakening avoidance."""
         ap = ACTIONS.index("Approach_A")
         av = ACTIONS.index("Avoid_A")
         bp = ACTIONS.index("Approach_B")
@@ -262,7 +263,9 @@ class MushroomBodyRuntime:
         z = open_npz(path)
         w = np.asarray(z["kc_mbon_w"], dtype=np.float32)
         if w.shape != self.kc_mbon_w.shape:
-            raise ValueError(f"KC→MBON shape {w.shape} does not match this brain {self.kc_mbon_w.shape}")
+            raise ValueError(
+                "форма KC→MBON %s не совпала с мозгом %s" % (w.shape, self.kc_mbon_w.shape)
+            )
         self.kc_mbon_w = w
         fam = np.asarray(z["kc_fam"], dtype=np.float32) if "kc_fam" in z.files else None
         if fam is not None and fam.shape == self.kc_fam.shape:
