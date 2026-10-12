@@ -955,9 +955,9 @@ class TrainMonitor:
         if inner is not None and inner.h >= 24:
             row_h = min(44, inner.h)
             estop_h = min(inner.h, max(row_h + 16, CONTROLS_BUTTON_H))
+            # Mode toggles come first: a short card keeps the first lines and
+            # drops the rest, so ОБУЧЕНИЕ / АВТО / ПЕРЕХВАТ stay on screen.
             items = [
-                ("neg_btn", self._keyed_button_width(("НЕГАТИВ · 00000",), "N", True)),
-                ("kin_btn", self._keyed_button_width(("СОРОДИЧ · 00000",), "D", True)),
                 ("learn", self._keyed_button_width(("ОБУЧЕНИЕ: ВКЛ", "ОБУЧЕНИЕ: ВЫКЛ"), "P", True)),
                 ("auto", self._keyed_button_width(("АВТО: ВКЛ", "АВТО: ВЫКЛ"), "A", True)),
                 ("take", self._keyed_button_width(("ПЕРЕХВАТ: ВКЛ", "ПЕРЕХВАТ: ВЫКЛ"), "M", True)),
@@ -965,6 +965,8 @@ class TrainMonitor:
                 ("treat", self._keyed_button_width(("ЛАКОМСТВО",), "T", True)),
                 ("punish", self._keyed_button_width(("ОШИБКА", "ошибка · стоп"), "X", False)),
                 ("yolo_err", self._keyed_button_width(("ошибка YOLO 000",), "O", False)),
+                ("neg_btn", self._keyed_button_width(("НЕГАТИВ · 00000",), "N", True)),
+                ("kin_btn", self._keyed_button_width(("СОРОДИЧ · 00000",), "D", True)),
             ]
             gap_b = 8
             total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
@@ -1040,7 +1042,8 @@ class TrainMonitor:
     def _wrap_rows(self, items, x0: int, y0: int, limit: int, bottom: int, row_h: int, gap: int) -> dict:
         """Lay buttons left to right and start a new line when the next one does not fit.
 
-        Lines share the card height. A line that cannot get 20 px is left out.
+        A row stays at least 24 px when the card is that tall. Further lines are
+        omitted whole, instead of shrinking every caption until none of them draw.
         """
         import pygame
 
@@ -1048,26 +1051,36 @@ class TrainMonitor:
         used = 0
         span = max(1, int(limit) - int(x0))
         for name, ww in items:
-            w = max(1, int(ww))
+            w = max(1, min(int(ww), span))
             need = w if not lines[-1] else used + gap + w
             if lines[-1] and need > span:
                 lines.append([])
                 used = 0
                 need = w
-            lines[-1].append((name, min(w, span)))
+            lines[-1].append((name, w))
             used = need
-        n = len(lines)
+        lines = [line for line in lines if line]
         avail = max(1, int(bottom) - int(y0))
-        h = min(int(row_h), (avail - 6 * (n - 1)) // n) if n > 1 else min(int(row_h), avail)
-        out = {}
-        y = int(y0)
+        gap_y = 6
+        floor = min(24, avail)
+        kept = []
+        h = min(int(row_h), avail)
         for line in lines:
-            fits = h >= 20 and y + h <= int(bottom)
+            n = len(kept) + 1
+            trial = (avail - gap_y * (n - 1)) // n
+            trial = min(int(row_h), max(1, trial))
+            if trial < floor:
+                break
+            h = trial
+            kept.append(line)
+        out = {name: pygame.Rect(0, 0, 0, 0) for name, _w in items}
+        y = int(y0)
+        for line in kept:
             cx = int(x0)
             for name, w in line:
-                out[name] = pygame.Rect(cx, y, w, h) if fits else pygame.Rect(0, 0, 0, 0)
+                out[name] = pygame.Rect(cx, y, w, h)
                 cx += w + gap
-            y += h + 6
+            y += h + gap_y
         return out
 
     def _try_maximize(self) -> None:
