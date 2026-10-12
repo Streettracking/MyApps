@@ -19,10 +19,11 @@ def _populated_view():
     from sim.pilot import format_eyes_line, format_range_line
     from sim.tabnum import format_counts, format_lidar_caption, format_skips
     from sim.train_monitor import MonitorView
+    from sim.yolo_teacher import DetBox
 
     curve = [(float(i), 0.2 + 0.05 * (i % 5)) for i in range(12)]
     other = [(float(i), 0.1 + 0.02 * (i % 3)) for i in range(12)]
-    drift = [(float(i), 0.4 * i) for i in range(8)]
+    drift = [(float(i), 168.4 + 0.2 * i) for i in range(8)]
     return MonitorView(
         title="тренировка узнавания",
         learner="mb",
@@ -51,8 +52,25 @@ def _populated_view():
         total_labeled=11,
         peer_curve=curve,
         other_curve=other,
-        drift=12.5,
+        drift=169.8,
         drift_curve=drift,
+        drive_l=120.0,
+        drive_r=-40.0,
+        turn=0.4,
+        stim_dog=80.0,
+        stim_cube=-12.0,
+        pref_index=0.35,
+        pref_seconds=125.0,
+        kc_gd_frac=0.07,
+        kc_abp_frac=0.06,
+        pam_l=9,
+        pam_r=4,
+        ppl1_l=2,
+        ppl1_r=1,
+        teacher_boxes=[
+            DetBox(0.12, 0.18, 0.40, 0.78, 0.91, "Л", ""),
+            DetBox(0.55, 0.22, 0.82, 0.70, 0.62, "П", "cube"),
+        ],
         t=48.0,
         dan_events=[(2.0, "PAM"), (10.0, "PPL1"), (40.0, "PAM"), (46.0, "PPL1")],
         kc_on=240,
@@ -162,7 +180,10 @@ class BrainPanelTests(unittest.TestCase):
                 self.assertIn("progress-2", tags)
                 self.assertIn("drift", tags)
                 self.assertIn("dan-title", tags)
-                self.assertIn("dan-span", tags)
+                self.assertIn("dan-lamps", tags)
+                self.assertIn("drive-title", tags)
+                self.assertIn("kc", tags)
+                self.assertIn("kc-scale", tags)
                 self.assertGreaterEqual(panel.h, 120)
 
             narrow = pygame.Surface((280, 420))
@@ -240,7 +261,7 @@ class BrainPanelTests(unittest.TestCase):
                 self.assertGreater(content.h, 400, (ww, wh, content))
                 panel = pygame.Rect(content.x + 4, content.y + 4, content.w - 8, content.h - 8)
                 tags = [tag for _rect, tag in mon._brain_rows]
-                self.assertIn("dan-hint", tags)
+                self.assertIn("dan-lamps", tags)
                 _assert_packed(self, mon._brain_rows, panel)
                 _assert_text_clear_of_graphs(self, mon._brain_rows, require_graphs=True)
 
@@ -262,7 +283,7 @@ class BrainPanelTests(unittest.TestCase):
                     mon._brain_rows = []
                     mon._draw_mb(surface, sample, box)
                     _assert_packed(self, mon._brain_rows, box)
-                    _assert_text_clear_of_graphs(self, mon._brain_rows, require_graphs=height >= 480)
+                    _assert_text_clear_of_graphs(self, mon._brain_rows, require_graphs=height >= 640)
         finally:
             apply_theme("light")
             pygame.quit()
@@ -602,6 +623,29 @@ class BrainPanelStatusTests(unittest.TestCase):
         ok, _fields = brain_panel_from_status(recorded, None)
         self.assertFalse(ok)
 
+    def test_empty_score_says_no_data_and_saves_share_one_line(self):
+        from collections import deque
+
+        from sim.recognize_train_live import camera_offline_caption
+        from sim.tabnum import format_lamps, format_metrics_line, note_repeated_save
+        from sim.train_monitor import _camera_caption
+
+        self.assertEqual(
+            format_metrics_line(None, None, 0, None, None, 0, False),
+            "нет данных",
+        )
+        self.assertNotIn("+", format_lamps(3, 0, 1, 4))
+        log = deque(maxlen=20)
+        note_repeated_save(log, "   1.0s", "mb_train_state_sim.npz")
+        note_repeated_save(log, "  31.0s", "mb_train_state_sim.npz")
+        self.assertEqual(len(log), 1)
+        self.assertIn("сохранено  mb_train_state_sim.npz", log[0])
+        self.assertIn("×2", log[0])
+        self.assertEqual(camera_offline_caption("http://127.0.0.1:8088"), "камера борта недоступна (8088)")
+        shown, quiet = _camera_caption("Cannot reach http://127.0.0.1:8088/camera.jpg (timed out)")
+        self.assertEqual(shown, "камера борта недоступна (8088)")
+        self.assertTrue(quiet)
+
     def test_onboard_view_uses_the_status_and_greys_out_when_stale(self):
         import pygame
 
@@ -648,9 +692,15 @@ class BrainPanelStatusTests(unittest.TestCase):
             mon.draw(stale)
             content = mon._content_of("brain")
             plate = offline_plate(_scheme_rgb("card"), _scheme_rgb("ink_dim"))
-            color = mon.screen.get_at((content.centerx, content.centery))
-            self.assertEqual(tuple(color[:3]), plate)
+            corner = mon.screen.get_at((content.x + 2, content.y + 2))
+            self.assertEqual(tuple(corner[:3]), plate)
             self.assertNotEqual(plate, _scheme_rgb("card"))
+            ink = False
+            for x in range(content.x + 8, content.right - 8):
+                if tuple(mon.screen.get_at((x, content.centery))[:3]) != plate:
+                    ink = True
+                    break
+            self.assertTrue(ink)
         finally:
             pygame.quit()
 

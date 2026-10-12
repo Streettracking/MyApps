@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -208,6 +209,17 @@ def robot_server_message(listening: bool, told: bool, host: str = "127.0.0.1", p
     )
 
 
+def _launch_argv(path: Path) -> list:
+    """A shebang stand-in runs under this interpreter. A real exe starts with MZ."""
+    try:
+        head = Path(path).read_bytes()[:2]
+    except OSError:
+        head = b""
+    if head == b"#!":
+        return [sys.executable, str(path)]
+    return [str(path)]
+
+
 def raise_process(pid: int) -> bool:
     """Bring a Windows window of this pid forward. Other systems do nothing."""
     if os.name != "nt" or int(pid) <= 0:
@@ -287,7 +299,7 @@ class Go2Launch:
         handle = open_log("go2_server.log" if kind == "server" else "go2_control.log")
         try:
             return subprocess.Popen(
-                [str(path)],
+                _launch_argv(path),
                 cwd=str(path.parent),
                 stdin=subprocess.DEVNULL,
                 stdout=handle,

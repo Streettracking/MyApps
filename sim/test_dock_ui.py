@@ -1227,10 +1227,11 @@ class CursorTests(unittest.TestCase):
             print("ok")
             """
         )
+        root = __import__("pathlib").Path(__file__).resolve().parents[1]
         for mode in ("on", "off"):
             proc = subprocess.run(
                 [sys.executable, "-X", "dev", "-c", script, mode],
-                cwd="/workspace",
+                cwd=str(root),
                 capture_output=True,
                 text=True,
             )
@@ -1296,7 +1297,7 @@ class PaletteTests(unittest.TestCase):
         allowed_names = {"PEACH", "GREEN", "RED", "TEACHER", "ESTOP", "AMBER"}
         # The lamp disc is punched with an opaque white mask. It is not a paint colour.
         exceptions = {(255, 255, 255, 255)}
-        text = Path("/workspace/sim/train_monitor.py").read_text(encoding="utf-8")
+        text = (Path(__file__).resolve().parents[1] / "sim" / "train_monitor.py").read_text(encoding="utf-8")
         text = re.sub(r"(?m)#.*$", "", text)
         kept = []
         for line in text.splitlines():
@@ -1331,12 +1332,14 @@ class FontFloorTests(unittest.TestCase):
         try:
             mon._on_resize(1920, 1080)
             mon.draw(MonitorView(learner="mb", title="recognition training"))
-            full = mon.font_tiny.get_height()
-            self.assertGreaterEqual(mon._font_need, MIN_FONT_PX)
+            full_need = mon._font_need
+            self.assertGreaterEqual(full_need, MIN_FONT_PX)
+            self.assertGreaterEqual(mon.font_tiny.get_height(), MIN_FONT_PX)
             mon._on_resize(1000, 700)
             mon.draw(MonitorView(learner="mb", title="recognition training"))
+            self.assertGreater(mon._font_need, full_need)
             self.assertGreaterEqual(mon._font_need * MIN_SCALE, MIN_FONT_PX)
-            self.assertGreater(mon.font_tiny.get_height(), full)
+            self.assertGreaterEqual(mon.font_tiny.get_height(), MIN_FONT_PX)
         finally:
             pygame.quit()
 

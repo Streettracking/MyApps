@@ -402,7 +402,9 @@ class MbTrainer:
         return left, right
 
     def note_drift(self, t: float) -> None:
-        self.drift_curve.append((t, self.last_drift))
+        """Sample the live L2 sum for the panel. Does not move a weight."""
+        self.last_drift = float(self.brain.weight_drift() + self.brain_r.weight_drift())
+        self.drift_curve.append((float(t), self.last_drift))
 
     def probe(self) -> dict[str, float]:
         """Canonical views. Does not teach."""

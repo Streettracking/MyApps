@@ -31,6 +31,19 @@ def signed(value, width: int = NUM_W, decimals: int = 0) -> str:
     return (sign + text[-(width - 1) :])[:width]
 
 
+def unsigned(value, width: int = NUM_W, decimals: int = 0) -> str:
+    """Right-aligned counter. No plus. A negative value still keeps its minus."""
+    if value is None:
+        return "-".rjust(width)
+    number = float(value)
+    if number < 0:
+        return signed(value, width, decimals)
+    text = "{:.{d}f}".format(number, d=int(decimals))
+    if len(text) <= width:
+        return text.rjust(width)
+    return text[-width:]
+
+
 def phrase(text, width: int) -> str:
     """Left-aligned status field. Longer text is cut, shorter text is padded."""
     raw = "" if text is None else str(text)
@@ -55,7 +68,8 @@ def label_index(text: str, token: str) -> int:
 def skips_are_quiet(line: str) -> bool:
     """True when the unpunished-false count is zero and no reason is shown."""
     tail = line.split(":", 1)[-1]
-    return signed(0) in tail and tail.replace(signed(0), "").strip() == ""
+    zero = unsigned(0)
+    return zero in tail and tail.replace(zero, "", 1).strip() == ""
 
 
 def mono_path() -> str | None:
@@ -523,15 +537,24 @@ def format_range_line(dist, forward, sector, sector_smooth, gate: str) -> str:
 
 def format_counts(pam_l, pam_r, ppl1_l, ppl1_r) -> str:
     return "учитель: PAM_L %s  PAM_R %s  PPL1_L %s  PPL1_R %s" % (
-        signed(pam_l),
-        signed(pam_r),
-        signed(ppl1_l),
-        signed(ppl1_r),
+        unsigned(pam_l),
+        unsigned(pam_r),
+        unsigned(ppl1_l),
+        unsigned(ppl1_r),
+    )
+
+
+def format_lamps(pam_l, pam_r, ppl1_l, ppl1_r) -> str:
+    return "PAM Л %s  PAM П %s  PPL1 Л %s  PPL1 П %s" % (
+        unsigned(pam_l),
+        unsigned(pam_r),
+        unsigned(ppl1_l),
+        unsigned(ppl1_r),
     )
 
 
 def format_skips(n: int, reason: str) -> str:
-    return "ложных узнаваний без наказания: %s  %s" % (signed(n), phrase(reason, REASON_W))
+    return "ложных узнаваний без наказания: %s  %s" % (unsigned(n), phrase(reason, REASON_W))
 
 
 def format_duration(seconds: float, width: int = 12) -> str:
@@ -548,6 +571,49 @@ def format_drift(value) -> str:
     return "дрейф KC→MBON  %s" % signed(value, NUM_W, 1)
 
 
+def format_drift_axis(lo, hi) -> str:
+    return "min %s  max %s" % (signed(lo, NUM_W, 1), signed(hi, NUM_W, 1))
+
+
+def format_drive_line(left, right, turn) -> str:
+    """Left and right approach−avoidance, and the turn arrow between them."""
+    if turn is None:
+        arrow = "·"
+    elif float(turn) > 0.08:
+        arrow = "←"
+    elif float(turn) < -0.08:
+        arrow = "→"
+    else:
+        arrow = "·"
+    return "Л %s  %s  П %s" % (signed(left, NUM_W, 1), arrow, signed(right, NUM_W, 1))
+
+
+def format_stim_line(dog, cube) -> str:
+    return "сородич %s  контроль (куб) %s" % (signed(dog, NUM_W, 1), signed(cube, NUM_W, 1))
+
+
+def format_clock(seconds) -> str:
+    total = 0 if seconds is None else max(0, int(float(seconds)))
+    minutes = min(total // 60, 999)
+    return "%3d:%02d" % (minutes, total % 60)
+
+
+def format_pref_line(index, seconds) -> str:
+    clock = format_clock(seconds)
+    if index is None:
+        return "сородич−куб %s  %s" % (phrase("нет данных", 12), clock)
+    return "сородич−куб %s  %s" % (signed(index, NUM_W, 2), clock)
+
+
+def format_kc_scales(gd, ab) -> str:
+    def pct(value):
+        if value is None:
+            return unsigned(None, 4)
+        return unsigned(round(float(value) * 100.0), 4)
+
+    return "γ-d %s%%  α/β-p %s%%" % (pct(gd), pct(ab))
+
+
 def format_kc(on, n) -> str:
     return "активность KC  %s из %s" % (signed(on), signed(n))
 
@@ -562,16 +628,16 @@ def format_lifetime(pam, ppl1, known: bool) -> str:
     if not known:
         return "Всего за всё время: PAM %s / PPL1 %s (всего %s)" % (signed(None), signed(None), signed(None))
     return "Всего за всё время: PAM %s / PPL1 %s (всего %s)" % (
-        signed(pam),
-        signed(ppl1),
-        signed(int(pam) + int(ppl1)),
+        unsigned(pam),
+        unsigned(ppl1),
+        unsigned(int(pam) + int(ppl1)),
     )
 
 
 def format_session_counts(pam, ppl1, seconds: float, sound: str) -> str:
     return "За этот запуск: PAM %s / PPL1 %s  %s  %s" % (
-        signed(pam),
-        signed(ppl1),
+        unsigned(pam),
+        unsigned(ppl1),
         format_duration(seconds),
         phrase(sound, 15),
     )
@@ -582,14 +648,17 @@ def format_familiar(prefix: str, seconds: float, novelty) -> str:
 
 
 def format_metric(sep, acc, n: int) -> str:
-    percent = None if acc is None or int(n) < 1 else float(acc) * 100.0
-    count = int(n) if int(n) >= 1 else None
-    return "%s %s%% %s" % (signed(sep, 6), signed(percent, 4), signed(count, 5))
+    if acc is None or int(n) < 1:
+        return "нет данных"
+    percent = float(acc) * 100.0
+    return "%s %s%% %s" % (signed(sep, 6), unsigned(round(percent), 4), unsigned(int(n), 5))
 
 
 def format_metrics_line(session_sep, session_acc, session_n, total_sep, total_acc, total_n, labeled: bool) -> str:
-    if not labeled:
-        return "метки D/N нет — разделение и точность ждут клавиши D и N"
+    session_empty = session_acc is None or int(session_n) < 1
+    total_empty = total_acc is None or int(total_n) < 1
+    if not labeled or (session_empty and total_empty):
+        return "нет данных"
     return "D−N сессия %s  всего %s" % (
         format_metric(session_sep, session_acc, session_n),
         format_metric(total_sep, total_acc, total_n),
@@ -621,7 +690,7 @@ def format_record(saved, nbytes: int, idle: bool) -> str:
     from .frame_record import format_disk
 
     mid = phrase("жми T/X", 10) if idle else fit(format_disk(nbytes), 10, "right")
-    return "ЗАПИСЬ %s %s" % (signed(saved, 5), mid)
+    return "ЗАПИСЬ %s %s" % (unsigned(saved, 5), mid)
 
 
 def format_overlap(frac: float) -> str:
@@ -632,8 +701,40 @@ def format_half(name: str, value) -> str:
     return "%s %s" % (phrase(name, 3), signed(value))
 
 
-def format_box_tag(zone: str, conf) -> str:
-    return "%s %s" % (phrase(zone, 3), signed(conf, 6, 2))
+def format_box_tag(zone: str, conf, kind: str = "") -> str:
+    """«сородич 92%» or «куб 92%». Confidence is a fraction in 0..1."""
+    name = "куб" if str(kind or "") in ("cube", "control", "куб") else "сородич"
+    if conf is None:
+        pct = unsigned(None, 4)
+    else:
+        pct = unsigned(round(float(conf) * 100.0), 4)
+    return "%s %s%%" % (phrase(name, 8), pct)
+
+
+def note_repeated_save(log, stamp: str, name: str) -> None:
+    """One journal line for a repeated weight save, with a counter."""
+    marker = "сохранено  %s" % name
+    found = None
+    count = 1
+    for i in range(len(log) - 1, -1, -1):
+        if marker not in log[i]:
+            continue
+        found = i
+        tail = str(log[i]).rsplit("×", 1)
+        if len(tail) == 2:
+            try:
+                count = int(tail[-1].strip()) + 1
+            except ValueError:
+                count = 2
+        else:
+            count = 2
+        break
+    text = marker if count == 1 else "%s  ×%d" % (marker, count)
+    row = "%s  %s" % (stamp, text)
+    if found is None:
+        log.append(row)
+    else:
+        log[found] = row
 
 
 def format_command(cmd: str) -> str:

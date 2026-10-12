@@ -376,7 +376,11 @@ class ClientChromeTests(unittest.TestCase):
 
         from sim.win_dpi import clip_window_box, enable_dpi_awareness, work_area
 
-        self.assertIsNone(work_area())
+        area_now = work_area()
+        if os.name == "nt":
+            self.assertEqual(len(area_now), 4)
+        else:
+            self.assertIsNone(area_now)
         enable_dpi_awareness()
         area = (0, 0, 1920, 1040)
         self.assertEqual(clip_window_box(10, 20, 800, 600, area), (10, 20, 800, 600))

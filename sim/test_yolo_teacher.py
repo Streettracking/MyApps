@@ -856,12 +856,20 @@ class QuietLaunchTests(unittest.TestCase):
         os.environ.pop("RECOGNIZER_START_TEACHER", None)
         self.assertEqual(OwnedTeacher().start("http://127.0.0.1:8091"), "")
         os.environ["RECOGNIZER_START_TEACHER"] = "1"
+        os.environ["RECOGNIZER_YOLO_PYTHON"] = str(Path("/tmp/no-such-yolo-python"))
+        os.environ["RECOGNIZER_YOLO_WEIGHTS"] = str(Path("/tmp/no-such-best.pt"))
+        os.environ["RECOGNIZER_YOLO_SERVE"] = str(Path("/tmp/no-such-serve.py"))
         try:
-            note = OwnedTeacher().start("http://127.0.0.1:9")
+            owned = OwnedTeacher()
+            note = owned.start("http://127.0.0.1:9")
             self.assertIn("нет файла", note)
+            self.assertIsNone(owned.proc)
             self.assertIsNone(teacher_argv("http://127.0.0.1:8091", home=Path("/tmp/no-such-home")))
         finally:
             os.environ.pop("RECOGNIZER_START_TEACHER", None)
+            os.environ.pop("RECOGNIZER_YOLO_PYTHON", None)
+            os.environ.pop("RECOGNIZER_YOLO_WEIGHTS", None)
+            os.environ.pop("RECOGNIZER_YOLO_SERVE", None)
 
     def test_teacher_argv_prefers_pythonw_beside_the_venv(self):
         from sim.yolo_teacher import teacher_argv

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .approach_watch import ApproachWatch
 from .frame_sense import decode_image_bytes, features_from_frames
 from .raw_sense import add_recog_camera_only_arg, recog_label
 from .go2_udp import Go2CommandLink
@@ -61,6 +62,16 @@ def fetch_bytes(url: str, timeout: float) -> bytes:
             return resp.read()
     except urllib.error.URLError as exc:
         raise ConnectionError(str(exc.reason if hasattr(exc, "reason") else exc)) from exc
+
+
+def camera_offline_caption(base: str) -> str:
+    """One grey line on the camera card. The long reason goes to the journal."""
+    from urllib.parse import urlparse
+
+    text = str(base or "")
+    parsed = urlparse(text if "://" in text else "http://%s" % text)
+    port = parsed.port or DEFAULT_PREVIEW
+    return "камера борта недоступна (%s)" % port
 
 
 def offline_message(base: str, exc: BaseException) -> str:
@@ -289,6 +300,8 @@ class LiveSession:
         self._weights_from_disk = False
         self._lidar_saved: float | None = None
         self.marks = MarkLayer()
+        self.approach = ApproachWatch()
+        self._approach_t = 0.0
         self.pilot = Pilot(return_auto_s)
         self.pilot.set_steer(steer if steer in ("bilateral", "sectors") else "bilateral")
         self.overlap = float(overlap)
@@ -412,7 +425,8 @@ class LiveSession:
             value = self.mb.last_readout
             conf = self.mb.observe(feat, value)
             now_m = time.monotonic()
-            self.mb.progress.tick(now_m - self._last_tick, self.learn)
+            dt = now_m - self._last_tick
+            self.mb.progress.tick(dt, self.learn)
             self._last_tick = now_m
             self.mb.progress.note_label(self.operator, value, conf.recognized, conf.ready)
             kind = teach if self.dan == "teacher" else None
@@ -450,6 +464,7 @@ class LiveSession:
                 scan=scan,
             )
             self._note_aim(feat, seen)
+            self._note_approach(dt)
             if self.now() - self._last_metric >= 1.0:
                 self.mb.note_drift(self.now())
                 self._record_metric()
@@ -485,7 +500,6 @@ class LiveSession:
             self.other_curve.append(point)
         if self.now() - self._last_ckpt >= 30.0:
             self.save()
-            self._log(f"сохранено  {self.state_path.name}")
             self._last_ckpt = self.now()
 
     def _effective_refresh(self) -> float:
@@ -529,7 +543,27 @@ class LiveSession:
             self.mb.save(self.state_path)
         elif self.recognizer is not None:
             self.recognizer.save(self.state_path)
-        self._log(f"сохранено  {self.state_path.name}")
+        from .tabnum import note_repeated_save
+
+        note_repeated_save(self.log, "%6.1fs" % self.now(), self.state_path.name)
+
+    def _note_approach(self, dt: float) -> None:
+        """Time near a conspecific box and near a cube box. Display only."""
+        watch = getattr(self, "approach", None)
+        if watch is None:
+            return
+        dog = False
+        cube = False
+        for box in getattr(self, "teacher_boxes", None) or ():
+            kind = str(getattr(box, "kind", "") or "")
+            if kind in ("cube", "control", "куб"):
+                cube = True
+            else:
+                dog = True
+        drive = None
+        if self.mb is not None:
+            drive = 0.5 * (float(self.mb.r_l) + float(self.mb.r_r))
+        watch.note(float(dt), dog, cube, drive)
 
     def load(self) -> None:
         if not Path(self.state_path).is_file():
@@ -1161,6 +1195,9 @@ def run_live_gui(
                     session._log(hidden)
             if inp.reset and not session.onboard:
                 session.reset()
+            if getattr(inp, "approach_reset", False):
+                session.approach.reset()
+                session._log("новый заход")
             if inp.lidar_reset and not session.onboard:
                 if session.lidar_fresh_on:
                     session.fresh.manual_clear()
@@ -1208,8 +1245,10 @@ def run_live_gui(
                 session.lidar_hold = hold
             frames_ok = camera is not None and lidar is not None and not error
             if error and not announced:
-                print(error, file=sys.stderr)
+                session._log(error)
                 announced = True
+            if error:
+                error = camera_offline_caption(pull.base)
             if not error:
                 announced = False
             _apply_live_keys(session, inp, onboard)
@@ -1258,6 +1297,11 @@ def run_live_gui(
             elif teach_now and waiting:
                 session.pending_teach = teach
             _drive_teacher(session, camera_jpeg, frame_id, teacher_state, operator_busy, onboard)
+            if session.onboard:
+                now_a = session.now()
+                prev_a = float(getattr(session, "_approach_t", now_a))
+                session._approach_t = now_a
+                session._note_approach(now_a - prev_a)
             snap = None
             if inp.doggibot:
                 from .doggibot_snap import reserve_folder
@@ -1407,6 +1451,7 @@ def _live_view(
     command_name: str = "—",
     onboard: OnboardLink | None = None,
 ):
+    from .brain_panel import panel_readout
     from .train_monitor import MonitorView
 
     if onboard is not None:
@@ -1475,7 +1520,6 @@ def _live_view(
             kc_on=session.mb.last_kc_on,
             kc_n=session.mb.brain.n_kc,
             kc_bins=session.mb.last_kc_bins,
-            drift=session.mb.last_drift,
             drift_curve=session.mb.drift_curve[-120:],
             dan_events=session.mb.dan_events[-240:],
             treat_flash=session.treat_flash,
@@ -1516,6 +1560,7 @@ def _live_view(
             session_novelty=session.mb.n_novelty,
             total_novelty=prog.base_novelty + session.mb.n_novelty,
             marks=session.marks.visible(session.now()),
+            **panel_readout(session.mb, session.approach),
             **common,
         )
     if session.onboard:
@@ -1561,6 +1606,14 @@ def _live_view(
         else:
             view_kw["teacher_counts"] = ""
             view_kw["brain_offline"] = True
+        watch = getattr(session, "approach", None)
+        if watch is not None:
+            if watch.dog is not None and "stim_dog" not in view_kw:
+                view_kw["stim_dog"] = float(watch.dog)
+            if watch.cube is not None and "stim_cube" not in view_kw:
+                view_kw["stim_cube"] = float(watch.cube)
+            view_kw["pref_index"] = watch.index()
+            view_kw["pref_seconds"] = float(watch.total)
         return MonitorView(**view_kw)
     rec = session.recognizer
     assert rec is not None

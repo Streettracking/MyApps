@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .approach_watch import ApproachWatch
 from .frame_sense import sim_previews
 from .hemifield import DEFAULT_OVERLAP, format_fly_line
 from .pilot import format_eyes_line, phase_label
@@ -111,6 +112,7 @@ class RecognizeTrainSim:
         self.aim_dist: float | None = None
         self.forward_m: float | None = None
         self.recognized_now = False
+        self.approach = ApproachWatch()
         self._hint_logged = ""
         self._learn_block_log = -10.0
         self.mb: MbTrainer | None = None
@@ -272,6 +274,13 @@ class RecognizeTrainSim:
                 mode="sim",
             )
             self._note_aim(feat, seen)
+            drive = 0.5 * (float(self.mb.r_l) + float(self.mb.r_r))
+            self.approach.note(
+                float(self.world.cfg.dt),
+                bool(hit.dog),
+                bool(getattr(hit, "control", False)),
+                drive,
+            )
         else:
             rec = self.recognizer
             assert rec is not None
@@ -303,7 +312,6 @@ class RecognizeTrainSim:
                 self.mb.note_drift(float(self.world.t))
         if self.state_path and self.step_i % 300 == 0:
             self.save()
-            self._log(f"сохранено  {self.state_path.name}")
 
     def _effective_refresh(self) -> float:
         return self.lidar_interval if self.lidar_fresh_on else 0.0
@@ -342,7 +350,9 @@ class RecognizeTrainSim:
             self.mb.save(self.state_path)
         elif self.recognizer is not None:
             self.recognizer.save(self.state_path)
-        self._log(f"сохранено  {self.state_path.name}")
+        from .tabnum import note_repeated_save
+
+        note_repeated_save(self.log, "%6.1fs" % float(self.world.t), self.state_path.name)
         return self.state_path
 
     def load(self) -> None:
@@ -381,6 +391,7 @@ class RecognizeTrainSim:
             self._log("прототип сброшен")
 
     def view(self, focused: bool, udp_status: str, last_command: str, keys_hint: str):
+        from .brain_panel import panel_readout
         from .train_monitor import MonitorView
 
         now_t = float(self.world.t)
@@ -420,7 +431,6 @@ class RecognizeTrainSim:
                 kc_on=self.mb.last_kc_on,
                 kc_n=self.mb.brain.n_kc,
                 kc_bins=self.mb.last_kc_bins,
-                drift=self.mb.last_drift,
                 drift_curve=self.mb.drift_curve[-120:],
                 dan_events=self.mb.dan_events[-240:],
                 treat_flash=self.treat_flash,
@@ -494,6 +504,7 @@ class RecognizeTrainSim:
                 teacher_boxes=list(getattr(self, "teacher_boxes", ()) or ()),
                 teacher_weight=float(getattr(self, "teacher_weight", 0.0) or 0.0),
                 lead_plaque=_lead_plaque(self),
+                **panel_readout(self.mb, self.approach),
             )
         assert self.recognizer is not None
         return MonitorView(
@@ -820,6 +831,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
                 session._log(hidden)
         note_operator(marks, float(session.world.t), inp)
         _apply_pilot_keys(session, inp, float(session.world.t))
+        if getattr(inp, "approach_reset", False):
+            session.approach.reset()
+            session._log("новый заход")
         if inp.reset:
             session.reset()
         if inp.lidar_reset:
