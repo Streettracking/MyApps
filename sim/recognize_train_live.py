@@ -1126,6 +1126,9 @@ def run_live_gui(
     from .yolo_errors import YoloErrorLog
 
     yolo_err = YoloErrorLog(ROOT / "logs" / "yolo_frames" / "yolo_errors")
+    # Learning always starts off, whatever the saved state says. P turns it on.
+    session.learn = False
+    session._log("обучение выключено при старте, P включает")
     tele = {
         "moving": False,
         "last": 0.0,
@@ -1220,6 +1223,12 @@ def run_live_gui(
                 announced = False
             _apply_live_keys(session, inp, onboard)
             if onboard is not None:
+                if not tele.get("learn_off_sent") and onboard.ok and onboard.status:
+                    # First answer from the dog: start with its learning off too.
+                    onboard.post("learn_off")
+                    _mirror_remote(session, onboard.status)
+                    tele["learn_off_sent"] = True
+                    session._log("борт: обучение выключено при подключении (learn_off)")
                 _drive_onboard(session, onboard, inp, tele, now)
                 command_name = str(session.remote.get("phase_ru") or _phase_name(str(session.remote.get("phase") or "—"), session.pilot.steer, session.pilot.search_sign))
             elif link is not None:

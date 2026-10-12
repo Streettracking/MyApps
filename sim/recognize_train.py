@@ -791,6 +791,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
 
     teacher_state = {"frame": None, "log": "", "log_t": -10.0}
     sim_frame = 0
+    # Learning always starts off in the window, whatever the saved state says.
+    session.learn = False
+    session._log("обучение выключено при старте, P включает")
     while True:
         inp = mon.pump()
         if inp.quit:
