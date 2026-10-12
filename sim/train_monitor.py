@@ -1897,10 +1897,19 @@ class TrainMonitor:
             self._on_resize(pending_size[0], pending_size[1])
         inp.focused = bool(pygame.key.get_focused())
         if inp.focused:
-            # Arrows do not drive. They used to move the dog: up and down
-            # were forward and back, left and right were yaw, left positive.
-            # Onboard sent that as a manual Move after takeover.
+            # Arrows drive in the main window only (the 3D window has none):
+            # up and down are forward and back, left and right are yaw, left
+            # positive. Onboard sends that as op=manual after takeover; a
+            # released arrow reads 0 on the next frame and sends the stop.
             keys = pygame.key.get_pressed()
+            if keys[pygame.K_UP]:
+                inp.steer_x += 1.0
+            if keys[pygame.K_DOWN]:
+                inp.steer_x -= 1.0
+            if keys[pygame.K_LEFT]:
+                inp.steer_z += 1.0
+            if keys[pygame.K_RIGHT]:
+                inp.steer_z -= 1.0
             inp.treat_down = bool(keys[pygame.K_t])
             inp.punish_down = bool(keys[pygame.K_x])
         self._sync_cursor()

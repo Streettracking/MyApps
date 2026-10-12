@@ -937,6 +937,9 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
             state["manual"] = now
             state["axes"] = False
     elif state["axes"]:
+        # Focus lost or takeover ended while an arrow was held: stop the dog.
+        onboard.post("manual", x=0.0, z=0.0)
+        state["manual"] = now
         state["axes"] = False
     if autonomy and inp.focused and abs(float(inp.steer_x)) + abs(float(inp.steer_z)) > 0:
         session.pilot.hint = "нажми ПЕРЕХВАТ"
