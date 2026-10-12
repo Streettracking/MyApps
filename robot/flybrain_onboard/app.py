@@ -226,6 +226,13 @@ class BrainLoop:
                 self.learn = False
                 self.mb.learn = False
                 self._log("обучение выключено, T/X веса не меняют")
+            elif op == "reinforcement_off":
+                off = bool(data.get("off", True))
+                self.mb.set_reinforcement_off(off)
+                if off:
+                    self._log("подкрепление выключено, пластичность заморожена")
+                else:
+                    self._log("подкрепление включено")
             elif op == "treat":
                 self._teach = "pam"
                 self._teach_l = None
@@ -547,6 +554,8 @@ class BrainLoop:
                 "who": self.pilot.who,
                 "took_over": bool(self.pilot.took_over),
                 "learning": bool(self.learn),
+                "reinforcement_off": bool(self.mb.reinforcement_off),
+                "object_drives": _object_drives(self.mb.object_drives),
                 "autonomy": bool(self.pilot.autonomy),
                 "recognized": bool(self.recognized),
                 "confidence": self.confidence,
@@ -620,6 +629,19 @@ def _yolo_vec(value):
         return np.asarray([float(item) for item in value], dtype=np.float32)
     except (TypeError, ValueError):
         return None
+
+
+def _object_drives(rows) -> list:
+    """Per-object approach minus avoidance. Plain floats for JSON."""
+    out = []
+    for row in list(rows or []):
+        if not isinstance(row, dict) or "name" not in row:
+            continue
+        item = {"name": str(row.get("name", "")), "drive": float(row.get("drive", 0.0))}
+        if row.get("when"):
+            item["when"] = str(row["when"])
+        out.append(item)
+    return out
 
 
 def _hemisphere_drive(brain, fwd) -> float:

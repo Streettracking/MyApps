@@ -323,6 +323,12 @@ def run_pygame(
             label = font.render(f"{z.name} r={z.reward:+.0f}", True, (240, 240, 240))
             screen.blit(label, to_px(cx - 0.3, cy))
 
+        for cube in getattr(sim.world, "controls", []):
+            ox, oy = to_px(cube.x, cube.y)
+            rgb = tuple(int(c * 255) for c in cube.color)
+            side = 18
+            pygame.draw.rect(screen, rgb, pygame.Rect(ox - side // 2, oy - side // 2, side, side))
+
         for obj in sim.world.distractors:
             ox, oy = to_px(obj.x, obj.y)
             still = abs(obj.vx) + abs(obj.vy) < 1e-6
