@@ -934,7 +934,7 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         sim_frame += 1
         view = session.view(
             focused=inp.focused,
-            udp_status="симулятор. В автономии ведёт мозг, иначе сценарий.",
+            udp_status="симулятор. В автономии ведёт мозг, иначе стрелки или сценарий.",
             last_command=command_name,
             keys_hint=SIM_KEYS if session.learner_kind == "mb" else HEBB_KEYS,
         )

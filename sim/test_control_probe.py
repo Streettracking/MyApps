@@ -1563,6 +1563,62 @@ class ArrowTakeoverTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_main_window_arrows_steer_and_send_manual(self):
+        """Held arrows in the trainer window are non-zero and leave as op=manual."""
+        from collections import defaultdict
+
+        import pygame
+
+        from sim.recognize_train_live import _apply_live_keys, _drive_onboard
+        from sim.train_monitor import TrainMonitor
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("arrow-manual")
+            pressed = pygame.key.get_pressed
+            focused = pygame.key.get_focused
+            pygame.key.get_focused = lambda: True
+            pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_UP: True, pygame.K_LEFT: True})
+            try:
+                held = mon.pump()
+            finally:
+                pygame.key.get_pressed = pressed
+                pygame.key.get_focused = focused
+        finally:
+            pygame.quit()
+        self.assertTrue(held.focused)
+        self.assertTrue(held.arrow_down)
+        self.assertGreater(abs(held.steer_x) + abs(held.steer_z), 0.0)
+        self.assertEqual((held.steer_x, held.steer_z), (1.0, 1.0))
+
+        loop, server, link, session, folder, _moving = self._ready()
+        try:
+            calls = []
+            original = link._request
+
+            def _spy(method, path, payload=None, timeout=0.8):
+                calls.append((method, path, None if payload is None else dict(payload)))
+                return original(method, path, payload, timeout)
+
+            link._request = _spy
+            now = 130.0
+            tele = {"poll": now, "bridge": now, "manual": 0.0, "axes": False, "hb": now}
+            _apply_live_keys(session, held, link)
+            _drive_onboard(session, link, held, tele, now)
+            manuals = [row for row in calls if row[1] == "/cmd" and (row[2] or {}).get("op") == "manual"]
+            self.assertEqual(len(manuals), 1)
+            self.assertEqual(manuals[0][2]["x"], 0.4)
+            self.assertEqual(manuals[0][2]["z"], 1.0)
+            driven = loop.tick(loop.last_hb)
+            self.assertFalse(driven.stop)
+            self.assertEqual(driven.phase, "manual")
+            self.assertEqual(driven.who, "оператор")
+            self.assertEqual((driven.x, driven.z), (0.4, 1.0))
+        finally:
+            folder.cleanup()
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

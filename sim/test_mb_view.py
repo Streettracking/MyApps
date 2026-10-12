@@ -1065,7 +1065,7 @@ class WindowPinTests(unittest.TestCase):
         self.assertNotIn("from_display_module", viewer)
         fly = Path(view.__file__).resolve().parent.joinpath("mb_flywire.py").read_text(encoding="utf-8")
         self.assertIn("VIEW_HINT", fly)
-        self.assertEqual(view.VIEW_HINT, "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс")
+        self.assertEqual(view.VIEW_HINT, "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс · перехват — в главном окне")
         self.assertNotIn("поверх окон", view.VIEW_HINT)
         self.assertNotIn("стрелки", view.VIEW_HINT)
         self.assertNotIn("WASD", view.VIEW_HINT)
@@ -1287,7 +1287,7 @@ class CalloutTests(unittest.TestCase):
         )
         from sim.window_pin import pin_button_rect
 
-        self.assertEqual(VIEW_HINT, "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс")
+        self.assertEqual(VIEW_HINT, "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс · перехват — в главном окне")
         self.assertEqual(facing_label(YAW0, PITCH0, DIST0), "вид сзади")
         self.assertEqual(facing_label(YAW0 + math.pi, PITCH0, DIST0), "вид спереди")
 

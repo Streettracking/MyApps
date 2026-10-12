@@ -80,7 +80,7 @@ DIST0 = 3.05
 # Nearly straight up or down, short of the flip at ±90°.
 PITCH_LIM = 89.0 * math.pi / 180.0
 PAN_KEY = 0.07
-VIEW_HINT = "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс"
+VIEW_HINT = "ЛКМ вращать · ПКМ сдвиг · колёсико зум · Home сброс · перехват — в главном окне"
 OPTIC_L = "зрит. доля Л"
 OPTIC_R = "зрит. доля П"
 LABEL_MB = "грибовидное тело"

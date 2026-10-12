@@ -1462,7 +1462,7 @@ class FooterClearanceTests(unittest.TestCase):
             learner="mb",
             learning_on=True,
             yolo_state="смотрит",
-            udp_status="симулятор. В автономии ведёт мозг, иначе сценарий.",
+            udp_status="симулятор. В автономии ведёт мозг, иначе стрелки или сценарий.",
             last_command="сценарий",
             keys_hint=SIM_KEYS,
             focused=True,
@@ -1590,7 +1590,7 @@ class FooterClearanceTests(unittest.TestCase):
         view = MonitorView(
             title="тренировка узнавания   go2_1",
             learner="mb",
-            udp_status="симулятор. В автономии ведёт мозг, иначе сценарий.",
+            udp_status="симулятор. В автономии ведёт мозг, иначе стрелки или сценарий.",
             last_command="сценарий",
             keys_hint=SIM_KEYS,
             focused=True,

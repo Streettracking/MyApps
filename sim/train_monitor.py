@@ -2073,17 +2073,25 @@ class TrainMonitor:
         # last axis after the operator alt-tabs away.
         if inp.focused:
             keys = pygame.key.get_pressed()
-            up = bool(keys[pygame.K_UP])
-            down = bool(keys[pygame.K_DOWN])
-            left = bool(keys[pygame.K_LEFT])
-            right = bool(keys[pygame.K_RIGHT])
-            inp.arrow_down = up or down or left or right
+            if keys[pygame.K_UP]:
+                inp.steer_x += 1.0
+            if keys[pygame.K_DOWN]:
+                inp.steer_x -= 1.0
+            if keys[pygame.K_LEFT]:
+                inp.steer_z += 1.0
+            if keys[pygame.K_RIGHT]:
+                inp.steer_z -= 1.0
+            inp.arrow_down = bool(
+                keys[pygame.K_UP] or keys[pygame.K_DOWN] or keys[pygame.K_LEFT] or keys[pygame.K_RIGHT]
+            )
             # Up and down are forward and back. Left is positive yaw.
             # WASD stays on its own keys: A is autonomy, S saves, D labels.
-            axis_x, axis_y, hat = _joystick_sample()
             inp.treat_down = bool(keys[pygame.K_t])
             inp.punish_down = bool(keys[pygame.K_x])
-            inp.steer_x, inp.steer_z = drive_axes(axis_x, axis_y, hat, up=up, down=down, left=left, right=right)
+            axis_x, axis_y, hat = _joystick_sample()
+            sx, sz = drive_axes(axis_x, axis_y, hat)
+            inp.steer_x = max(-1.0, min(1.0, inp.steer_x + sx))
+            inp.steer_z = max(-1.0, min(1.0, inp.steer_z + sz))
         elif arrow_event:
             inp.arrow_down = False
             inp.steer_x = 0.0
