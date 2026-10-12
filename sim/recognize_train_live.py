@@ -776,6 +776,7 @@ LOST_TURN_YAW = 1.0
 
 def _lost_turn(session, box, why: str, now: float) -> float:
     """Yaw for a lost box: LOST_TURN_YAW toward the last side, 0 after LOST_TURN_S."""
+    from .pilot import SEARCH_MEMORY_S, search_yaw
     from .teacher_lead import sign_for_center
 
     if box is not None:
@@ -794,9 +795,12 @@ def _lost_turn(session, box, why: str, now: float) -> float:
         lost_t = float(now)
         session._lead_lost_t = lost_t
     age = float(now) - float(lost_t)
-    if age < 0.0 or age > LOST_TURN_S:
+    if age < 0.0 or age > SEARCH_MEMORY_S:
         return 0.0
-    return LOST_TURN_YAW if float(sign) >= 0.0 else -LOST_TURN_YAW
+    if age <= LOST_TURN_S:
+        return LOST_TURN_YAW if float(sign) >= 0.0 else -LOST_TURN_YAW
+    # Then the slower pre-walk search (SEARCH_TURN pulses), same side, up to SEARCH_MEMORY_S.
+    return float(search_yaw(age - LOST_TURN_S, sign))
 
 
 def _apply_approach(session, lead, forward_m, now: float | None = None) -> None:
