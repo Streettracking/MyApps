@@ -600,5 +600,95 @@ class OnboardThemeTests(unittest.TestCase):
                 if mod is not None:
                     sys.modules[name] = mod
 
+class SideOfFrameTests(unittest.TestCase):
+    def test_left_columns_feed_the_right_eye_and_right_columns_the_left(self):
+        """Image left is the dog's right. The JPEG is not mirrored.
+
+        A compact object in the left columns reaches MB_R / П and a negative
+        yaw. The right columns reach MB_L / Л and a positive yaw. The 3D
+        labels sit on those same sides, and the default camera does not
+        mirror x: it looks forward from behind the brain.
+        """
+        from sim.frame_sense import features_from_frames
+        from sim.hemifield import bilateral_yaw
+        from sim.mb_flywire import _MESH_FRAG
+        from sim.mb_view3d import DIST0, PITCH0, YAW0, BrainCloud, _project, eye_layout
+        from sim.pilot import SEARCH_TURN, Pilot
+        from sim.raw_sense import N_AZ, OFF_BODY
+        from sim.yolo_teacher import DetBox, hemisphere_hits, zone_of
+
+        def frame(side: str) -> np.ndarray:
+            image = np.zeros((80, 160, 3), dtype=np.uint8)
+            if side == "left":
+                image[8:28, 4:28] = 255
+            else:
+                image[8:28, 132:156] = 255
+            return image
+
+        def body(feat: np.ndarray) -> np.ndarray:
+            energy = np.zeros(N_AZ, dtype=np.float64)
+            for index in range(N_AZ):
+                energy[index] = float(np.sum(feat[OFF_BODY + index * 3 : OFF_BODY + index * 3 + 3]))
+            return energy
+
+        left_feat, _ego, _near = features_from_frames(frame("left"), None)
+        right_feat, _ego, _near = features_from_frames(frame("right"), None)
+        left_body = body(left_feat)
+        right_body = body(right_feat)
+        self.assertGreater(left_body[0], left_body[7])
+        self.assertGreater(right_body[7], right_body[0])
+        self.assertGreater(_energy(hemifield(left_feat, "R", DEFAULT_OVERLAP)), 0.0)
+        self.assertEqual(_energy(hemifield(left_feat, "L", DEFAULT_OVERLAP)), 0.0)
+        self.assertGreater(_energy(hemifield(right_feat, "L", DEFAULT_OVERLAP)), 0.0)
+        self.assertEqual(_energy(hemifield(right_feat, "R", DEFAULT_OVERLAP)), 0.0)
+
+        left_box = DetBox(0.02, 0.1, 0.22, 0.4, 0.9)
+        right_box = DetBox(0.78, 0.1, 0.98, 0.4, 0.9)
+        self.assertEqual(hemisphere_hits([left_box], DEFAULT_OVERLAP, center_only=True), (False, True))
+        self.assertEqual(hemisphere_hits([right_box], DEFAULT_OVERLAP, center_only=True), (True, False))
+        self.assertEqual(zone_of(left_box, DEFAULT_OVERLAP), "П")
+        self.assertEqual(zone_of(right_box, DEFAULT_OVERLAP), "Л")
+
+        self.assertGreater(bilateral_yaw(1.0, 0.0), 0.0)
+        self.assertLess(bilateral_yaw(0.0, 1.0), 0.0)
+        left_turn = Pilot()
+        left_turn.start_auto(0.0)
+        left_cmd = _auto(left_turn, 0.0, left=True, right=False)
+        self.assertEqual(left_cmd.phase, "align_l")
+        self.assertAlmostEqual(left_cmd.z, SEARCH_TURN)
+        right_turn = Pilot()
+        right_turn.start_auto(0.0)
+        right_cmd = _auto(right_turn, 0.0, left=False, right=True)
+        self.assertEqual(right_cmd.phase, "align_r")
+        self.assertAlmostEqual(right_cmd.z, -SEARCH_TURN)
+
+        cloud = BrainCloud()
+        eyes, _arrow = eye_layout(cloud)
+        placed = {item["label"]: np.asarray(item["pos"], dtype=np.float64) for item in eyes}
+        self.assertLess(float(placed["глаз Л"][0]), 0.0)
+        self.assertGreater(float(placed["глаз П"][0]), 0.0)
+        screen_x, _screen_y, depth = _project(
+            np.vstack((placed["глаз Л"], placed["глаз П"])),
+            YAW0,
+            PITCH0,
+            DIST0,
+            480.0,
+            360.0,
+            500.0,
+        )
+        self.assertLess(float(screen_x[0]), float(screen_x[1]))
+        behind = np.array([[0.0, 0.0, -1.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+        _bx, _by, depths = _project(behind, YAW0, PITCH0, DIST0, 480.0, 360.0, 500.0)
+        self.assertLess(float(depths[0]), float(depths[1]))
+        self.assertLess(float(depth[0]), 1e9)
+
+        body = _MESH_FRAG.split("void main()", 1)[1]
+        right, left = body.split("else if", 1)
+        self.assertIn("rec_r", right)
+        self.assertNotIn("rec_l", right)
+        self.assertIn("rec_l", left)
+        self.assertNotIn("rec_r", left)
+
+
 if __name__ == "__main__":
     unittest.main()
