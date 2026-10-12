@@ -24,6 +24,9 @@ def signed(value, width: int = NUM_W, decimals: int = 0) -> str:
     """Right-aligned field. ``None`` is a dash. Overflow keeps the sign."""
     if value is None:
         return "-".rjust(width)
+    if int(decimals) == 0 and float(value) == 0:
+        # An empty counter reads 0, not +0.
+        return "0".rjust(width)
     text = "{:+.{d}f}".format(float(value), d=int(decimals))
     if len(text) <= width:
         return text.rjust(width)

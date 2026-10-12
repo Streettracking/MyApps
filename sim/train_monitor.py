@@ -926,6 +926,8 @@ class TrainMonitor:
             row_h = min(44, inner.h)
             estop_h = min(inner.h, max(row_h + 16, CONTROLS_BUTTON_H))
             items = [
+                ("neg_btn", self._keyed_button_width(("НЕГАТИВ · 00000",), "N", True)),
+                ("kin_btn", self._keyed_button_width(("СОРОДИЧ · 00000",), "D", True)),
                 ("learn", self._keyed_button_width(("СТОП ОБУЧЕНИЯ", "СТАРТ ОБУЧЕНИЯ"), "P", True)),
                 ("auto", self._keyed_button_width(("СТОП АВТО", "СТАРТ АВТО"), "A", True)),
                 ("take", self._keyed_button_width(("ПЕРЕХВАТ",), "M", True)),
@@ -945,11 +947,13 @@ class TrainMonitor:
                 estop_w = spare
             else:
                 estop_w = estop_floor
-            estop_rect = pygame.Rect(inner.right - estop_w, inner.y, estop_w, estop_h)
-            placed_row = row(items, inner.x, inner.y, row_h, estop_rect.x - gap_b)
+            # E-STOP is pinned to the right edge for the full card height.
+            # The other buttons wrap onto more lines before it, never under it.
+            estop_rect = pygame.Rect(inner.right - estop_w, inner.y, estop_w, max(estop_h, inner.h))
+            placed_row = self._wrap_rows(items, inner.x, inner.y, estop_rect.x - gap_b, inner.bottom, row_h, gap_b)
             placed_row["estop"] = estop_rect
         else:
-            placed_row = {name: self._zero() for name in ("learn", "auto", "take", "steer", "treat", "punish", "yolo_err", "estop")}
+            placed_row = {name: self._zero() for name in ("neg_btn", "kin_btn", "learn", "auto", "take", "steer", "treat", "punish", "yolo_err", "estop")}
         self.learn_rect = placed_row["learn"]
         self.auto_rect = placed_row["auto"]
         self.take_rect = placed_row["take"]
@@ -957,6 +961,8 @@ class TrainMonitor:
         self.treat_rect = placed_row["treat"]
         self.yolo_err_rect = placed_row.get("yolo_err") or self._zero()
         self.punish_rect = placed_row.get("punish") or self._zero()
+        self.neg_btn_rect = placed_row.get("neg_btn") or self._zero()
+        self.kin_btn_rect = placed_row.get("kin_btn") or self._zero()
         self.estop_rect = placed_row["estop"]
 
         robot = block("robot")
@@ -995,6 +1001,39 @@ class TrainMonitor:
             "lid": (self.lid_rect.x, self.lid_rect.y, self.lid_rect.w, self.lid_rect.h),
             "panel": (self.panel_rect.x, self.panel_rect.y, self.panel_rect.w, self.panel_rect.h),
         }
+
+    def _wrap_rows(self, items, x0: int, y0: int, limit: int, bottom: int, row_h: int, gap: int) -> dict:
+        """Lay buttons left to right and start a new line when the next one does not fit.
+
+        Lines share the card height. A line that cannot get 20 px is left out.
+        """
+        import pygame
+
+        lines = [[]]
+        used = 0
+        span = max(1, int(limit) - int(x0))
+        for name, ww in items:
+            w = max(1, int(ww))
+            need = w if not lines[-1] else used + gap + w
+            if lines[-1] and need > span:
+                lines.append([])
+                used = 0
+                need = w
+            lines[-1].append((name, min(w, span)))
+            used = need
+        n = len(lines)
+        avail = max(1, int(bottom) - int(y0))
+        h = min(int(row_h), (avail - 6 * (n - 1)) // n) if n > 1 else min(int(row_h), avail)
+        out = {}
+        y = int(y0)
+        for line in lines:
+            fits = h >= 20 and y + h <= int(bottom)
+            cx = int(x0)
+            for name, w in line:
+                out[name] = pygame.Rect(cx, y, w, h) if fits else pygame.Rect(0, 0, 0, 0)
+                cx += w + gap
+            y += h + 6
+        return out
 
     def _try_maximize(self) -> None:
         win = borrowed_window()
@@ -1726,6 +1765,10 @@ class TrainMonitor:
             inp.steer_toggle = True
         elif self.record_rect.collidepoint(pos):
             inp.record_toggle = True
+        elif getattr(self, "neg_btn_rect", None) is not None and self.neg_btn_rect.collidepoint(pos):
+            inp.label = "none"
+        elif getattr(self, "kin_btn_rect", None) is not None and self.kin_btn_rect.collidepoint(pos):
+            inp.label = "dog"
         elif getattr(self, "neg_rect", None) is not None and self.neg_rect.collidepoint(pos):
             inp.label = "none"
         elif getattr(self, "kin_rect", None) is not None and self.kin_rect.collidepoint(pos):
@@ -2306,11 +2349,11 @@ class TrainMonitor:
             ]
         return [
             ("go2", self._go2_button_width(True)),
-            ("brain", self._caption_slot("МОЗГ", lamp=True, key=True)),
-            ("teacher", self._caption_slot("УЧ", lamp=True, key=True)),
-            ("record", self._caption_slot("ЗАП", lamp=True, key=True)),
-            ("neg", self._caption_slot("НЕГ 0000", lamp=True, key=True)),
-            ("kin", self._caption_slot("СОР 0000", lamp=True, key=True)),
+            ("brain", self._caption_slot("МОЗГ", lamp=True, key=False)),
+            ("teacher", self._caption_slot("УЧ", lamp=True, key=False)),
+            ("record", self._caption_slot("ЗАПИСЬ · 00000", lamp=True, key=False)),
+            ("neg", self._caption_slot("НЕГ · 0000", lamp=False, key=False)),
+            ("kin", self._caption_slot("СОР · 0000", lamp=False, key=False)),
         ]
 
     def _caption_slot(self, text: str, lamp: bool, key: bool) -> int:
@@ -2995,6 +3038,8 @@ class TrainMonitor:
             self._journal_cache = (key, _snap(screen, content))
 
     def _draw_controls_block(self, screen, view: MonitorView) -> None:
+        self._latch_button(screen, view, "neg_btn", "no_dog", "НЕГАТИВ", "НЕГАТИВ", "N", header=False)
+        self._latch_button(screen, view, "kin_btn", "dog", "СОРОДИЧ", "СОРОДИЧ", "D", header=False)
         self._mode_buttons(screen, view)
         if view.learner == "mb":
             self._treat_button(screen, view, self._mouse())
@@ -3493,7 +3538,7 @@ class TrainMonitor:
             "МОЗГ" if getattr(self, "_header_short", False) else "МОЗГ 3D",
             PEACH if self.brain_open else LAMP_OFF,
             self.brain_rect.collidepoint(self._mouse()),
-            key="J",
+            key="" if getattr(self, "_header_short", False) else "J",
         )
 
     def _teacher_button(self, screen, view: MonitorView) -> None:
@@ -3514,7 +3559,7 @@ class TrainMonitor:
         self._button(screen, rect, "", lamp, hot)
         if rect.w < 8 or rect.h < 8:
             return
-        badge = self._draw_key_badge(screen, rect, "Y")
+        badge = None if getattr(self, "_header_short", False) else self._draw_key_badge(screen, rect, "Y")
         word = "УЧ" if getattr(self, "_header_short", False) else "УЧИТЕЛЬ"
         title = self.font_sm.render(word, True, VALUE)
         self._blit_clipped(screen, title, (rect.x + 32, rect.centery - title.get_height() // 2), rect)
@@ -3575,7 +3620,10 @@ class TrainMonitor:
             rect = self.record_rect
             self._button(screen, rect, "", RED, hot)
             if getattr(self, "_header_short", False):
-                self._mixed(screen, str(int(view.record_saved)).rjust(5), rect.x + 32, rect.centery - 8, "{5}", RED, RED)
+                # Narrow header: no key badge, but «● ЗАПИСЬ · N» always stays.
+                glyph = self.font_sm.render("ЗАПИСЬ · %d" % int(view.record_saved), True, RED)
+                self._blit_clipped(screen, glyph, (rect.x + 32, rect.centery - glyph.get_height() // 2), rect)
+                return
             elif waiting and not view.record_latch:
                 glyph = self.font_sm.render("запись ждёт метку: держи D или N", True, AMBER)
                 self._blit_clipped(screen, glyph, (rect.x + 32, rect.centery - glyph.get_height() // 2), rect)
@@ -3603,15 +3651,19 @@ class TrainMonitor:
                     self._blit_clipped(screen, tiny, (x, rect.centery - tiny.get_height() // 2), pygame.Rect(rect.x, rect.y, max(1, rect.w - 34), rect.h))
             self._draw_key_badge(screen, self.record_rect, "U")
         else:
-            word = "ЗАП" if getattr(self, "_header_short", False) else "ЗАПИСЬ КАДРОВ"
-            self._button(screen, self.record_rect, word, LAMP_OFF, hot, key="U")
+            if getattr(self, "_header_short", False):
+                self._button(screen, self.record_rect, "ЗАПИСЬ · 0", None, hot)
+            else:
+                self._button(screen, self.record_rect, "ЗАПИСЬ КАДРОВ", LAMP_OFF, hot, key="U")
 
-    def _latch_button(self, screen, view: MonitorView, name: str, label: str, word: str, short: str, key: str) -> None:
+    def _latch_button(self, screen, view: MonitorView, name: str, label: str, word: str, short: str, key: str, header: bool = True) -> None:
         """N НЕГАТИВ / D СОРОДИЧ: one press records with that label locked, again stops."""
         rect = getattr(self, name + "_rect", None)
         if rect is None or rect.w < 8:
             return
-        caption = short if getattr(self, "_header_short", False) else word
+        narrow = header and getattr(self, "_header_short", False)
+        caption = short if narrow else word
+        key = "" if narrow else key
         if view.record_on and view.record_latch == label:
             text = "%s · %d" % (caption, int(view.record_saved))
             self._button(screen, rect, text, None, False, label_color=ESTOP_LABEL, fill=RED, key=key)

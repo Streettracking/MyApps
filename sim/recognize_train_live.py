@@ -44,10 +44,7 @@ DEFAULT_PREVIEW = 8088
 DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
-LIVE_KEYS = (
-    "A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  "
-    "U запись  O ошибка YOLO  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
-)
+LIVE_KEYS = "N НЕГАТИВ   D СОРОДИЧ   ←↑→↓ перехват   Space/E стоп   остальное — «i»"
 
 
 def preview_base(ip: str, port: int) -> str:
