@@ -986,24 +986,90 @@ class TeacherLeadTests(unittest.TestCase):
         self.assertAlmostEqual(held[1], 0.3)
         self.assertFalse(held[2])
 
-    def test_match_rewards_and_a_miss_does_not(self):
-        from sim.teacher_lead import TeacherLead, commands_match, match_reinforce
+    def test_outcome_rewards_and_a_match_does_not(self):
+        from sim.pilot import STOP_M
+        from sim.teacher_lead import TeacherLead, commands_match, outcome_kinds
 
-        self.assertEqual(match_reinforce(True, True, False), ("pam", None))
-        self.assertEqual(match_reinforce(True, False, True), (None, "pam"))
-        self.assertEqual(match_reinforce(False, True, True), (None, None))
+        self.assertEqual(
+            outcome_kinds(True, False, True, False, False, False),
+            ("pam", None),
+        )
+        self.assertEqual(
+            outcome_kinds(False, True, False, True, False, False),
+            (None, "pam"),
+        )
+        self.assertEqual(
+            outcome_kinds(True, True, True, False, False, True),
+            ("ppl1", "ppl1"),
+        )
+        self.assertEqual(
+            outcome_kinds(False, False, False, False, True, False, True, False),
+            ("ppl1", None),
+        )
         self.assertTrue(commands_match(0.4, 0.0, 0.4, 0.02))
         self.assertFalse(commands_match(0.4, 0.0, 0.0, 0.4))
-        lead = TeacherLead()
-        lead.hit_l = True
-        lead.hit_r = False
-        self.assertEqual(lead.action_kinds(0.0, True, True, True), ("pam", None))
-        self.assertEqual(lead.action_kinds(0.1, True, True, True), (None, None))
-        self.assertEqual(lead.action_kinds(0.0, False, True, True), (None, None))
-        self.assertEqual(lead.action_kinds(1.0, True, False, True), (None, None))
-        lead.note(0.0, True)
-        lead.note(1.0, False)
-        self.assertAlmostEqual(lead.fraction(1.0), 0.5)
+
+        agreed = TeacherLead()
+        agreed.hit_l = True
+        self.assertEqual(agreed.action_kinds(0.0, True, True), (None, None))
+
+        centred = TeacherLead()
+        centred.update_from_boxes(0.0, [_Box(0.45, 0.55)], 3.0, 3.0)
+        centred.set_hits(True, True)
+        self.assertTrue(centred.centered)
+        self.assertFalse(centred.approaching)
+        self.assertEqual(centred.action_kinds(0.0, True, True), ("pam", "pam"))
+        self.assertEqual(centred.action_kinds(0.1, True, True), (None, None))
+        self.assertEqual(centred.action_kinds(0.0, False, True), (None, None))
+        quiet = TeacherLead()
+        quiet.update_from_boxes(0.0, [_Box(0.45, 0.55)], 3.0, 3.0)
+        quiet.set_hits(True, False)
+        self.assertEqual(quiet.action_kinds(1.0, True, False), (None, None))
+
+        closing = TeacherLead()
+        closing.update_from_boxes(0.0, [_Box(0.75, 0.95)], 3.0, 3.0)
+        closing.set_hits(True, False)
+        self.assertEqual(closing.action_kinds(0.0, True, True), (None, None))
+        closing.update_from_boxes(0.6, [_Box(0.75, 0.95)], 2.4, 3.0)
+        closing.set_hits(True, False)
+        self.assertTrue(closing.approaching)
+        self.assertEqual(closing.action_kinds(0.6, True, True), ("pam", None))
+
+        lost = TeacherLead()
+        lost.update_from_boxes(0.0, [_Box(0.05, 0.25)], 3.0, 3.0)
+        lost.set_hits(False, True)
+        lost.update_from_boxes(0.6, [], 3.0, 3.0)
+        lost.set_hits(False, False)
+        self.assertTrue(lost.lost)
+        self.assertEqual(lost.action_kinds(0.6, True, True), (None, "ppl1"))
+
+        close = TeacherLead()
+        close.update_from_boxes(0.0, [_Box(0.45, 0.55)], STOP_M, 3.0)
+        close.set_hits(True, True)
+        self.assertTrue(close.too_close)
+        self.assertEqual(close.action_kinds(0.0, True, True), ("ppl1", "ppl1"))
+
+        blocked = TeacherLead()
+        blocked.update_from_boxes(0.0, [_Box(0.75, 0.95)], 3.0, 0.8)
+        blocked.set_hits(True, False)
+        self.assertTrue(blocked.too_close)
+        self.assertEqual(blocked.action_kinds(0.0, True, True), ("ppl1", None))
+
+        other_kind = TeacherLead()
+        other_kind.hit_l = True
+        other_kind.centered = True
+        self.assertEqual(other_kind.action_kinds(0.0, True, True), ("pam", None))
+        other_kind.centered = False
+        other_kind.too_close = True
+        self.assertEqual(other_kind.action_kinds(0.1, True, True), ("ppl1", None))
+        same = TeacherLead()
+        same.hit_l = True
+        same.centered = True
+        self.assertEqual(same.action_kinds(0.0, True, True, "pam", None), (None, None))
+
+        agreed.note(0.0, True)
+        agreed.note(1.0, False)
+        self.assertAlmostEqual(agreed.fraction(1.0), 0.5)
 
     def test_onboard_mix_estop_and_match_leave_the_npz_alone(self):
         import tempfile
@@ -1037,7 +1103,8 @@ class TeacherLeadTests(unittest.TestCase):
             return loop
 
         agree = loop_at(5.0)
-        before = agree.mb.teacher_pam_l
+        before_pam = agree.mb.teacher_pam_l
+        before_ppl = agree.mb.teacher_ppl1_l
         agree.handle(
             {"op": "teacher_aim", "x": 0.4, "z": 0.0, "weight": 1.0, "hit_l": True, "hit_r": False},
             5.0,
@@ -1045,12 +1112,48 @@ class TeacherLeadTests(unittest.TestCase):
         cmd = agree.tick(5.0)
         self.assertAlmostEqual(cmd.x, 0.4)
         self.assertAlmostEqual(cmd.z, 0.0)
-        self.assertEqual(agree.mb.teacher_pam_l, before + 1)
+        self.assertEqual(agree.mb.teacher_pam_l, before_pam)
+        self.assertEqual(agree.mb.teacher_ppl1_l, before_ppl)
         self.assertEqual(agree.status()["lead"], "учитель")
         self.assertAlmostEqual(agree.status()["teacher_weight"], 1.0)
         self.assertAlmostEqual(agree.status()["fly_x"], 0.4)
         self.assertAlmostEqual(agree.status()["teacher_x"], 0.4)
         self.assertAlmostEqual(agree.status()["lead_match"], 1.0)
+
+        reward = loop_at(6.0)
+        before = reward.mb.teacher_pam_l
+        reward.handle(
+            {
+                "op": "teacher_aim",
+                "x": 0.4,
+                "z": 0.0,
+                "weight": 1.0,
+                "hit_l": True,
+                "hit_r": False,
+                "centered": True,
+            },
+            6.0,
+        )
+        reward.tick(6.0)
+        self.assertEqual(reward.mb.teacher_pam_l, before + 1)
+
+        punish = loop_at(7.0)
+        before_pam = punish.mb.teacher_pam_l
+        before_ppl = punish.mb.teacher_ppl1_l
+        punish.handle(
+            {
+                "op": "teacher_aim",
+                "x": 0.0,
+                "z": 0.35,
+                "weight": 1.0,
+                "lost": True,
+                "last_l": True,
+            },
+            7.0,
+        )
+        punish.tick(7.0)
+        self.assertEqual(punish.mb.teacher_ppl1_l, before_ppl + 1)
+        self.assertEqual(punish.mb.teacher_pam_l, before_pam)
 
         miss = loop_at(5.0)
         before = miss.mb.teacher_pam_l

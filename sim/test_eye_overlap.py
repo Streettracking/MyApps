@@ -689,6 +689,91 @@ class SideOfFrameTests(unittest.TestCase):
         self.assertIn("rec_l", left)
         self.assertNotIn("rec_r", left)
 
+    def test_object_on_the_flys_left_turns_left(self):
+        """The fly's left is the right side of this unmirrored frame.
+
+        Object there → left optic lobe → left mushroom body → turn left.
+        «глаз Л» is the fly's left, so a view from the front puts it on the
+        right of the screen. Image-left still feeds the right eye; that map
+        is the other test and is not swapped.
+        """
+        import math
+
+        from sim.frame_sense import features_from_frames
+        from sim.hemifield import bilateral_yaw
+        from sim.mb_flywire import load_scene, lobe_anchors
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.mb_view3d import DIST0, PITCH0, YAW0, BrainCloud, _project, eye_layout
+        from sim.pilot import Pilot
+        from sim.raw_sense import N_AZ, OFF_BODY
+
+        image = np.zeros((80, 160, 3), dtype=np.uint8)
+        image[8:28, 132:156] = 255
+        feat, _ego, _near = features_from_frames(image, None)
+        energy = np.zeros(N_AZ, dtype=np.float64)
+        for index in range(N_AZ):
+            energy[index] = float(np.sum(feat[OFF_BODY + index * 3 : OFF_BODY + index * 3 + 3]))
+        self.assertGreater(energy[7], energy[0])
+        left_view = hemifield(feat, "L", DEFAULT_OVERLAP)
+        right_view = hemifield(feat, "R", DEFAULT_OVERLAP)
+        self.assertGreater(_energy(left_view), 0.0)
+        self.assertEqual(_energy(right_view), 0.0)
+
+        brain = MbTrainer(default_npz(), seed=1, overlap=DEFAULT_OVERLAP)
+        brain.forward(feat)
+        self.assertGreater(float(np.abs(brain.last_fwd.pn).sum()), 0.0)
+        self.assertEqual(float(np.abs(brain.last_fwd_r.pn).sum()), 0.0)
+        self.assertGreater(float(np.abs(brain.last_fwd.kc).sum()) + float(np.abs(brain.last_fwd.mbon).sum()), 0.0)
+
+        self.assertGreater(bilateral_yaw(1.0, 0.0), 0.0)
+        pilot = Pilot()
+        pilot.start_auto(0.0)
+        turned = _auto(pilot, 0.0, left=True, right=True, r_l=5.0, r_r=0.0)
+        self.assertEqual(turned.phase, "approach")
+        self.assertGreater(turned.z, 0.0)
+
+        cloud = BrainCloud()
+        eyes, _arrow = eye_layout(cloud)
+        placed = {item["label"]: np.asarray(item["pos"], dtype=np.float64) for item in eyes}
+        self.assertLess(float(placed["глаз Л"][0]), 0.0)
+        self.assertGreater(float(placed["глаз П"][0]), 0.0)
+        self.assertLess(float(placed["глаз Л"][0]), float(placed["глаз П"][0]))
+        front = YAW0 + math.pi
+        screen_x, _sy, depth = _project(
+            np.vstack((placed["глаз Л"], placed["глаз П"])),
+            front,
+            PITCH0,
+            DIST0,
+            480.0,
+            360.0,
+            500.0,
+        )
+        self.assertGreater(float(screen_x[0]), float(screen_x[1]))
+        axis = np.array([[0.0, 0.0, -1.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+        _ax, _ay, depths = _project(axis, front, PITCH0, DIST0, 480.0, 360.0, 500.0)
+        self.assertGreater(float(depths[0]), float(depths[1]))
+        self.assertLess(float(depth[0]), 1e9)
+
+        scene = load_scene()
+        self.assertIsNotNone(scene)
+        anchors = {item["label"]: item for item in lobe_anchors(scene)}
+        left_lobe = np.asarray(anchors["глаз Л"]["pos"], dtype=np.float64)
+        right_lobe = np.asarray(anchors["глаз П"]["pos"], dtype=np.float64)
+        self.assertEqual(anchors["глаз Л"]["tag"], 1)
+        self.assertEqual(anchors["глаз Л"]["side"], 1)
+        self.assertLess(float(left_lobe[0]), 0.0)
+        self.assertGreater(float(right_lobe[0]), 0.0)
+        lobe_x, _ly, _ld = _project(
+            np.vstack((left_lobe, right_lobe)),
+            front,
+            PITCH0,
+            DIST0,
+            480.0,
+            360.0,
+            500.0,
+        )
+        self.assertGreater(float(lobe_x[0]), float(lobe_x[1]))
+
 
 if __name__ == "__main__":
     unittest.main()

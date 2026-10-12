@@ -7,6 +7,12 @@ at one metre. A lost box searches toward the side where it was last seen.
 The sent command is ``weight * teacher + (1 - weight) * fly``. Weight 0 is
 the fly, weight 1 is the teacher. E-STOP and a close forward lidar return
 override that mix. Nothing here is written into the weight file.
+
+The teacher only steers the dog into the situation. The reward is the
+situation, not whether the fly's command matched. PAM when the conspecific
+approaches or sits in the centre of the frame. PPL1 when the target is lost
+or the approach is inside the stop distance. A command match is a status
+metric only.
 """
 
 from __future__ import annotations
@@ -21,6 +27,8 @@ CENTER_BAND = 0.06
 WIDE_OFFSET = 0.18
 AIM_HOLD_S = 0.50
 PAM_GAP_S = 0.50
+# A closer range sample counts as an approach. Jitter below this does not.
+APPROACH_EPS_M = 0.05
 
 
 def clamp_weight(weight: float) -> float:
@@ -118,11 +126,31 @@ def commands_match(
     return abs(float(fly_x) - float(teacher_x)) <= float(tol_x) and abs(float(fly_z) - float(teacher_z)) <= float(tol_z)
 
 
-def match_reinforce(matched: bool, hit_l: bool, hit_r: bool) -> tuple[str | None, str | None]:
-    """PAM on an eye that sees the dog, and only when the commands agree."""
-    if not matched:
-        return None, None
-    return ("pam" if hit_l else None), ("pam" if hit_r else None)
+def outcome_kinds(
+    hit_l: bool,
+    hit_r: bool,
+    centered: bool,
+    approaching: bool,
+    lost: bool,
+    too_close: bool,
+    last_l: bool = False,
+    last_r: bool = False,
+) -> tuple[str | None, str | None]:
+    """PAM for an approach or a centred dog. PPL1 for a loss or a close call.
+
+    The eye that sees the dog gets the pulse. A loss uses the eye that saw
+    it last. A dangerous close wins over a treat. Command agreement is not
+    an input.
+    """
+    if lost:
+        return ("ppl1" if last_l else None), ("ppl1" if last_r else None)
+    if too_close:
+        if hit_l or hit_r:
+            return ("ppl1" if hit_l else None), ("ppl1" if hit_r else None)
+        return ("ppl1" if last_l else None), ("ppl1" if last_r else None)
+    if approaching or centered:
+        return ("pam" if hit_l else None), ("pam" if hit_r else None)
+    return None, None
 
 
 def sign_for_center(cx: float | None) -> float | None:
@@ -218,17 +246,18 @@ class MatchWindow:
 
 
 class PulseGate:
-    """One PAM per eye per gap. Keeps a matching stream from teaching every frame."""
+    """One pulse per eye and kind per gap. PAM and PPL1 keep separate clocks."""
 
     def __init__(self, gap: float = PAM_GAP_S):
         self.gap = float(gap)
         self.last: dict[str, float] = {}
 
-    def allow(self, now: float, side: str) -> bool:
-        prev = self.last.get(side, -1e9)
+    def allow(self, now: float, side: str, kind: str) -> bool:
+        key = "%s:%s" % (side, kind)
+        prev = self.last.get(key, -1e9)
         if float(now) - prev < self.gap - 1e-9:
             return False
-        self.last[side] = float(now)
+        self.last[key] = float(now)
         return True
 
 
@@ -245,6 +274,13 @@ class TeacherLead:
         self.seen = False
         self.hit_l = False
         self.hit_r = False
+        self.last_hit_l = False
+        self.last_hit_r = False
+        self.centered = False
+        self.approaching = False
+        self.lost = False
+        self.too_close = False
+        self._prev_dist: float | None = None
         self.search_sign = 1.0
         self._last_side_cx: float | None = None
         self._search_locked = False
@@ -254,13 +290,34 @@ class TeacherLead:
         self._remote_z = 0.0
         self._remote_hit_l = False
         self._remote_hit_r = False
+        self._remote_centered = False
+        self._remote_approaching = False
+        self._remote_lost = False
+        self._remote_too_close = False
+        self._remote_last_l = False
+        self._remote_last_r = False
         self.window = MatchWindow()
         self.gate = PulseGate()
 
     def update_from_boxes(self, now: float, boxes, dist_m, forward_m, conf_min: float = 0.5) -> tuple[float, float]:
         cx = best_center(boxes, conf_min)
+        was_seen = bool(self.seen)
         self.center = cx
         self.seen = cx is not None
+        if cx is None:
+            self.lost = was_seen
+            self.centered = False
+            self.approaching = False
+            self.too_close = False
+        else:
+            dist = scrub_range(dist_m)
+            prev = self._prev_dist
+            self.approaching = dist is not None and prev is not None and dist < prev - APPROACH_EPS_M
+            if dist is not None:
+                self._prev_dist = dist
+            self.centered = abs(float(cx) - 0.5) <= CENTER_BAND + 1e-9
+            self.too_close = (dist is not None and dist <= STOP_M) or lidar_blocks(forward_m)
+            self.lost = False
         if cx is None:
             if not self._search_locked:
                 sign = sign_for_center(self._last_side_cx)
@@ -280,7 +337,29 @@ class TeacherLead:
         self.teacher_z = float(yaw)
         return self.teacher_x, self.teacher_z
 
-    def set_remote(self, now: float, x: float, z: float, hit_l: bool, hit_r: bool, weight: float) -> None:
+    def set_hits(self, hit_l: bool, hit_r: bool) -> None:
+        """Eyes that see the dog now. A visible dog remembers its side for a later loss."""
+        self.hit_l = bool(hit_l)
+        self.hit_r = bool(hit_r)
+        if self.seen:
+            self.last_hit_l = self.hit_l
+            self.last_hit_r = self.hit_r
+
+    def set_remote(
+        self,
+        now: float,
+        x: float,
+        z: float,
+        hit_l: bool,
+        hit_r: bool,
+        weight: float,
+        centered: bool = False,
+        approaching: bool = False,
+        lost: bool = False,
+        too_close: bool = False,
+        last_l: bool = False,
+        last_r: bool = False,
+    ) -> None:
         self.weight = clamp_weight(weight)
         self._remote_t = float(now)
         self._remote_x = float(x)
@@ -289,10 +368,38 @@ class TeacherLead:
         self.teacher_z = float(z)
         self._remote_hit_l = bool(hit_l)
         self._remote_hit_r = bool(hit_r)
+        self._remote_centered = bool(centered)
+        self._remote_approaching = bool(approaching)
+        self._remote_lost = bool(lost)
+        self._remote_too_close = bool(too_close)
+        self._remote_last_l = bool(last_l)
+        self._remote_last_r = bool(last_r)
+
+    def _apply_remote(self, fresh: bool) -> None:
+        if not fresh:
+            self.hit_l = False
+            self.hit_r = False
+            self.centered = False
+            self.approaching = False
+            self.lost = False
+            self.too_close = False
+            self.last_hit_l = False
+            self.last_hit_r = False
+            return
+        self.hit_l = self._remote_hit_l
+        self.hit_r = self._remote_hit_r
+        self.centered = self._remote_centered
+        self.approaching = self._remote_approaching
+        self.lost = self._remote_lost
+        self.too_close = self._remote_too_close
+        self.last_hit_l = self._remote_last_l
+        self.last_hit_r = self._remote_last_r
 
     def remote(self, now: float) -> tuple[float, float, bool, bool]:
         """Last posted teacher command. A stale post is a stop with no eye."""
-        if float(now) - self._remote_t > AIM_HOLD_S:
+        fresh = float(now) - self._remote_t <= AIM_HOLD_S
+        self._apply_remote(fresh)
+        if not fresh:
             return 0.0, 0.0, False, False
         return self._remote_x, self._remote_z, self._remote_hit_l, self._remote_hit_r
 
@@ -305,21 +412,30 @@ class TeacherLead:
     def action_kinds(
         self,
         now: float,
-        matched: bool,
         learning: bool,
         teacher_on: bool,
-        already_l: bool = False,
-        already_r: bool = False,
+        already_l: str | None = None,
+        already_r: str | None = None,
     ) -> tuple[str | None, str | None]:
+        """Outcome pulses. ``already_*`` is a kind already applied to that eye this frame."""
         if not learning or not teacher_on:
             return None, None
-        kind_l, kind_r = match_reinforce(
-            bool(matched),
-            bool(self.hit_l) and not already_l,
-            bool(self.hit_r) and not already_r,
+        kind_l, kind_r = outcome_kinds(
+            bool(self.hit_l),
+            bool(self.hit_r),
+            bool(self.centered),
+            bool(self.approaching),
+            bool(self.lost),
+            bool(self.too_close),
+            bool(self.last_hit_l),
+            bool(self.last_hit_r),
         )
-        if kind_l and not self.gate.allow(now, "L"):
+        if kind_l and already_l == kind_l:
             kind_l = None
-        if kind_r and not self.gate.allow(now, "R"):
+        if kind_r and already_r == kind_r:
+            kind_r = None
+        if kind_l and not self.gate.allow(now, "L", kind_l):
+            kind_l = None
+        if kind_r and not self.gate.allow(now, "R", kind_r):
             kind_r = None
         return kind_l, kind_r

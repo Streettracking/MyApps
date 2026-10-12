@@ -684,8 +684,7 @@ def refresh_teacher_wish(session, now: float, dist_m, forward_m):
         hit_l, hit_r = hemisphere_hits(boxes, overlap, conf_min=float(getattr(teacher, "conf", 0.5)), center_only=True)
     else:
         hit_l, hit_r = False, False
-    lead.hit_l = bool(hit_l)
-    lead.hit_r = bool(hit_r)
+    lead.set_hits(hit_l, hit_r)
     return lead
 
 
@@ -709,14 +708,21 @@ def publish_teacher_aim(session, onboard, now: float, dist_m, forward_m) -> None
         weight=float(lead.weight),
         hit_l=bool(lead.hit_l) and teacher_on,
         hit_r=bool(lead.hit_r) and teacher_on,
+        centered=bool(lead.centered) and teacher_on,
+        approaching=bool(lead.approaching) and teacher_on,
+        lost=bool(lead.lost) and teacher_on,
+        too_close=bool(lead.too_close) and teacher_on,
+        last_l=bool(lead.last_hit_l) and teacher_on,
+        last_r=bool(lead.last_hit_r) and teacher_on,
     )
 
 
 def blend_local_command(session, cmd, now: float, estop: bool, autonomy: bool, dist_m, forward_m):
     """Replace an autonomy command when the teacher weight is above zero.
 
-    Weight 0 returns the fly command unchanged. Match PAM is applied here
-    for a local brain. The onboard brain does that itself.
+    Weight 0 returns the fly command unchanged. Outcome pulses are applied
+    here for a local brain. The onboard brain does that itself. A command
+    match is recorded for status and does not teach.
     """
     from .pilot import DriveCommand
     from .teacher_lead import apply_guards, commands_match, mix_velocity
@@ -728,13 +734,17 @@ def blend_local_command(session, cmd, now: float, estop: bool, autonomy: bool, d
     teacher = getattr(session, "teacher", None)
     teacher_on = bool(teacher is not None and getattr(teacher, "on", False))
     learning = bool(getattr(session, "learn", False))
+    session._outcome_l = None
+    session._outcome_r = None
     if autonomy and not estop:
         lead.note(now, matched)
         mb = getattr(session, "mb", None)
         if mb is not None:
-            kind_l, kind_r = lead.action_kinds(now, matched, learning, teacher_on)
+            kind_l, kind_r = lead.action_kinds(now, learning, teacher_on)
             if kind_l or kind_r:
                 mb.teach_sides(kind_l, kind_r, float(now))
+                session._outcome_l = kind_l
+                session._outcome_r = kind_r
     session.lead_match = lead.fraction(now)
     if not autonomy or lead.weight <= 0.005:
         return cmd
@@ -1012,15 +1022,21 @@ def _drive_teacher(session: LiveSession, jpeg: bytes | None, frame_id, state: di
     )
     now = session.now() if hasattr(session, "now") else float(session.world.t)
     kind_l, kind_r = teacher.collect(now, overlap, rec_l, rec_r, learning, operator_busy)
+    sent_l, sent_r = kind_l, kind_r
+    if sent_l and sent_l == getattr(session, "_outcome_l", None):
+        sent_l = None
+    if sent_r and sent_r == getattr(session, "_outcome_r", None):
+        sent_r = None
     session.teacher_boxes = teacher.visible_boxes(learning)
     session.yolo_state = teacher.status_text(learning)
     session.teacher_counts = _teacher_counts(session, teacher)
     session.teacher_skips = teacher.skips_line()
-    if kind_l in ("pam", "ppl1") or kind_r in ("pam", "ppl1"):
+    if sent_l in ("pam", "ppl1") or sent_r in ("pam", "ppl1"):
         if onboard is not None:
-            send_teach(onboard, kind_l, kind_r)
+            send_teach(onboard, sent_l, sent_r)
         elif session.mb is not None:
-            session.mb.teach_sides(kind_l, kind_r, now)
+            session.mb.teach_sides(sent_l, sent_r, now)
+    if kind_l in ("pam", "ppl1") or kind_r in ("pam", "ppl1"):
         for side, kind in (("L", kind_l), ("R", kind_r)):
             phrase = teach_phrase(side, kind)
             if not phrase:

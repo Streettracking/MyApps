@@ -97,8 +97,8 @@ class BrainLoop:
         self.teacher_z = 0.0
         self.lead_match = 0.0
         self.lead = TeacherLead()
-        self._got_pam_l = False
-        self._got_pam_r = False
+        self._taught_l: str | None = None
+        self._taught_r: str | None = None
         self._lock = threading.Lock()
         self._log("наблюдение: SportClient не трогаем, пока нет автономии или перехвата")
 
@@ -234,6 +234,12 @@ class BrainLoop:
                     bool(data.get("hit_l")),
                     bool(data.get("hit_r")),
                     self.teacher_weight,
+                    centered=bool(data.get("centered")),
+                    approaching=bool(data.get("approaching")),
+                    lost=bool(data.get("lost")),
+                    too_close=bool(data.get("too_close")),
+                    last_l=bool(data.get("last_l")),
+                    last_r=bool(data.get("last_r")),
                 )
             elif op == "heartbeat":
                 pass
@@ -270,8 +276,8 @@ class BrainLoop:
         self._teach = None
         self._teach_l = None
         self._teach_r = None
-        self._got_pam_l = False
-        self._got_pam_r = False
+        self._taught_l = None
+        self._taught_r = None
         if (kind or side_l or side_r) and not self.learn:
             if float(now) - self._learn_block_log > 1.0:
                 self._log("обучение выключено, T/X веса не меняют")
@@ -281,13 +287,12 @@ class BrainLoop:
             side_r = None
         if kind:
             self.mb.teach(fwd, kind, float(now))
-            if kind == "pam":
-                self._got_pam_l = True
-                self._got_pam_r = True
+            self._taught_l = kind
+            self._taught_r = kind
         elif side_l or side_r:
             self.mb.teach_sides(side_l, side_r, float(now))
-            self._got_pam_l = side_l == "pam"
-            self._got_pam_r = side_r == "pam"
+            self._taught_l = side_l
+            self._taught_r = side_r
         with self._lock:
             self.recognized = seen
             self.sector = self.marks.aim_sector if seen else None
@@ -379,11 +384,10 @@ class BrainLoop:
             self.lead.note(now, matched)
             kind_l, kind_r = self.lead.action_kinds(
                 now,
-                matched,
                 bool(self.learn),
                 True,
-                self._got_pam_l,
-                self._got_pam_r,
+                self._taught_l,
+                self._taught_r,
             )
             if kind_l or kind_r:
                 self.mb.teach_sides(kind_l, kind_r, float(now))
