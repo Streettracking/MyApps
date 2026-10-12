@@ -2,13 +2,15 @@
 
 The window polls ``http://<robot>:8090/status`` and posts buttons. That poll
 is the heartbeat. This module does not send UDP commands and does not run
-the mushroom body. Stand, walk, and stop go to the robot port. A bind probe
-on 5451 only checks whether ``python main.py`` is also listening.
+the mushroom body. Stand, walk, and stop go to the robot port. A taken UDP
+port is a second command source only when the listener's command line is
+``python main.py``.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import socket
 import time
 import urllib.error
@@ -19,7 +21,8 @@ from typing import Any
 def udp_bridge_listening(host: str = "127.0.0.1", port: int = 5451) -> bool:
     """True when something already holds the local command port.
 
-    The probe binds and closes. It does not send a command.
+    The probe binds and closes. It does not send a command. A taken port is
+    not ``python main.py``: the go2 server uses the same UDP port.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -28,6 +31,113 @@ def udp_bridge_listening(host: str = "127.0.0.1", port: int = 5451) -> bool:
         return True
     finally:
         sock.close()
+    return False
+
+
+def _udp_inodes(port: int) -> set:
+    """Inode numbers of UDP sockets bound to ``port``, from the Linux tables."""
+    needle = ":%04X" % int(port)
+    found = set()
+    for name in ("/proc/net/udp", "/proc/net/udp6"):
+        try:
+            with open(name, "r", encoding="utf-8", errors="replace") as handle:
+                lines = handle.read().splitlines()
+        except OSError:
+            continue
+        for line in lines[1:]:
+            parts = line.split()
+            if len(parts) < 10:
+                continue
+            if parts[1].upper().endswith(needle):
+                found.add(parts[9])
+    return found
+
+
+def _linux_cmdlines_on_udp(port: int) -> list:
+    inodes = _udp_inodes(port)
+    if not inodes:
+        return []
+    owners = []
+    try:
+        pids = os.listdir("/proc")
+    except OSError:
+        return []
+    for pid in pids:
+        if not pid.isdigit():
+            continue
+        fd_dir = "/proc/%s/fd" % pid
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        hit = False
+        for fd in fds:
+            try:
+                target = os.readlink("%s/%s" % (fd_dir, fd))
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]") and target[8:-1] in inodes:
+                hit = True
+                break
+        if not hit:
+            continue
+        try:
+            with open("/proc/%s/cmdline" % pid, "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue
+        text = raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+        if text:
+            owners.append(text)
+    return owners
+
+
+def _windows_cmdlines_on_udp(port: int) -> list:
+    """Command lines holding this UDP port. Empty when the lookup cannot prove one."""
+    import subprocess
+
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        table = subprocess.check_output(["netstat", "-ano", "-p", "UDP"], creationflags=flags, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    pids = set()
+    token = ":%s" % int(port)
+    for line in table.decode("utf-8", "replace").splitlines():
+        if token not in line:
+            continue
+        parts = line.split()
+        if parts and parts[-1].isdigit():
+            pids.add(parts[-1])
+    owners = []
+    for pid in pids:
+        try:
+            raw = subprocess.check_output(
+                ["wmic", "process", "where", "ProcessId=%s" % pid, "get", "CommandLine", "/value"],
+                creationflags=flags,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        text = raw.decode("utf-8", "replace")
+        for row in text.splitlines():
+            if row.startswith("CommandLine="):
+                owners.append(row.split("=", 1)[1].strip())
+    return owners
+
+
+def main_py_listening(port: int = 5451) -> bool:
+    """True only when a process whose command line is ``main.py`` holds the UDP port.
+
+    A bind failure is not enough: ``go2_wr_server`` listens on the same port.
+    """
+    if os.name == "nt":
+        owners = _windows_cmdlines_on_udp(port)
+    else:
+        owners = _linux_cmdlines_on_udp(port)
+    for text in owners:
+        if "main.py" in text.replace("\\", "/"):
+            return True
     return False
 
 

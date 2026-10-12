@@ -909,17 +909,23 @@ def _note_robot_server(session: LiveSession, link: Go2CommandLink, state: dict, 
         session._log(text)
 
 
-def _note_bridge(session: LiveSession, now: float, state: dict) -> None:
+def _note_bridge(session: LiveSession, now: float, state: dict, link_ok: bool = False) -> None:
+    """Warn only when this window is linked and ``python main.py`` holds UDP 5451.
+
+    A busy port is not that process. The go2 server, or a window with no
+    onboard link, does not get the two-source line.
+    """
     if now - state.get("bridge", 0.0) < 1.0:
         return
     state["bridge"] = now
-    from .onboard_link import udp_bridge_listening
+    from .onboard_link import main_py_listening
 
-    session.bridge_open = udp_bridge_listening()
-    if session.bridge_open and not session._bridge_warned:
+    proven = bool(link_ok) and main_py_listening()
+    session.bridge_open = proven
+    if proven and not session._bridge_warned:
         session._log("два источника команд: это окно и python main.py на UDP 5451")
         session._bridge_warned = True
-    elif not session.bridge_open:
+    elif not proven:
         session._bridge_warned = False
 
 
@@ -932,7 +938,7 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
     # when the poll interval has not elapsed, so M sends op=manual from
     # took_over and mode=manual without waiting for the next GET.
     _mirror_remote(session, onboard.status)
-    _note_bridge(session, now, state)
+    _note_bridge(session, now, state, bool(onboard.ok))
     remote = session.remote or {}
     publish_teacher_aim(
         session,
