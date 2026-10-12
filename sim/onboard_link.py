@@ -1,7 +1,8 @@
 """Laptop side of the onboard fly brain.
 
-The window polls ``http://<robot>:8090/status`` and posts buttons. That poll
-is the heartbeat. This module does not send UDP commands and does not run
+The window polls ``http://<robot>:8090/status`` and posts buttons. The poll
+is read-only. The link stays up only while this window posts ``/heartbeat``
+or ``/cmd``. This module does not send UDP commands and does not run
 the mushroom body. Stand, walk, and stop go to the robot port. A taken UDP
 port is a second command source only when the listener's command line is
 ``python main.py``.
@@ -16,6 +17,9 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+
+# Shorter than the robot's link hold, so one missed post still leaves the link up.
+HEARTBEAT_PERIOD_S = 0.40
 
 
 def udp_bridge_listening(host: str = "127.0.0.1", port: int = 5451) -> bool:
@@ -178,8 +182,17 @@ class OnboardLink:
             return {}
 
     def poll(self) -> dict:
-        """GET /status. The robot treats any request as a laptop heartbeat."""
+        """GET /status. Read-only: this does not refresh the robot's link."""
         got = self._request("GET", "/status")
+        if got:
+            self.status = got
+            self.status_at = time.monotonic()
+        return self.status
+
+    def heartbeat(self) -> dict:
+        """POST /heartbeat. This is what keeps the link up while the trainer runs."""
+        self.last_command = "heartbeat"
+        got = self._request("POST", "/heartbeat", {})
         if got:
             self.status = got
             self.status_at = time.monotonic()

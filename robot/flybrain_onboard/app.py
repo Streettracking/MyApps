@@ -811,7 +811,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self) -> None:
-        self.loop.note_heartbeat(time.monotonic())
+        """Read-only. A status poll must not keep the link alive."""
         if self.path.split("?", 1)[0] != "/status":
             self.send_response(404)
             self.end_headers()
@@ -829,6 +829,10 @@ class _Handler(BaseHTTPRequestHandler):
             data = {}
         now = time.monotonic()
         path = self.path.split("?", 1)[0]
+        if path == "/heartbeat":
+            self.loop.note_heartbeat(now)
+            self._send(self.loop.status())
+            return
         if path == "/pause":
             data["op"] = "pause"
         elif path == "/resume":
@@ -845,11 +849,12 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def serve(loop: BrainLoop, port: int = 8090) -> ThreadingHTTPServer:
-    """GET /status, POST /cmd, POST /pause, and POST /resume on this port.
+    """GET /status, POST /cmd, POST /heartbeat, POST /pause, and POST /resume.
 
-    Pause and resume accept ``{}``. The same ops work on POST /cmd.
-    Pause zeros motion and freezes plasticity. After resume, learning stays
-    frozen until the dog moves and then for PAUSE_GRACE_S.
+    GET is read-only. The link stays up only while POST /cmd or POST /heartbeat
+    arrives inside LINK_HOLD_S. Pause and resume accept ``{}``. The same ops
+    work on POST /cmd. Pause zeros motion and freezes plasticity. After resume,
+    learning stays frozen until the dog moves and then for PAUSE_GRACE_S.
     """
     _Handler.loop = loop
     server = ThreadingHTTPServer(("0.0.0.0", int(port)), _Handler)

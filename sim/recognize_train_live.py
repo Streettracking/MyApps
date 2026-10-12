@@ -32,7 +32,8 @@ from .learn_flash import flash_from_payload
 from .lidar_fresh import DEFAULT_LIDAR_REFRESH, FreshWindow, mismatch_warning
 from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
-from .onboard_link import OnboardLink
+from .onboard_link import HEARTBEAT_PERIOD_S, OnboardLink
+from .onboard_status_log import append_onboard_status
 from .hemifield import DEFAULT_OVERLAP, format_fly_line
 from .pilot import format_eyes_line, phase_label
 from .pilot import Pilot, TeachRepeater, clamp_velocity, format_range_line, forward_clearance, scrub_range
@@ -965,7 +966,13 @@ def _note_bridge(session: LiveSession, now: float, state: dict, link_ok: bool = 
 
 
 def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict, now: float) -> None:
-    """Buttons and, only after takeover, manual axes. Never UDP."""
+    """Buttons and, only after takeover, manual axes. Never UDP.
+
+    GET /status is read-only. The heartbeat post is what keeps the link up.
+    """
+    if now - float(state.get("hb", -1e9)) >= HEARTBEAT_PERIOD_S:
+        onboard.heartbeat()
+        state["hb"] = now
     if now - state["poll"] >= 0.10:
         onboard.poll()
         state["poll"] = now
@@ -973,6 +980,15 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
     # when the poll interval has not elapsed, so M sends op=manual from
     # took_over and mode=manual without waiting for the next GET.
     _mirror_remote(session, onboard.status)
+    written = append_onboard_status(
+        getattr(session, "status_log_root", None) or ROOT,
+        onboard.status,
+        now,
+        state,
+    )
+    if written is not None and not state.get("status_log_noted"):
+        session._log("статус борта: %s" % written.name)
+        state["status_log_noted"] = True
     _note_bridge(session, now, state, bool(onboard.ok))
     remote = session.remote or {}
     publish_teacher_aim(
@@ -1200,6 +1216,7 @@ def run_live_gui(
         "last": 0.0,
         "latched": False,
         "poll": 0.0,
+        "hb": -1e9,
         "manual": 0.0,
         "axes": False,
         "bridge": 0.0,

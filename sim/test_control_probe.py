@@ -681,5 +681,148 @@ class RunMarkerTests(unittest.TestCase):
         self.assertEqual(body["drive_r"], body["drive_log"][1]["drive_r"])
 
 
+class LinkHoldTests(unittest.TestCase):
+    def test_get_polling_lets_the_link_expire(self):
+        import json
+        import time
+        import urllib.request
+
+        from robot.flybrain_onboard.app import BrainLoop, serve
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.pilot import LINK_HOLD_S
+
+        loop = BrainLoop(SportDrive(None), MbTrainer(default_npz(), seed=1), "/tmp/link_hold.npz")
+        server = serve(loop, 0)
+        port = int(server.server_address[1])
+        try:
+            def get():
+                with urllib.request.urlopen("http://127.0.0.1:%d/status" % port, timeout=2.0) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            def post(path, payload):
+                req = urllib.request.Request(
+                    "http://127.0.0.1:%d%s" % (port, path),
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            body = post("/cmd", {"op": "autonomy_on"})
+            self.assertEqual(body["mode"], "auto")
+            held = loop.last_hb
+            for _ in range(4):
+                got = get()
+                self.assertEqual(got["mode"], "auto")
+            self.assertEqual(loop.last_hb, held)
+
+            fresh = held + 0.50
+            self.assertLess(fresh - held, LINK_HOLD_S)
+            loop.frames_ok = True
+            loop.last_frame_t = fresh
+            loop.dist_m = 3.0
+            loop.forward_m = 3.0
+            moving = loop.tick(fresh)
+            self.assertFalse(moving.stop)
+            self.assertGreater(abs(moving.z) + abs(moving.x), 0.05)
+            self.assertEqual(loop.drive.stops, 0)
+            self.assertGreater(len(loop.drive.moves), 0)
+            for _ in range(3):
+                get()
+            self.assertEqual(loop.last_hb, held)
+
+            expired = held + LINK_HOLD_S + 0.05
+            loop.frames_ok = True
+            loop.last_frame_t = expired
+            for _ in range(3):
+                get()
+            self.assertEqual(loop.last_hb, held)
+            stopped = loop.tick(expired)
+            self.assertTrue(stopped.stop)
+            self.assertEqual((stopped.x, stopped.z), (0.0, 0.0))
+            self.assertEqual(loop.drive.stops, 1)
+            again = loop.tick(expired + 0.2)
+            self.assertTrue(again.stop)
+            self.assertEqual(loop.drive.stops, 1)
+
+            post("/heartbeat", {})
+            self.assertGreater(loop.last_hb, held)
+            revived = loop.last_hb + 0.10
+            loop.frames_ok = True
+            loop.last_frame_t = revived
+            walking = loop.tick(revived)
+            self.assertFalse(walking.stop)
+            self.assertEqual(loop.drive.stops, 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_onboard_log_is_about_two_hertz_and_the_trainer_posts_a_heartbeat(self):
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+
+        from sim.onboard_link import HEARTBEAT_PERIOD_S
+        from sim.onboard_status_log import STATUS_PERIOD_S, append_onboard_status, onboard_status_path
+        from sim.pilot import LINK_HOLD_S
+        from sim.recognize_train_live import LiveSession, _drive_onboard
+        from sim.train_monitor import MonitorInput
+
+        self.assertLess(HEARTBEAT_PERIOD_S, LINK_HOLD_S)
+        self.assertAlmostEqual(STATUS_PERIOD_S, 0.5)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state = {}
+            wall = 1_760_000_000.0
+            first = append_onboard_status(root, {"mode": "auto", "drive_l": 1.5}, 10.0, state, wall=wall)
+            self.assertIsNotNone(first)
+            self.assertEqual(first.name, "onboard_status_%s.jsonl" % time.strftime("%Y-%m-%d", time.localtime(wall)))
+            skipped = append_onboard_status(root, {"mode": "auto", "drive_l": 2.0}, 10.0 + STATUS_PERIOD_S - 0.01, state, wall=wall)
+            self.assertIsNone(skipped)
+            second = append_onboard_status(root, {"mode": "auto", "drive_l": 3.0}, 10.0 + STATUS_PERIOD_S, state, wall=wall)
+            self.assertEqual(second, first)
+            lines = first.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            row = json.loads(lines[1])
+            self.assertEqual(row["drive_l"], 3.0)
+            self.assertEqual(row["logged_at"], time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(wall)))
+            self.assertEqual(onboard_status_path(root, wall), first)
+
+            class _Link:
+                def __init__(self):
+                    self.ops = []
+                    self.status = {"mode": "auto", "phase": "search", "learning": False}
+                    self.ok = True
+
+                def poll(self):
+                    self.ops.append("GET")
+                    return self.status
+
+                def heartbeat(self):
+                    self.ops.append("heartbeat")
+                    return self.status
+
+                def post(self, op, **_extra):
+                    self.ops.append(op)
+                    return self.status
+
+            session = LiveSession(root / "state.npz", onboard=True)
+            session.status_log_root = root
+            link = _Link()
+            tele = {"poll": 0.0, "bridge": 50.0, "manual": 0.0, "axes": False}
+            _drive_onboard(session, link, MonitorInput(), tele, 50.0)
+            self.assertIn("heartbeat", link.ops)
+            self.assertIn("GET", link.ops)
+            self.assertTrue(any("статус борта:" in line and "onboard_status_" in line for line in session.log))
+            beats = link.ops.count("heartbeat")
+            _drive_onboard(session, link, MonitorInput(), tele, 50.0 + HEARTBEAT_PERIOD_S - 0.05)
+            self.assertEqual(link.ops.count("heartbeat"), beats)
+            _drive_onboard(session, link, MonitorInput(), tele, 50.0 + HEARTBEAT_PERIOD_S + 0.01)
+            self.assertEqual(link.ops.count("heartbeat"), beats + 1)
+
+
 if __name__ == "__main__":
     unittest.main()
