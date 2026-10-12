@@ -28,6 +28,13 @@ CENTER_BAND = 0.06
 WIDE_OFFSET = 0.18
 AIM_HOLD_S = 0.50
 PAM_GAP_S = 0.50
+# Trainer-side approach law. The onboard brain does not call these.
+CAMERA_HFOV_DEG = 120.0
+AIM_CONE_DEG = 15.0
+STOP_BOX_H_DEFAULT = 0.45
+STOP_BOX_H_MIN = 0.15
+STOP_BOX_H_MAX = 0.90
+TEACHER_X_CAP = 0.15
 
 
 def clamp_weight(weight: float) -> float:
@@ -570,3 +577,78 @@ def observe_recognition(board, lead: TeacherLead, enabled: bool) -> None:
         lead.last_hit_l,
         lead.last_hit_r,
     )
+
+
+def clamp_stop_h(value) -> float:
+    """Box height (share of the frame) at which the teacher stands."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return STOP_BOX_H_DEFAULT
+    if v != v:
+        return STOP_BOX_H_DEFAULT
+    return min(STOP_BOX_H_MAX, max(STOP_BOX_H_MIN, v))
+
+
+def box_bearing_deg(cx: float, hfov: float = CAMERA_HFOV_DEG) -> float:
+    """Signed bearing of an image-x. Positive is image right."""
+    return (float(cx) - 0.5) * float(hfov)
+
+
+def best_box(boxes, conf_min: float = 0.5):
+    """Strongest box at or above ``conf_min``, or None."""
+    chosen = None
+    best = float(conf_min) - 1e-9
+    for box in boxes or ():
+        conf = float(getattr(box, "conf", 0.0))
+        if conf < best:
+            continue
+        best = conf
+        chosen = box
+    return chosen
+
+
+def approach_velocity(box, forward_m, stop_h: float = STOP_BOX_H_DEFAULT, x_cap: float = TEACHER_X_CAP):
+    """``(x, z, state)``: turn first, walk inside the cone, stand when the box is tall.
+
+    state is ``no_box``, ``turn``, ``walk``, ``near`` or ``lidar``. No box is a
+    full stop: no search spin, no coasting. Lidar is a safety stop only.
+    """
+    if box is None:
+        return 0.0, 0.0, "no_box"
+    x0, x1 = float(box.x0), float(box.x1)
+    y0, y1 = float(box.y0), float(box.y1)
+    cx = 0.5 * (x0 + x1)
+    height = abs(y1 - y0)
+    offset = cx - 0.5
+    if abs(offset) <= CENTER_BAND:
+        yaw = 0.0
+    else:
+        span = 0.5 - CENTER_BAND
+        excess = offset - (CENTER_BAND if offset > 0.0 else -CENTER_BAND)
+        yaw = clamp_velocity(0.0, -excess / span * Z_MAX)[1]
+    if height >= clamp_stop_h(stop_h):
+        return 0.0, 0.0, "near"
+    if abs(box_bearing_deg(cx)) > AIM_CONE_DEG + 1e-9:
+        return 0.0, float(yaw), "turn"
+    if lidar_blocks(forward_m):
+        return 0.0, float(yaw), "lidar"
+    cap = max(0.0, min(float(x_cap), X_MAX))
+    return cap, float(yaw), "walk"
+
+
+TEACHER_STATUS = {
+    "no_query": "YOLO не опрашивается",
+    "stale": "кадр старый",
+    "no_box": "нет рамки",
+    "turn": "поворот",
+    "near": "рядом, стою",
+    "lidar": "препятствие, стою",
+    "halt": "стоп",
+}
+
+
+def teacher_status_line(state: str, kin: str = "") -> str:
+    if state == "walk":
+        return "иду к %s" % (kin or "сородичу")
+    return TEACHER_STATUS.get(str(state or ""), "")

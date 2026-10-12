@@ -703,6 +703,101 @@ def _mirror_remote(session: LiveSession, status: dict) -> None:
             session.log.append(str(line))
 
 
+FRAME_STALE_S = 0.5
+KIN_LABEL_DEFAULT = ".128"
+
+
+def _mono() -> float:
+    """Clock for frame and box ages. Tests replace it."""
+    return time.monotonic()
+
+
+def lead_on(session) -> bool:
+    """Teacher slider above zero: the teacher leads in auto."""
+    return float(getattr(session, "teacher_weight", 0.0) or 0.0) > 0.005
+
+
+def take_teacher_stop(session, inp) -> None:
+    value = getattr(inp, "teacher_stop_h", None)
+    if value is None:
+        return
+    from .teacher_lead import clamp_stop_h
+
+    session.teacher_stop_h = clamp_stop_h(value)
+
+
+def note_camera_frame(session, jpeg, now: float | None = None) -> None:
+    """Remember when the camera JPEG last changed. A frozen frame keeps its old time."""
+    if not jpeg:
+        return
+    key = (len(jpeg), hash(bytes(jpeg)))
+    if key != getattr(session, "_cam_key", None):
+        session._cam_key = key
+        session._cam_t = _mono() if now is None else float(now)
+
+
+def lead_boxes_fresh(session, now: float | None = None):
+    """``(boxes, why)``. why is ``no_query``, ``stale``, ``no_box`` or empty."""
+    now = _mono() if now is None else float(now)
+    teacher = getattr(session, "teacher", None)
+    if teacher is None:
+        return [], "no_query"
+    learning = _learning_now(session)
+    if not (learning or lead_on(session)) or getattr(teacher, "service_down", False):
+        return [], "no_query"
+    cam_t = getattr(session, "_cam_t", None)
+    if cam_t is None or now - float(cam_t) > FRAME_STALE_S:
+        return [], "stale"
+    box_t = getattr(teacher, "boxes_t", None)
+    if box_t is not None and now - float(box_t) > FRAME_STALE_S:
+        return [], "stale"
+    raw = getattr(teacher, "_teach_boxes", None)
+    boxes = list(raw if raw else (getattr(teacher, "boxes", None) or ()))
+    if not boxes:
+        return [], "no_box"
+    return boxes, ""
+
+
+def _apply_approach(session, lead, forward_m) -> None:
+    """Trainer approach law over the box. Halts and stale frames are zero."""
+    from .teacher_lead import STOP_BOX_H_DEFAULT, TEACHER_X_CAP, approach_velocity, best_box, teacher_status_line
+
+    teacher = getattr(session, "teacher", None)
+    if teacher is None:
+        session.teacher_state = ""
+        session.teacher_status = ""
+        return
+    boxes, why = lead_boxes_fresh(session)
+    box = best_box(boxes, float(getattr(teacher, "conf", 0.5)))
+    x, z, state = approach_velocity(
+        box,
+        forward_m,
+        float(getattr(session, "teacher_stop_h", STOP_BOX_H_DEFAULT) or STOP_BOX_H_DEFAULT),
+        float(getattr(session, "teacher_x_cap", TEACHER_X_CAP) or 0.0),
+    )
+    if why:
+        state = why
+    if getattr(session, "_teacher_halt", False):
+        x, z, state = 0.0, 0.0, "halt"
+    lead.teacher_x = float(x)
+    lead.teacher_z = float(z)
+    session.teacher_state = state
+    session.teacher_status = teacher_status_line(state, str(getattr(session, "kin_label", KIN_LABEL_DEFAULT) or ""))
+
+
+def teacher_halt_now(inp, remote=None) -> bool:
+    """E-STOP, stop, takeover, an arrow, or focus lost: the teacher stands at once."""
+    if not getattr(inp, "focused", True):
+        return True
+    if getattr(inp, "estop", False) or getattr(inp, "stop", False) or getattr(inp, "takeover", False):
+        return True
+    if abs(float(getattr(inp, "steer_x", 0.0) or 0.0)) + abs(float(getattr(inp, "steer_z", 0.0) or 0.0)) > 0:
+        return True
+    if remote and remote.get("took_over") and remote.get("mode") == "manual":
+        return True
+    return False
+
+
 def take_teacher_weight(session, inp) -> None:
     """Slider motion. None means the pointer is not on the track."""
     value = getattr(inp, "teacher_weight", None)
@@ -755,6 +850,7 @@ def refresh_teacher_wish(session, now: float, dist_m, forward_m):
     else:
         hit_l, hit_r = False, False
     lead.set_hits(hit_l, hit_r)
+    _apply_approach(session, lead, forward_m)
     return lead
 
 
@@ -762,8 +858,11 @@ def publish_teacher_aim(session, onboard, now: float, dist_m, forward_m) -> None
     """Send the teacher's wish to the dog. The dog mixes it with the fly."""
     if onboard is None:
         return
-    if float(now) - float(getattr(session, "_aim_post_t", -1.0)) < 0.10:
+    halt = bool(getattr(session, "_teacher_halt", False))
+    halt_changed = halt != bool(getattr(session, "_aim_halt_sent", False))
+    if not halt_changed and float(now) - float(getattr(session, "_aim_post_t", -1.0)) < 0.10:
         return
+    session._aim_halt_sent = halt
     lead = refresh_teacher_wish(session, now, dist_m, forward_m)
     teacher = getattr(session, "teacher", None)
     learning = bool(getattr(session, "learn", False))
@@ -858,6 +957,7 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         recognized_l=eye_l,
         recognized_r=eye_r,
     )
+    session._teacher_halt = teacher_halt_now(inp)
     cmd = blend_local_command(
         session,
         cmd,
@@ -944,6 +1044,7 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
     _mirror_remote(session, onboard.status)
     _note_bridge(session, now, state)
     remote = session.remote or {}
+    session._teacher_halt = teacher_halt_now(inp, remote)
     publish_teacher_aim(
         session,
         onboard,
@@ -1099,10 +1200,17 @@ def _drive_teacher(session: LiveSession, jpeg: bytes | None, frame_id, state: di
     from .yolo_teacher import FLASH_S, plaque_recognized, send_teach, teach_phrase
 
     learning = _learning_now(session)
+    leading = lead_on(session) and not learning
+    # Lead with learning off keeps the boxes. It never teaches (collect below).
+    teacher.lead = leading
     teacher.note_learning(learning)
+    note_camera_frame(session, jpeg)
     probe = bool(getattr(session, "yolo_probe", False)) and not learning
-    if (learning or probe) and jpeg and teacher.wants_frame(True if probe else learning) and state.get("frame") != frame_id:
-        teacher.offer_frame(jpeg)
+    if (learning or probe or leading) and jpeg and teacher.wants_frame(True if probe else learning, lead=leading) and state.get("frame") != frame_id:
+        try:
+            teacher.offer_frame(jpeg, getattr(session, "_cam_t", None))
+        except TypeError:
+            teacher.offer_frame(jpeg)
         state["frame"] = frame_id
     rec_l, rec_r, overlap = plaque_recognized(
         getattr(session, "mb", None),
@@ -1112,7 +1220,7 @@ def _drive_teacher(session: LiveSession, jpeg: bytes | None, frame_id, state: di
     )
     now = session.now() if hasattr(session, "now") else float(session.world.t)
     kind_l, kind_r = teacher.collect(now, overlap, rec_l, rec_r, learning, operator_busy)
-    if probe:
+    if probe or leading:
         # Learning is off, so collect() taught nothing. Keep the raw answer
         # for the N-latch recording only; no PAM/PPL1 goes anywhere.
         teacher._take_result(overlap)
@@ -1157,6 +1265,10 @@ def run_live_gui(
     from .yolo_teacher import TeacherRuntime
 
     mon = TrainMonitor("Go2 recognition trainer", fullscreen=bool(getattr(session, "start_fullscreen", False)))
+    try:
+        session.teacher_stop_h = mon.teacher_stop_h()
+    except Exception:
+        pass
     if session.learner_kind == "mb":
         session.teacher = TeacherRuntime(
             getattr(session, "teacher_url", "http://127.0.0.1:8091"),
@@ -1283,6 +1395,7 @@ def run_live_gui(
                     session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
             now = time.monotonic()
             take_teacher_weight(session, inp)
+            take_teacher_stop(session, inp)
             frame_id, camera, lidar, scan, error, camera_jpeg = pull.latest()
             if session.onboard:
                 disp_lidar = lidar
@@ -1459,6 +1572,29 @@ def run_live_gui(
             pull.stop()
 
 
+def _teacher_status_view(session) -> str:
+    """Status by «УЧИТЕЛЬ», auto only."""
+    if getattr(session, "onboard", False):
+        auto = bool((getattr(session, "remote", {}) or {}).get("autonomy"))
+    else:
+        auto = bool(getattr(session.pilot, "autonomy", False))
+    if session.learner_kind != "mb" or not auto:
+        return ""
+    if getattr(session, "teacher", None) is None:
+        return ""
+    if not (lead_on(session) or _learning_now(session)):
+        return "YOLO не опрашивается"
+    return str(getattr(session, "teacher_status", "") or "")
+
+
+def _teacher_note_view(session) -> str:
+    if not _teacher_status_view(session):
+        return ""
+    if lead_on(session) and not _learning_now(session):
+        return "PAM/PPL1 не идут"
+    return ""
+
+
 def _live_lead_plaque(session) -> str:
     from .teacher_lead import lead_plaque
 
@@ -1591,6 +1727,9 @@ def _live_view(
         teacher_boxes=list(getattr(session, "teacher_boxes", ()) or ()),
         teacher_weight=float(getattr(session, "teacher_weight", 0.0) or 0.0),
         lead_plaque=_live_lead_plaque(session),
+        teacher_status=_teacher_status_view(session),
+        teacher_status_note=_teacher_note_view(session),
+        teacher_stop_h=float(getattr(session, "teacher_stop_h", 0.45) or 0.45),
     )
     if session.mb is not None:
         caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"
@@ -1793,6 +1932,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--onboard", default="", help="Robot IP with the fly brain on port 8090. No local Move and no UDP.")
     p.add_argument("--onboard-port", type=int, default=8090)
+    p.add_argument("--kin-label", default=KIN_LABEL_DEFAULT, help="Name of the conspecific in the teacher status line.")
+    p.add_argument("--teacher-x-cap", type=float, default=0.15, help="Hard cap on teacher forward speed, m/s.")
     p.add_argument("--return-auto", type=float, default=0.0, help="Seconds of idle takeover before autonomy returns. 0 stays manual.")
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
     p.add_argument("--overlap", type=float, default=DEFAULT_OVERLAP, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
@@ -1840,6 +1981,10 @@ def main(argv: list[str] | None = None) -> int:
     session.teacher_url = str(args.teacher_url)
     session.teacher_conf = float(args.teacher_conf)
     session.teacher_rate = float(args.teacher_rate)
+    session.kin_label = str(args.kin_label or "")
+    from .teacher_lead import TEACHER_X_CAP as _cap
+
+    session.teacher_x_cap = max(0.0, min(float(args.teacher_x_cap), _cap * 2.0))
     from .go2_control import apply_go2_control_arg
 
     apply_go2_control_arg(session, args)

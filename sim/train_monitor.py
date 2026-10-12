@@ -171,6 +171,7 @@ class MonitorInput:
     punish_down: bool = False
     focused: bool = True
     teacher_weight: float | None = None
+    teacher_stop_h: float | None = None
 
 
 # «ПЕРЕЗАПУСК МОЗГА» asks «точно?»; the second click must land within this.
@@ -280,6 +281,9 @@ class MonitorView:
     recog_line: str = ""
     teacher_weight: float = 0.0
     lead_plaque: str = ""
+    teacher_status: str = ""
+    teacher_status_note: str = ""
+    teacher_stop_h: float = 0.45
     brain_offline: bool = False
 
 
@@ -791,6 +795,8 @@ class TrainMonitor:
         self.estop_bar_rect = pygame.Rect(0, 0, 0, 0)
         self.lead_slider_rect = pygame.Rect(0, 0, 0, 0)
         self._lead_drag = False
+        self.stop_slider_rect = pygame.Rect(0, 0, 0, 0)
+        self._stop_drag = False
         self._pin_surface = None
         self._pin_applied = None
         self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
@@ -1082,6 +1088,7 @@ class TrainMonitor:
         data.update(self._settings)
         data["theme"] = theme_name()
         data["pin_on_top"] = bool(getattr(self, "pin_on_top", False))
+        data["teacher_stop_h"] = float(self.teacher_stop_h())
         data["fullscreen"] = bool(self.fullscreen)
         data["maximized"] = bool(getattr(self, "_maximized", False))
         data["layout"] = self.dock.to_dict()
@@ -1703,6 +1710,9 @@ class TrainMonitor:
         if self._lead_at(win_pos, inp, drag=False):
             self._lead_drag = True
             return
+        if self._stop_at(win_pos, inp, drag=False):
+            self._stop_drag = True
+            return
         if self._header_chrome_hit(pos):
             return
         if self.view_rect.collidepoint(pos):
@@ -1935,6 +1945,13 @@ class TrainMonitor:
                         self._lead_at(event.pos, inp, drag=True)
                     else:
                         self._lead_drag = False
+                elif self._stop_drag:
+                    buttons = getattr(event, "buttons", (1, 0, 0))
+                    if buttons and buttons[0]:
+                        self._stop_at(event.pos, inp, drag=True)
+                    else:
+                        self._stop_drag = False
+                        self._save_ui()
                 elif self._scroll_drag is not None:
                     buttons = getattr(event, "buttons", (1, 0, 0))
                     if buttons and buttons[0]:
@@ -1943,6 +1960,9 @@ class TrainMonitor:
                     self._drag_splitter(event.pos)
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 self._lead_drag = False
+                if self._stop_drag:
+                    self._stop_drag = False
+                    self._save_ui()
                 self._scroll_drag = None
                 self._finish_block_drag(event.pos)
                 self._split_drag = None
@@ -3584,7 +3604,15 @@ class TrainMonitor:
         word = "УЧ" if getattr(self, "_header_short", False) else "УЧИТЕЛЬ"
         title = self.font_sm.render(word, True, VALUE)
         self._blit_clipped(screen, title, (rect.x + 32, rect.centery - title.get_height() // 2), rect)
-        if not getattr(self, "_header_short", False):
+        lead_status = str(getattr(view, "teacher_status", "") or "")
+        if lead_status:
+            # Auto: what the teacher is doing now, thin grey, in place of the state word.
+            glyph = self.font_tiny.render(lead_status, True, LABEL)
+            right = badge.left - 6 if badge is not None else rect.right - 6
+            left = rect.x + 32 + title.get_width() + 6
+            x = max(left, right - glyph.get_width())
+            self._blit_clipped(screen, glyph, (x, rect.centery - glyph.get_height() // 2), rect)
+        elif not getattr(self, "_header_short", False):
             slot = self.font_sm.size("смотрит")[0]
             glyph = self.font_sm.render(status, True, ink)
             right = badge.left - 8 if badge is not None else rect.right - 8
@@ -4215,6 +4243,95 @@ class TrainMonitor:
         inp.teacher_weight = share
         return True
 
+    def teacher_stop_h(self) -> float:
+        """Stop box height, from window.json until the slider moves."""
+        from .teacher_lead import STOP_BOX_H_DEFAULT, clamp_stop_h
+
+        value = getattr(self, "_stop_h", None)
+        if value is None:
+            value = (getattr(self, "_settings", None) or {}).get("teacher_stop_h", STOP_BOX_H_DEFAULT)
+            self._stop_h = clamp_stop_h(value)
+        return float(self._stop_h)
+
+    def _stop_at(self, win_pos, inp, drag: bool) -> bool:
+        """Map a pointer x onto the stop box height."""
+        import pygame
+
+        from .teacher_lead import STOP_BOX_H_MAX, STOP_BOX_H_MIN, clamp_stop_h
+
+        rect = getattr(self, "stop_slider_rect", None)
+        if rect is None or rect.w < 8:
+            return False
+        logical = self._logical_pos(win_pos)
+        point = pygame.Rect(rect)
+        point.inflate_ip(0, 28 if drag else 12)
+        if not point.collidepoint(logical[0], logical[1]):
+            return False
+        share = (float(logical[0]) - float(rect.x)) / float(rect.w)
+        share = min(1.0, max(0.0, share))
+        value = clamp_stop_h(STOP_BOX_H_MIN + share * (STOP_BOX_H_MAX - STOP_BOX_H_MIN))
+        self._stop_h = value
+        inp.teacher_stop_h = value
+        return True
+
+    def _draw_teacher_status(self, screen, view, panel, y: int) -> int:
+        """«поворот», «иду к .128», «рядом, стою»… and grey «PAM/PPL1 не идут». Auto only."""
+        status = str(getattr(view, "teacher_status", "") or "")
+        if not status:
+            return y
+        note = str(getattr(view, "teacher_status_note", "") or "")
+
+        def paint() -> None:
+            x = panel.x
+            glyph = self.font_sm.render("учитель: " + status, True, LABEL)
+            screen.blit(glyph, (x, y))
+            x += glyph.get_width()
+            if note:
+                screen.blit(self.font_sm.render(note, True, INK_DIM), (int(x) + 12, y))
+
+        nxt = self._paint_line(screen, panel, y, "teacher-status", paint)
+        return y if nxt is None else nxt
+
+    def _draw_stop_row(self, screen, view, panel, y: int) -> int:
+        """Thin grey «дистанция стопа» track: box height at which the teacher stands."""
+        import pygame
+
+        from .teacher_lead import STOP_BOX_H_MAX, STOP_BOX_H_MIN
+
+        self.stop_slider_rect = pygame.Rect(0, 0, 0, 0)
+        value = self.teacher_stop_h()
+        line = "дистанция стопа: рамка %.2f" % value
+
+        def paint_label() -> None:
+            try:
+                self._mixed(screen, line, panel.x, y, "дистанция стопа: рамка {4}", LABEL, label_color=INK_DIM)
+            except Exception:
+                screen.blit(self.font_sm.render(line, True, INK_DIM), (panel.x, y))
+
+        nxt = self._paint_line(screen, panel, y, "stop-label", paint_label)
+        if nxt is None:
+            return y
+        y = nxt
+        row = max(10, self._brain_row_h() // 2)
+        if y + row > panel.bottom:
+            return y
+        track = pygame.Rect(panel.x + 8, y + row // 2 - 1, max(1, panel.w - 16), 3)
+        share = (value - STOP_BOX_H_MIN) / max(1e-6, STOP_BOX_H_MAX - STOP_BOX_H_MIN)
+
+        def paint_track() -> None:
+            pygame.draw.rect(screen, LINE, track, border_radius=1)
+            thumb_x = track.x + int(round((track.w - 1) * share))
+            thumb = pygame.Rect(0, 0, 6, 10)
+            thumb.center = (thumb_x, track.centery)
+            thumb.clamp_ip(pygame.Rect(track.x, track.y - 6, track.w, track.h + 12))
+            pygame.draw.rect(screen, INK_DIM, thumb, border_radius=2)
+
+        band = pygame.Rect(panel.x, y, panel.w, row)
+        self._note_brain_row(band, "stop-slider")
+        self._with_row_clip(screen, band, paint_track)
+        self.stop_slider_rect = track
+        return y + row
+
     def _draw_lead_row(self, screen, view, panel, y: int) -> int:
         """Plaque and weight track. Omitted whole when the block is short."""
         import pygame
@@ -4238,6 +4355,7 @@ class TrainMonitor:
         if nxt is None:
             return y
         y = nxt
+        y = self._draw_teacher_status(screen, view, panel, y)
         row = self._brain_row_h()
         if y + row > panel.bottom:
             return y
@@ -4263,7 +4381,7 @@ class TrainMonitor:
         if nxt is None:
             return y
         self.lead_slider_rect = track
-        return nxt
+        return self._draw_stop_row(screen, view, panel, nxt)
 
     def _progress_line(self, screen, line: str, x: int, y: int, limit=None) -> None:
         if line.startswith("метки "):

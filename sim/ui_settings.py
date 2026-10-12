@@ -133,6 +133,7 @@ def default_settings() -> dict:
         "go2_control_exe": "",
         "go2_server_exe": "",
         "pin_on_top": False,
+        "teacher_stop_h": 0.45,
     }
 
 

@@ -200,8 +200,14 @@ def yolo_status(learning: bool, teacher_on: bool, service_down: bool) -> str:
     return "смотрит"
 
 
-def should_query(learning: bool, teacher_on: bool, boxes_hidden: bool, service_down: bool, since_fail: float) -> bool:
-    """Whether this frame may be posted to the YOLO service."""
+def should_query(learning: bool, teacher_on: bool, boxes_hidden: bool, service_down: bool, since_fail: float, lead: bool = False) -> bool:
+    """Whether this frame may be posted to the YOLO service.
+
+    ``lead`` is the teacher slider above zero: the dog needs boxes to be led,
+    also with learning off. Learning off and no lead asks nothing.
+    """
+    if lead:
+        return not (service_down and since_fail < 2.0)
     if not learning:
         return False
     if service_down and since_fail < 2.0:
@@ -301,6 +307,9 @@ class TeacherRuntime:
         self._stop = False
         self._thread: threading.Thread | None = None
         self._learning = False
+        # Teacher slider above zero with learning off: keep boxes, teach nothing.
+        self.lead = False
+        self.boxes_t: float | None = None
 
     def close(self) -> None:
         self._stop = True
@@ -332,7 +341,7 @@ class TeacherRuntime:
     def note_learning(self, learning: bool) -> None:
         learning = bool(learning)
         if learning == self._learning:
-            if not learning:
+            if not learning and not self.lead:
                 self.boxes = []
             return
         self._learning = learning
@@ -349,16 +358,17 @@ class TeacherRuntime:
     def status_text(self, learning: bool) -> str:
         return yolo_status(learning, self.on, self.service_down)
 
-    def wants_frame(self, learning: bool) -> bool:
+    def wants_frame(self, learning: bool, lead: bool = False) -> bool:
         since = time.monotonic() - self._last_fail
-        return should_query(learning, self.on, self.boxes_hidden, self.service_down, since)
+        return should_query(learning, self.on, self.boxes_hidden, self.service_down, since, lead=lead)
 
-    def offer_frame(self, jpeg: bytes) -> None:
+    def offer_frame(self, jpeg: bytes, frame_t: float | None = None) -> None:
+        """``frame_t`` is when this camera frame arrived; its boxes inherit it."""
         if not jpeg:
             return
         self._ensure()
         with self._lock:
-            self._pending = (self._gen, jpeg)
+            self._pending = (self._gen, jpeg, frame_t)
 
     def skips_line(self) -> str:
         from .tabnum import format_skips
@@ -410,7 +420,7 @@ class TeacherRuntime:
         return kind_l, kind_r
 
     def visible_boxes(self, learning: bool) -> list[DetBox]:
-        if not learning or self.boxes_hidden:
+        if not (learning or self.lead) or self.boxes_hidden:
             return []
         return list(self.boxes)
 
@@ -460,9 +470,11 @@ class TeacherRuntime:
             self._result = None
         if result is None:
             return
-        gen, boxes = result
+        gen, boxes = result[0], result[1]
+        frame_t = result[2] if len(result) > 2 else None
         if gen != self._gen:
             return
+        self.boxes_t = frame_t
         if boxes is None:
             self.service_down = True
             self._last_fail = time.monotonic()
@@ -493,10 +505,11 @@ class TeacherRuntime:
             if item is None:
                 time.sleep(0.01)
                 continue
-            gen, jpeg = item
+            gen, jpeg = item[0], item[1]
+            frame_t = item[2] if len(item) > 2 else None
             boxes = self.client.detect(jpeg)
             with self._lock:
-                self._result = (gen, boxes)
+                self._result = (gen, boxes, frame_t)
 
 
 def _url_port(url: str) -> int:
