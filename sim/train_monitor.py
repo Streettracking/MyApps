@@ -4949,7 +4949,7 @@ class TrainMonitor:
         import pygame
 
         row = self._brain_row_h()
-        title = "шкала DAN    T = лакомство PAM    X = наказание PPL1"
+        title = "шкала DAN    T = лакомство PAM    X = ОШИБКА"
 
         def title_row() -> None:
             screen.blit(self.font_sm.render(title, True, PEACH), (panel.x + 8, y))
