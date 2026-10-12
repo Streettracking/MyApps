@@ -18,6 +18,13 @@ from sim.lidar_fresh import FreshWindow
 from sim.pilot import cloud_forward, ego_sector_ranges
 
 
+# Lidar floor filter for the sector ranges (fly and teacher). Heights are above the measured floor.
+FLOOR_CUT_M = 0.20
+FLOOR_TOP_M = 0.60
+FLOOR_RING_M = (0.6, 2.5)
+FLOOR_MIN_POINTS = 20
+
+
 def jpeg_complete(data: bytes) -> bool:
     """True when the buffer is a JPEG with the end marker, not a half write."""
     if len(data) < 4 or data[:2] != b"\xff\xd8":
@@ -232,6 +239,24 @@ def _yaw_of(orientation) -> float:
     return float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
 
 
+def floor_z(points, origin):
+    """Floor height in the cloud frame (odom, z up): 5th percentile of z in a ring around the dog."""
+    d = np.hypot(points[:, 0] - float(origin[0]), points[:, 1] - float(origin[1]))
+    ring = points[(d > FLOOR_RING_M[0]) & (d < FLOOR_RING_M[1]), 2]
+    if len(ring) < FLOOR_MIN_POINTS:
+        return None
+    return float(np.percentile(ring, 5))
+
+
+def drop_floor(points, origin):
+    """Keep returns between FLOOR_CUT_M and FLOOR_TOP_M above the floor. Too few points: unchanged."""
+    floor = floor_z(points, origin)
+    if floor is None:
+        return points
+    z = points[:, 2]
+    return points[(z > floor + FLOOR_CUT_M) & (z < floor + FLOOR_TOP_M)]
+
+
 def _ranges_of(sample, pose, self_radius: float = 0.6):
     try:
         raw = np.ascontiguousarray(np.asarray(sample.data, dtype=np.uint8))
@@ -245,6 +270,9 @@ def _ranges_of(sample, pose, self_radius: float = 0.6):
         if len(points) == 0:
             return None
         origin = np.array([float(pose.pose.pose.position.x), float(pose.pose.pose.position.y)], dtype=np.float32)
+        points = drop_floor(points, origin)
+        if len(points) == 0:
+            return [None] * 8
         yaw = _yaw_of(pose.pose.pose.orientation)
         return ego_sector_ranges(points[:, :2], origin, yaw, self_radius=self_radius)
     except Exception:

@@ -51,6 +51,9 @@ except ImportError:  # python3 /root/flybrain/main.py has no package parent
     from sensors import cloud_forward
 
 
+# Forward lidar stop while the teacher leads. Fly-only and a lost link keep STOP_M (1.0 m).
+TEACHER_LEAD_STOP_M = 0.5
+
 class BrainLoop:
     def __init__(self, drive: SportDrive, mb: MbTrainer, state_path: str, self_radius: float = 0.6):
         self.drive = drive
@@ -539,6 +542,18 @@ class BrainLoop:
         self._emit(cmd, now)
         return cmd
 
+    def _guard_range(self, now: float, forward_m):
+        """Forward range for apply_guards. 1.0 m stop normally.
+
+        While the teacher leads (weight above zero and a fresh teacher_aim),
+        only a return nearer than TEACHER_LEAD_STOP_M stops forward speed.
+        """
+        if forward_m is None:
+            return None
+        if self.teacher_weight > 0.005 and self.lead.aim_fresh(now) and float(forward_m) >= TEACHER_LEAD_STOP_M:
+            return None
+        return forward_m
+
     def _command_will_move(self, cmd: DriveCommand, now: float, forward_m) -> bool:
         """True when the command that would leave this tick is not a full stop."""
         if self._stop_latched(now):
@@ -547,7 +562,7 @@ class BrainLoop:
         if self.pilot.mode == "auto" and self.teacher_weight > 0.005:
             teacher_x, teacher_z, _hit_l, _hit_r = self.lead.remote(now)
             speed, yaw = mix_velocity(cmd.x, cmd.z, teacher_x, teacher_z, self.teacher_weight)
-            speed, yaw, _stopped = apply_guards(speed, yaw, self.pilot.mode == "estop", forward_m)
+            speed, yaw, _stopped = apply_guards(speed, yaw, self.pilot.mode == "estop", self._guard_range(now, forward_m))
         return abs(float(speed)) > 1e-6 or abs(float(yaw)) > 1e-6
 
     def _blend_teacher(self, cmd: DriveCommand, now: float, forward_m) -> DriveCommand:
@@ -581,7 +596,7 @@ class BrainLoop:
             mixed_x,
             mixed_z,
             self.pilot.mode == "estop",
-            forward_m,
+            self._guard_range(now, forward_m),
         )
         who = "учитель" if self.teacher_weight >= 0.995 else "смешанно"
         return DriveCommand(out_x, out_z, stopped, cmd.phase, who, cmd.hint)

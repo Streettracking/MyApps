@@ -617,19 +617,19 @@ def best_box(boxes, conf_min: float = 0.5):
 
 
 def teacher_yaw(offset: float) -> float:
-    """Strong proportional turn, ±1 rad/s. Outside the ±15° cone never below the minimum.
+    """Teacher turn, exactly the yaw of ``teacher_velocity``.
 
     Image right (positive offset) yaws right (negative z). Inside a ~3° deadband
     no yaw, so the walk does not wobble.
     """
+    # Same yaw as teacher_velocity (the pre-walk build 96b3fe5): no turn inside
+    # CENTER_BAND, then linear up to Z_MAX at the frame edge.
     off = float(offset)
-    bearing = abs(box_bearing_deg(0.5 + off))
-    if bearing <= YAW_DEADBAND_DEG:
+    if abs(off) <= CENTER_BAND:
         return 0.0
-    mag = min(TEACHER_YAW_MAX, max(TEACHER_YAW_MIN, TEACHER_YAW_GAIN * abs(off)))
-    if bearing > AIM_CONE_DEG + 1e-9:
-        mag = max(mag, TEACHER_YAW_MIN_OUT)
-    return -mag if off > 0.0 else mag
+    span = 0.5 - CENTER_BAND
+    excess = off - (CENTER_BAND if off > 0.0 else -CENTER_BAND)
+    return float(clamp_velocity(0.0, -excess / span * Z_MAX)[1])
 
 
 def approach_velocity(box, forward_m, stop_h: float = STOP_BOX_H_DEFAULT, x_cap: float = TEACHER_X_CAP, lidar_stop_m: float = TEACHER_LIDAR_STOP_M):

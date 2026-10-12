@@ -1246,6 +1246,7 @@ class TeacherLeadTests(unittest.TestCase):
         self.assertAlmostEqual(miss.status()["fly_z"], 0.0)
         self.assertAlmostEqual(miss.status()["teacher_z"], 0.8)
 
+        # Teacher leading: only a return nearer than 0.5 m stops forward (0.8 m walks).
         blocked = loop_at(5.0)
         blocked.forward_m = 0.8
         blocked.handle(
@@ -1253,7 +1254,7 @@ class TeacherLeadTests(unittest.TestCase):
             5.0,
         )
         cmd = blocked.tick(5.0)
-        self.assertEqual(cmd.x, 0.0)
+        self.assertAlmostEqual(cmd.x, 0.4)
         self.assertAlmostEqual(cmd.z, 0.3)
 
         halted = loop_at(5.0)
