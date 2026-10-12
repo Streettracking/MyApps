@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
+from sim.brain_panel import PanelTrace, widget_status
 from sim.frame_sense import features_from_frames
 from sim.learn_flash import flash_payload
 from sim.map_marks import MarkLayer
@@ -108,6 +109,8 @@ class BrainLoop:
         self._yolo_l = None
         self._yolo_r = None
         self._yolo_t = -1e9
+        self._dog_in_frame = False
+        self.panel = PanelTrace()
         self._lock = threading.Lock()
         self._log("наблюдение: SportClient не трогаем, пока нет автономии или перехвата")
 
@@ -289,6 +292,12 @@ class BrainLoop:
                 self._yolo_l = _yolo_vec(data.get("yolo_l"))
                 self._yolo_r = _yolo_vec(data.get("yolo_r"))
                 self._yolo_t = float(now)
+                self._dog_in_frame = (
+                    self._yolo_l is not None
+                    or self._yolo_r is not None
+                    or bool(data.get("hit_l"))
+                    or bool(data.get("hit_r"))
+                )
             elif op == "heartbeat":
                 pass
 
@@ -372,6 +381,8 @@ class BrainLoop:
             self.confidence_r = float(self.mb.conf_r.percent)
             self.confidence_l_ready = bool(self.mb.conf_l.ready)
             self.confidence_r_ready = bool(self.mb.conf_r.ready)
+            dog = (float(now) - self._yolo_t) <= AIM_HOLD_S and bool(self._dog_in_frame)
+            self.panel.note(float(now), float(value), dog, self.mb)
 
     def tick(self, now: float) -> DriveCommand:
         now = float(now)
@@ -521,7 +532,7 @@ class BrainLoop:
         drive_l = _hemisphere_drive(self.mb.brain, self.mb.last_fwd)
         drive_r = _hemisphere_drive(self.mb.brain_r, self.mb.last_fwd_r)
         with self._lock:
-            return {
+            payload = {
                 "mode": self.pilot.mode,
                 "label": self.pilot.label(),
                 "phase": self.pilot.phase,
@@ -597,6 +608,8 @@ class BrainLoop:
                 "flash_r": flash_payload(self.mb.flash_r),
                 "log": list(self.log),
             }
+            payload.update(widget_status(self.mb, self.panel))
+            return payload
 
 
 def _yolo_vec(value):

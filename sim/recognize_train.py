@@ -528,11 +528,12 @@ class RecognizeTrainSim:
         """Map MBON scores into 0..1 for the shared plot, using this run's own range."""
         if not rows:
             return []
-        vals = [v for _, v in self.peer_curve[-400:]] + [v for _, v in self.other_curve[-400:]]
-        lo = min(vals) if vals else 0.0
-        hi = max(vals) if vals else 1.0
-        span = hi - lo if hi > lo else 1.0
-        return [(t, (v - lo) / span) for t, v in rows[-400:]]
+        from .brain_panel import scale_readout_curves
+
+        dog, none = scale_readout_curves(self.peer_curve, self.other_curve)
+        if rows is self.peer_curve:
+            return dog
+        return none
 
     def summary(self) -> dict:
         def _window(rows: list[tuple[float, float]], start: float, end: float) -> float | None:

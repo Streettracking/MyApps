@@ -54,6 +54,7 @@ SIM_FILES = (
     "npz_compat.py",
     "teacher_lead.py",
     "stimuli.py",
+    "brain_panel.py",
 )
 
 FORBIDDEN = (

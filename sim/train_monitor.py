@@ -263,6 +263,7 @@ class MonitorView:
     recog_line: str = ""
     teacher_weight: float = 0.0
     lead_plaque: str = ""
+    brain_offline: bool = False
 
 
 def fit_window(ww: int, wh: int) -> tuple:
@@ -2388,6 +2389,10 @@ class TrainMonitor:
         titles = dict(BLOCK_TITLES)
         if view.lidar_mode:
             titles["lidar"] = view.lidar_mode
+        if getattr(view, "brain_offline", False):
+            from .brain_panel import brain_header
+
+            titles["brain"] = brain_header(True)
         import pygame
 
         for name in BLOCKS:
@@ -2845,6 +2850,17 @@ class TrainMonitor:
             str(getattr(view, "teacher_skips", "") or ""),
             str(getattr(view, "lead_plaque", "") or ""),
             round(float(getattr(view, "teacher_weight", 0.0) or 0.0), 3),
+            bool(getattr(view, "brain_offline", False)),
+            int(getattr(view, "n_pam", 0) or 0),
+            int(getattr(view, "total_pam", 0) or 0),
+            int(getattr(view, "n_ppl1", 0) or 0),
+            int(getattr(view, "kc_on", 0) or 0),
+            int(getattr(view, "kc_n", 0) or 0),
+            _series_mark(getattr(view, "peer_curve", ())),
+            _series_mark(getattr(view, "other_curve", ())),
+            _series_mark(getattr(view, "drift_curve", ())),
+            _bins_mark(getattr(view, "kc_bins", None)),
+            _events_mark(getattr(view, "dan_events", ())),
         )
 
     def _brain_panel_fresh(self, view: MonitorView, content) -> bool:
@@ -2860,6 +2876,13 @@ class TrainMonitor:
         import pygame
 
         body = pygame.Rect(content.x, content.y, content.w, content.h)
+        if getattr(view, "brain_offline", False):
+            from .brain_panel import offline_plate
+
+            plate = offline_plate(_scheme_rgb("card"), _scheme_rgb("ink_dim"))
+            pygame.draw.rect(screen, plate, body)
+            self._brain_panel_cache = None
+            return
         log_source = self.journal_rect
         self.log_rows = max(5, (log_source.h - 34) // 16) if log_source is not None else 5
         if not no_snap() and self._brain_panel_fresh(view, content):
@@ -4341,6 +4364,30 @@ class TrainMonitor:
         y = rect.y + 6
         screen.blit(pad, (x, y))
         self._mixed(screen, text, x + 5, y + 2, "[3] {7}", VALUE)
+
+
+def _series_mark(rows) -> tuple:
+    if not rows:
+        return (0, 0.0, 0.0)
+    t, v = rows[-1]
+    return (len(rows), round(float(t), 3), round(float(v), 3))
+
+
+def _bins_mark(bins) -> tuple:
+    if bins is None:
+        return (0, 0.0)
+    vals = np.asarray(bins, dtype=float).ravel()
+    if vals.size == 0:
+        return (0, 0.0)
+    return (int(vals.size), round(float(vals.sum()), 3))
+
+
+def _events_mark(events) -> tuple:
+    if not events:
+        return (0, "")
+    last = events[-1]
+    kind = last[1] if len(last) > 1 else ""
+    return (len(events), str(kind))
 
 
 def _wrap(text: str, width: int) -> list[str]:

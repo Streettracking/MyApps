@@ -1328,11 +1328,12 @@ def _opt_float(payload: dict, key: str) -> float | None:
 def _scaled(session: LiveSession, rows: list[tuple[float, float]]) -> list[tuple[float, float]]:
     if not rows:
         return []
-    vals = [v for _, v in session.peer_curve[-400:]] + [v for _, v in session.other_curve[-400:]]
-    lo = min(vals) if vals else 0.0
-    hi = max(vals) if vals else 1.0
-    span = hi - lo if hi > lo else 1.0
-    return [(t, (v - lo) / span) for t, v in rows[-400:]]
+    from .brain_panel import scale_readout_curves
+
+    dog, none = scale_readout_curves(session.peer_curve, session.other_curve)
+    if rows is session.peer_curve:
+        return dog
+    return none
 
 
 def _recog_line(session: LiveSession, remote: dict) -> str:
@@ -1502,21 +1503,17 @@ def _live_view(
             **common,
         )
     if session.onboard:
-        remote = session.remote
-        return MonitorView(
+        from .brain_panel import brain_panel_from_status
+
+        remote = session.remote if isinstance(session.remote, dict) else {}
+        age = onboard.status_age() if onboard is not None else None
+        panel_ok, panel_fields = brain_panel_from_status(remote, age)
+        view_kw = dict(
             title="тренировка узнавания   мозг на роботе",
             mode_label=f"борт · {session.pilot.label()}",
             learner="mb",
             dan_mode="teacher",
-            kc_on=int(remote.get("kc_on") or 0),
-            kc_n=int(remote.get("kc_n") or 0),
-            drift=float(remote.get("drift") or 0.0),
             readout_caption="сырой выход с борта",
-            n_pam=int(remote.get("n_pam") or 0),
-            n_ppl1=int(remote.get("n_ppl1") or 0),
-            total_pam=int(remote.get("n_pam_total") or 0),
-            total_ppl1=int(remote.get("n_ppl1_total") or 0),
-            lifetime_known=("n_pam_total" in remote and "n_ppl1_total" in remote),
             hemi_l=_opt_float(remote, "r_l"),
             hemi_r=_opt_float(remote, "r_r"),
             hemi_z=_opt_float(remote, "z_fly"),
@@ -1540,8 +1537,15 @@ def _live_view(
                 str(remote.get("eyes_ru") or "") or None,
             ),
             onboard=True,
-            **common,
+            brain_offline=not panel_ok,
         )
+        view_kw.update(common)
+        if panel_ok:
+            view_kw.update(panel_fields)
+        else:
+            view_kw["teacher_counts"] = ""
+            view_kw["brain_offline"] = True
+        return MonitorView(**view_kw)
     rec = session.recognizer
     assert rec is not None
     return MonitorView(

@@ -514,5 +514,191 @@ class BrainPanelTests(unittest.TestCase):
             pygame.quit()
 
 
+def _recorded_status():
+    """A /status body the way the onboard brain publishes the panel fields."""
+    return {
+        "dog_in_frame": 3.0,
+        "dog_in_frame_series": [[0.0, 1.0], [1.0, 3.0]],
+        "no_dog": 0.0,
+        "no_dog_series": [[0.5, 0.0]],
+        "kc_mbon_drift": 4.25,
+        "kc_mbon_drift_series": [[0.0, 1.0], [1.0, 4.25]],
+        "treats_session": 3,
+        "treats_total": 11,
+        "kc_bins": [0.0] * 47 + [1.0],
+        "kc_on": 12,
+        "kc_n": 5137,
+        "pam_l": 2,
+        "pam_r": 1,
+        "ppl1_l": 0,
+        "ppl1_r": 4,
+        "n_pam": 99,
+        "drift": 0.0,
+        "n_ppl1": 4,
+        "n_ppl1_total": 9,
+        "dan_events": [[1.0, "PAM"], [2.0, "PPL1"]],
+    }
+
+
+class _StatusLink:
+    def __init__(self, age, status):
+        self._age = age
+        self.status = status
+
+    def status_age(self):
+        return self._age
+
+    def status_line(self, bridge_open=False):
+        return "борт"
+
+
+class BrainPanelStatusTests(unittest.TestCase):
+    def test_recorded_status_fills_the_same_panel_fields_as_sim(self):
+        from sim.brain_panel import BRAIN_STATUS_STALE_S, brain_panel_from_status
+        from sim.yolo_teacher import counts_line
+
+        self.assertEqual(BRAIN_STATUS_STALE_S, 2.0)
+        ok, fields = brain_panel_from_status(_recorded_status(), BRAIN_STATUS_STALE_S)
+        self.assertTrue(ok)
+        self.assertEqual(fields["drift"], 4.25)
+        self.assertEqual(fields["drift_curve"], [(0.0, 1.0), (1.0, 4.25)])
+        self.assertEqual(fields["n_pam"], 3)
+        self.assertEqual(fields["total_pam"], 11)
+        self.assertEqual(fields["n_ppl1"], 4)
+        self.assertEqual(fields["total_ppl1"], 9)
+        self.assertTrue(fields["lifetime_known"])
+        self.assertEqual(fields["kc_on"], 12)
+        self.assertEqual(fields["kc_n"], 5137)
+        self.assertEqual(len(fields["kc_bins"]), 48)
+        self.assertAlmostEqual(float(fields["kc_bins"][-1]), 1.0)
+        self.assertEqual(fields["peer_curve"], [(0.0, 1.0 / 3.0), (1.0, 1.0)])
+        self.assertEqual(fields["other_curve"], [(0.5, 0.0)])
+        self.assertEqual(fields["teacher_counts"], counts_line(2, 1, 0, 4))
+        self.assertEqual(fields["dan_events"], [(1.0, "PAM"), (2.0, "PPL1")])
+
+    def test_stale_or_missing_status_drops_the_numbers(self):
+        from sim.brain_panel import (
+            BRAIN_OFFLINE_TITLE,
+            BRAIN_STATUS_STALE_S,
+            brain_header,
+            brain_panel_from_status,
+        )
+
+        recorded = _recorded_status()
+        ok, fields = brain_panel_from_status(recorded, BRAIN_STATUS_STALE_S + 0.01)
+        self.assertFalse(ok)
+        self.assertEqual(fields, {})
+        self.assertEqual(brain_header(True), BRAIN_OFFLINE_TITLE)
+        self.assertEqual(BRAIN_OFFLINE_TITLE, "нет данных с борта")
+        for broken in (None, {}, {"drift": 1.0}):
+            ok, fields = brain_panel_from_status(broken, 0.1)
+            self.assertFalse(ok)
+            self.assertEqual(fields, {})
+        missing = dict(recorded)
+        del missing["kc_bins"]
+        ok, fields = brain_panel_from_status(missing, 0.1)
+        self.assertFalse(ok)
+        self.assertEqual(fields, {})
+        ok, _fields = brain_panel_from_status(recorded, None)
+        self.assertFalse(ok)
+
+    def test_onboard_view_uses_the_status_and_greys_out_when_stale(self):
+        import pygame
+
+        from pathlib import Path
+
+        from sim.brain_panel import BRAIN_STATUS_STALE_S, offline_plate
+        from sim.recognize_train_live import LiveSession, _live_view
+        from sim.train_monitor import TrainMonitor, _scheme_rgb
+
+        session = LiveSession(Path("/tmp/mb_panel_view.npz"), onboard=True)
+        recorded = _recorded_status()
+        session.remote = recorded
+        live = _live_view(session, None, None, "", None, True, "—", _StatusLink(0.2, recorded))
+        self.assertFalse(live.brain_offline)
+        self.assertEqual(live.n_pam, 3)
+        self.assertEqual(live.total_pam, 11)
+        self.assertEqual(live.drift, 4.25)
+        self.assertEqual(live.kc_on, 12)
+        self.assertEqual(live.peer_curve[-1], (1.0, 1.0))
+        self.assertIn("PAM_L", live.teacher_counts)
+        self.assertIn("PPL1_R", live.teacher_counts)
+
+        stale = _live_view(
+            session,
+            None,
+            None,
+            "",
+            None,
+            True,
+            "—",
+            _StatusLink(BRAIN_STATUS_STALE_S + 0.5, recorded),
+        )
+        self.assertTrue(stale.brain_offline)
+        self.assertEqual(stale.n_pam, 0)
+        self.assertEqual(stale.peer_curve, [])
+        self.assertEqual(stale.drift_curve, [])
+        self.assertEqual(stale.teacher_counts, "")
+        self.assertIsNone(stale.kc_bins)
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("offline-brain")
+            mon._on_resize(1920, 1017)
+            mon.draw(stale)
+            content = mon._content_of("brain")
+            plate = offline_plate(_scheme_rgb("card"), _scheme_rgb("ink_dim"))
+            color = mon.screen.get_at((content.centerx, content.centery))
+            self.assertEqual(tuple(color[:3]), plate)
+            self.assertNotEqual(plate, _scheme_rgb("card"))
+        finally:
+            pygame.quit()
+
+    def test_onboard_status_is_json_and_splits_dog_from_empty(self):
+        import json
+
+        import numpy as np
+
+        from robot.flybrain_onboard.app import BrainLoop
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.brain_panel import BRAIN_PANEL_KEYS, brain_panel_from_status
+        from sim.mb_train import MbTrainer, default_npz
+
+        brain = MbTrainer(default_npz(), seed=1)
+        loop = BrainLoop(SportDrive(None), brain, "/tmp/mb_panel_status.npz")
+        camera = np.zeros((64, 96, 3), dtype=np.uint8)
+        lidar = np.zeros_like(camera)
+        loop.ingest(camera, lidar, 1.0)
+        quiet = json.loads(json.dumps(loop.status()))
+        for key in BRAIN_PANEL_KEYS:
+            self.assertIn(key, quiet)
+        self.assertIsNone(quiet["dog_in_frame"])
+        self.assertEqual(quiet["dog_in_frame_series"], [])
+        self.assertEqual(len(quiet["no_dog_series"]), 1)
+        self.assertEqual(quiet["no_dog"], quiet["no_dog_series"][0][1])
+        self.assertEqual(len(quiet["kc_bins"]), 48)
+        self.assertIsInstance(quiet["kc_bins"][0], float)
+        self.assertIsInstance(quiet["kc_mbon_drift"], float)
+        self.assertIsInstance(quiet["treats_session"], int)
+        self.assertIsInstance(quiet["treats_total"], int)
+        loop.handle(
+            {"op": "teacher_aim", "yolo_l": [0.9, 0.2, 0.4, 0.5], "weight": 0.0},
+            2.0,
+        )
+        loop.ingest(camera, lidar, 2.0)
+        seen = json.loads(json.dumps(loop.status()))
+        self.assertEqual(len(seen["dog_in_frame_series"]), 1)
+        self.assertEqual(seen["dog_in_frame"], seen["dog_in_frame_series"][0][1])
+        self.assertEqual(len(seen["no_dog_series"]), 1)
+        ok, fields = brain_panel_from_status(seen, 0.0)
+        self.assertTrue(ok)
+        self.assertEqual(fields["n_pam"], seen["treats_session"])
+        self.assertEqual(fields["total_pam"], seen["treats_total"])
+        self.assertEqual(fields["kc_on"], seen["kc_on"])
+        self.assertEqual(fields["kc_n"], seen["kc_n"])
+        self.assertEqual(len(fields["peer_curve"]), 1)
+        self.assertEqual(len(fields["other_curve"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

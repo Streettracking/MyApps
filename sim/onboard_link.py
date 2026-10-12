@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import socket
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -36,6 +37,7 @@ class OnboardLink:
         self.port = int(port)
         self.base = f"http://{host}:{int(port)}"
         self.status: dict[str, Any] = {}
+        self.status_at = 0.0
         self.ok = False
         self.last_error = ""
         self.last_command = ""
@@ -70,6 +72,7 @@ class OnboardLink:
         got = self._request("GET", "/status")
         if got:
             self.status = got
+            self.status_at = time.monotonic()
         return self.status
 
     def post(self, op: str, **extra: Any) -> dict:
@@ -79,7 +82,15 @@ class OnboardLink:
         got = self._request("POST", "/cmd", body)
         if got:
             self.status = got
+            self.status_at = time.monotonic()
         return self.status
+
+    def status_age(self, now=None):
+        """Seconds since the last non-empty status. None when none has arrived."""
+        if not self.status or self.status_at <= 0.0:
+            return None
+        clock = time.monotonic() if now is None else float(now)
+        return clock - self.status_at
 
     def status_line(self, bridge_open: bool = False) -> str:
         where = f"борт {self.host}:{self.port}"
