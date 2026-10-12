@@ -46,7 +46,7 @@ DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
     "A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  "
-    "U запись  стрелки после M  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
+    "U запись  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
 )
 
 
@@ -731,8 +731,8 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
         onboard.poll()
         state["poll"] = now
     # post() already wrote onboard.status. Mirror it on this frame, including
-    # when the poll interval has not elapsed, so M and a held arrow send
-    # op=manual from took_over and mode=manual without waiting for the next GET.
+    # when the poll interval has not elapsed, so M sends op=manual from
+    # took_over and mode=manual without waiting for the next GET.
     _mirror_remote(session, onboard.status)
     _note_bridge(session, now, state)
     if inp.stand_up:

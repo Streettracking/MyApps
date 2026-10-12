@@ -579,7 +579,7 @@ class RecognizeTrainSim:
 
 
 SIM_KEYS = "T/X учить  A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  U запись  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
-HEBB_KEYS = "стрелки ход   U запись   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
+HEBB_KEYS = "U запись   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
 
 
 def _command_name(steer_x: float, steer_z: float, hold: bool) -> str:
@@ -831,7 +831,7 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         sim_frame += 1
         view = session.view(
             focused=inp.focused,
-            udp_status="симулятор. В автономии ведёт мозг, иначе стрелки или сценарий.",
+            udp_status="симулятор. В автономии ведёт мозг, иначе сценарий.",
             last_command=command_name,
             keys_hint=SIM_KEYS if session.learner_kind == "mb" else HEBB_KEYS,
         )

@@ -80,7 +80,7 @@ DIST0 = 3.05
 # Nearly straight up or down, short of the flip at ±90°.
 PITCH_LIM = 89.0 * math.pi / 180.0
 PAN_KEY = 0.07
-VIEW_HINT = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   стрелки WASD   Home сброс   F каркас   T поверх окон"
+VIEW_HINT = "ЛКМ обзор   ПКМ/СКМ/Shift сдвиг   колёсико зум   Home сброс   F каркас   T поверх окон"
 
 
 def artifact_dir() -> Path:
@@ -1477,13 +1477,10 @@ def _keys(orbit: Orbit, event, frames=None) -> None:
             frames[0] = not frames[0]
         return
     step = PAN_KEY
-    if key in (pygame.K_LEFT, pygame.K_a):
-        orbit.nudge(-step, 0.0)
-    elif key in (pygame.K_RIGHT, pygame.K_d):
-        orbit.nudge(step, 0.0)
-    elif key in (pygame.K_UP, pygame.K_w, pygame.K_PAGEUP):
+    # Arrows and WASD used to pan this view. The mouse does that now.
+    if key == pygame.K_PAGEUP:
         orbit.nudge(0.0, step)
-    elif key in (pygame.K_DOWN, pygame.K_s, pygame.K_PAGEDOWN):
+    elif key == pygame.K_PAGEDOWN:
         orbit.nudge(0.0, -step)
     elif key in (pygame.K_HOME, pygame.K_r) and not repeat:
         orbit.reset()

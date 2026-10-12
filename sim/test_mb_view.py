@@ -544,19 +544,31 @@ class BrainTests(unittest.TestCase):
         pygame.init()
         try:
             held = Orbit()
-            _keys(held, _Key(pygame.K_d))
-            self.assertAlmostEqual(held.pan_x, PAN_KEY)
+            before = (held.pan_x, held.pan_y, held.yaw, held.pitch)
+            for key in (
+                pygame.K_a,
+                pygame.K_d,
+                pygame.K_w,
+                pygame.K_s,
+                pygame.K_LEFT,
+                pygame.K_RIGHT,
+                pygame.K_UP,
+                pygame.K_DOWN,
+            ):
+                _keys(held, _Key(key))
+                _keys(held, _Key(key, repeat=True))
+            self.assertEqual((held.pan_x, held.pan_y, held.yaw, held.pitch), before)
+            self.assertFalse(held.auto)
             _keys(held, _Key(pygame.K_PAGEUP))
             self.assertAlmostEqual(held.pan_y, PAN_KEY)
-            _keys(held, _Key(pygame.K_a, repeat=False))
-            self.assertFalse(held.auto)
-            self.assertAlmostEqual(held.pan_x, 0.0)
-            _keys(held, _Key(pygame.K_a, repeat=True))
-            self.assertAlmostEqual(held.pan_x, -PAN_KEY)
+            _keys(held, _Key(pygame.K_PAGEDOWN))
+            self.assertAlmostEqual(held.pan_y, 0.0)
             self.assertEqual(held.yaw, YAW0)
+            held.nudge(PAN_KEY, PAN_KEY)
             _keys(held, _Key(pygame.K_HOME))
             self.assertEqual(held.yaw, YAW0)
             self.assertEqual(held.pan_x, 0.0)
+            self.assertEqual(held.pan_y, 0.0)
         finally:
             pygame.quit()
 
@@ -565,6 +577,17 @@ class BrainTests(unittest.TestCase):
         x1, y1, _z1 = _project(origin, 0.0, 0.0, 3.0, 100.0, 100.0, 200.0, 0.4, 0.3)
         self.assertLess(float(x1[0]), float(x0[0]))
         self.assertGreater(float(y1[0]), float(y0[0]))
+
+    def test_trainer_arrows_do_not_steer(self):
+        import inspect
+
+        from sim.train_monitor import TrainMonitor
+
+        src = inspect.getsource(TrainMonitor.pump)
+        self.assertNotIn("steer_x", src)
+        self.assertNotIn("steer_z", src)
+        self.assertNotIn("K_UP", src)
+        self.assertNotIn("K_LEFT", src)
 
     def test_eyes_follow_the_plaques_and_frames_start_off(self):
         import pygame
@@ -965,6 +988,12 @@ class WindowPinTests(unittest.TestCase):
         fly = Path(view.__file__).resolve().parent.joinpath("mb_flywire.py").read_text(encoding="utf-8")
         self.assertIn("VIEW_HINT", fly)
         self.assertIn("поверх окон", view.VIEW_HINT)
+        self.assertIn("ЛКМ", view.VIEW_HINT)
+        self.assertIn("ПКМ", view.VIEW_HINT)
+        self.assertIn("колёсико", view.VIEW_HINT)
+        self.assertIn("Home", view.VIEW_HINT)
+        self.assertNotIn("стрелки", view.VIEW_HINT)
+        self.assertNotIn("WASD", view.VIEW_HINT)
         self.assertEqual(pin.PIN_TIP, "поверх окон")
         self.assertIn("draw.arc", src)
         self.assertIn("aaline", src)
@@ -1008,7 +1037,8 @@ class WindowPinTests(unittest.TestCase):
             _keys(orbit, _Key(pygame.K_t, repeat=True))
             self.assertEqual((orbit.pan_x, orbit.pan_y, orbit.yaw, orbit.pitch), before)
             _keys(orbit, _Key(pygame.K_d))
-            self.assertAlmostEqual(orbit.pan_x, PAN_KEY)
+            _keys(orbit, _Key(pygame.K_LEFT))
+            self.assertEqual(orbit.pan_x, 0.0)
         finally:
             pygame.quit()
 
