@@ -103,3 +103,19 @@ def frame_age_caption(age_s, fps, stale_s: float = FRAME_STALE_S) -> tuple:
     except (TypeError, ValueError):
         rate = 0
     return "кадр %.1f с · %d fps" % (age, rate), False
+
+
+def record_caption(saved, dups) -> str:
+    return "%d кадров · %d дублей" % (int(saved or 0), int(dups or 0))
+
+
+def record_hint(saved, dups) -> str:
+    """Ask to move the camera once duplicates pile up."""
+    try:
+        kept = int(saved or 0)
+        copies = int(dups or 0)
+    except (TypeError, ValueError):
+        return ""
+    if copies >= 3 or (copies > 0 and kept > 0 and copies >= kept):
+        return "сдвиньте камеру"
+    return ""

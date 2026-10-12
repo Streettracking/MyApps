@@ -268,6 +268,7 @@ class MonitorView:
     record_idle: bool = False
     record_folder: str = ""
     record_hard: int = 0  # N-latch frames YOLO still boxed
+    record_dups: int = 0
     record_latch: str = ""  # "dog" / "no_dog" while D or N is locked
     hemi_l: float | None = None
     hemi_r: float | None = None
@@ -2971,6 +2972,26 @@ class TrainMonitor:
         elif cam_inner is not None:
             self._camera_halves(screen, cam_inner, view)
         self._draw_frame_age(screen, host)
+        self._draw_record_note(screen, host, view)
+
+    def _draw_record_note(self, screen, host, view: MonitorView) -> None:
+        from .ui_present import record_caption, record_hint
+
+        if host is None or host.w < 8:
+            return
+        saved = int(getattr(view, "record_saved", 0) or 0)
+        dups = int(getattr(view, "record_dups", 0) or 0)
+        if not view.record_on and saved <= 0 and dups <= 0:
+            self.record_note_rect = None
+            return
+        age = getattr(self, "frame_age_rect", None)
+        top = host.bottom - 8 if age is None or age.h < 4 else age.top - 4
+        text = record_caption(saved, dups)
+        rect = self._chip(screen, host, text, RED if view.record_on else LABEL, top - self.font_sm.get_height() - 6)
+        hint = record_hint(saved, dups)
+        if hint:
+            self._chip(screen, host, hint, AMBER, rect.y, x=rect.right + 6)
+        self.record_note_rect = rect
 
     def _chip(self, screen, host, text: str, color, y: int, x: int | None = None):
         import pygame
