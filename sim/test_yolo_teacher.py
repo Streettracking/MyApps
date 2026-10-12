@@ -929,5 +929,172 @@ class QuietLaunchTests(unittest.TestCase):
         self.assertNotIn(".kill(", go2)
 
 
+class _Box:
+    def __init__(self, x0, x1, conf=0.9):
+        self.x0 = x0
+        self.x1 = x1
+        self.y0 = 0.2
+        self.y1 = 0.8
+        self.conf = conf
+
+
+class TeacherLeadTests(unittest.TestCase):
+    def test_mix_and_plaque(self):
+        from sim.teacher_lead import lead_plaque, mix_velocity
+
+        self.assertEqual(mix_velocity(0.4, -0.2, 0.0, 0.4, 0.0), (0.4, -0.2))
+        self.assertEqual(mix_velocity(0.4, -0.2, 0.0, 0.4, 1.0), (0.0, 0.4))
+        mixed = mix_velocity(0.4, 0.0, 0.0, 0.4, 0.5)
+        self.assertAlmostEqual(mixed[0], 0.2)
+        self.assertAlmostEqual(mixed[1], 0.2)
+        self.assertEqual(lead_plaque(0.0), "ведёт: муха")
+        self.assertEqual(lead_plaque(1.0), "ведёт: учитель")
+        self.assertEqual(lead_plaque(0.7), "ведёт: смешанно 70/30")
+
+    def test_turn_toward_the_box_and_search_the_last_side(self):
+        from sim.pilot import STOP_M, X_MAX
+        from sim.teacher_lead import TeacherLead
+
+        lead = TeacherLead()
+        speed, yaw = lead.update_from_boxes(0.0, [_Box(0.05, 0.25)], 3.0, 3.0)
+        self.assertLess(yaw, 0.0)
+        self.assertEqual(speed, 0.0)
+        speed, yaw = lead.update_from_boxes(0.2, [_Box(0.75, 0.95)], 3.0, 3.0)
+        self.assertGreater(yaw, 0.0)
+        speed, yaw = lead.update_from_boxes(0.4, [_Box(0.45, 0.55)], 3.0, 3.0)
+        self.assertAlmostEqual(yaw, 0.0)
+        self.assertAlmostEqual(speed, X_MAX)
+        speed, yaw = lead.update_from_boxes(0.6, [_Box(0.45, 0.55)], STOP_M, 3.0)
+        self.assertAlmostEqual(speed, 0.0)
+        self.assertAlmostEqual(yaw, 0.0)
+        speed, yaw = lead.update_from_boxes(1.0, [], 3.0, 3.0)
+        self.assertEqual(speed, 0.0)
+        self.assertGreater(yaw, 0.0)
+        other = TeacherLead()
+        other.update_from_boxes(0.0, [_Box(0.05, 0.25)], 3.0, 3.0)
+        speed, yaw = other.update_from_boxes(0.2, [], 3.0, 3.0)
+        self.assertLess(yaw, 0.0)
+
+    def test_estop_and_lidar_beat_the_teacher(self):
+        from sim.teacher_lead import apply_guards, mix_velocity
+
+        mixed = mix_velocity(0.2, 0.2, 0.4, 0.3, 1.0)
+        stopped = apply_guards(mixed[0], mixed[1], True, 3.0)
+        self.assertEqual(stopped, (0.0, 0.0, True))
+        held = apply_guards(0.4, 0.3, False, 0.8)
+        self.assertEqual(held[0], 0.0)
+        self.assertAlmostEqual(held[1], 0.3)
+        self.assertFalse(held[2])
+
+    def test_match_rewards_and_a_miss_does_not(self):
+        from sim.teacher_lead import TeacherLead, commands_match, match_reinforce
+
+        self.assertEqual(match_reinforce(True, True, False), ("pam", None))
+        self.assertEqual(match_reinforce(True, False, True), (None, "pam"))
+        self.assertEqual(match_reinforce(False, True, True), (None, None))
+        self.assertTrue(commands_match(0.4, 0.0, 0.4, 0.02))
+        self.assertFalse(commands_match(0.4, 0.0, 0.0, 0.4))
+        lead = TeacherLead()
+        lead.hit_l = True
+        lead.hit_r = False
+        self.assertEqual(lead.action_kinds(0.0, True, True, True), ("pam", None))
+        self.assertEqual(lead.action_kinds(0.1, True, True, True), (None, None))
+        self.assertEqual(lead.action_kinds(0.0, False, True, True), (None, None))
+        self.assertEqual(lead.action_kinds(1.0, True, False, True), (None, None))
+        lead.note(0.0, True)
+        lead.note(1.0, False)
+        self.assertAlmostEqual(lead.fraction(1.0), 0.5)
+
+    def test_onboard_mix_estop_and_match_leave_the_npz_alone(self):
+        import tempfile
+        from pathlib import Path
+
+        import numpy as np
+
+        from robot.flybrain_onboard.app import BrainLoop
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.npz_compat import open_npz
+
+        def loop_at(now):
+            brain = MbTrainer(default_npz(), seed=1, overlap=0.4)
+            loop = BrainLoop(SportDrive(None), brain, "/tmp/mb_teacher_lead.npz")
+            loop.learn = True
+            loop.mb.learn = True
+            camera = np.zeros((32, 32, 3), dtype=np.uint8)
+            loop.ingest(camera, np.zeros_like(camera), now)
+            loop.handle({"op": "autonomy_on"}, now)
+            loop.frames_ok = True
+            loop.last_frame_t = now
+            loop.last_hb = now
+            loop.recognized = True
+            loop.recognized_l = True
+            loop.recognized_r = True
+            loop.mb.r_l = 4.0
+            loop.mb.r_r = 4.0
+            loop.dist_m = 3.0
+            loop.forward_m = 3.0
+            return loop
+
+        agree = loop_at(5.0)
+        before = agree.mb.teacher_pam_l
+        agree.handle(
+            {"op": "teacher_aim", "x": 0.4, "z": 0.0, "weight": 1.0, "hit_l": True, "hit_r": False},
+            5.0,
+        )
+        cmd = agree.tick(5.0)
+        self.assertAlmostEqual(cmd.x, 0.4)
+        self.assertAlmostEqual(cmd.z, 0.0)
+        self.assertEqual(agree.mb.teacher_pam_l, before + 1)
+        self.assertEqual(agree.status()["lead"], "учитель")
+        self.assertAlmostEqual(agree.status()["teacher_weight"], 1.0)
+        self.assertAlmostEqual(agree.status()["fly_x"], 0.4)
+        self.assertAlmostEqual(agree.status()["teacher_x"], 0.4)
+        self.assertAlmostEqual(agree.status()["lead_match"], 1.0)
+
+        miss = loop_at(5.0)
+        before = miss.mb.teacher_pam_l
+        miss.handle(
+            {"op": "teacher_aim", "x": 0.0, "z": 0.8, "weight": 0.5, "hit_l": True, "hit_r": True},
+            5.0,
+        )
+        cmd = miss.tick(5.0)
+        self.assertAlmostEqual(cmd.x, 0.2)
+        self.assertAlmostEqual(cmd.z, 0.4)
+        self.assertEqual(miss.mb.teacher_pam_l, before)
+        self.assertEqual(miss.status()["lead"], "смешанно")
+        self.assertAlmostEqual(miss.status()["fly_z"], 0.0)
+        self.assertAlmostEqual(miss.status()["teacher_z"], 0.8)
+
+        blocked = loop_at(5.0)
+        blocked.forward_m = 0.8
+        blocked.handle(
+            {"op": "teacher_aim", "x": 0.4, "z": 0.3, "weight": 1.0, "hit_l": False, "hit_r": False},
+            5.0,
+        )
+        cmd = blocked.tick(5.0)
+        self.assertEqual(cmd.x, 0.0)
+        self.assertAlmostEqual(cmd.z, 0.3)
+
+        halted = loop_at(5.0)
+        halted.handle({"op": "teacher_aim", "x": 0.4, "z": 0.3, "weight": 1.0}, 5.0)
+        halted.handle({"op": "estop"}, 5.0)
+        cmd = halted.tick(5.1)
+        self.assertEqual(cmd.x, 0.0)
+        self.assertEqual(cmd.z, 0.0)
+        self.assertEqual(halted.pilot.mode, "estop")
+        self.assertTrue(all(abs(move[0]) < 1e-9 and abs(move[2]) < 1e-9 for move in halted.drive.moves))
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "state.npz"
+            agree.mb.save(path)
+            with open_npz(path) as saved:
+                self.assertNotIn("teacher_weight", saved.files)
+                self.assertNotIn("lead_match", saved.files)
+            fresh = MbTrainer(default_npz(), seed=1, overlap=0.4)
+            fresh.load(path)
+            self.assertEqual(fresh.teacher_pam_l, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

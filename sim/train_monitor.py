@@ -163,6 +163,7 @@ class MonitorInput:
     treat_down: bool = False
     punish_down: bool = False
     focused: bool = True
+    teacher_weight: float | None = None
 
 
 @dataclass
@@ -259,6 +260,8 @@ class MonitorView:
     phase_ru: str = ""
     eyes_line: str = ""
     recog_line: str = ""
+    teacher_weight: float = 0.0
+    lead_plaque: str = ""
 
 
 def fit_window(ww: int, wh: int) -> tuple:
@@ -767,6 +770,8 @@ class TrainMonitor:
         self._header_short = False
         self._client_size = (WIN_W, WIN_H)
         self.estop_bar_rect = pygame.Rect(0, 0, 0, 0)
+        self.lead_slider_rect = pygame.Rect(0, 0, 0, 0)
+        self._lead_drag = False
         self._pin_surface = None
         self._pin_applied = None
         self.dock = tree_from_dict(self._settings.get("layout") if self._persist else None)
@@ -1628,6 +1633,9 @@ class TrainMonitor:
             return
         if self._help_hit(pos):
             return
+        if self._lead_at(win_pos, inp, drag=False):
+            self._lead_drag = True
+            return
         if self._header_chrome_hit(pos):
             return
         if self.view_rect.collidepoint(pos):
@@ -1835,13 +1843,20 @@ class TrainMonitor:
             elif event.type == pygame.MOUSEWHEEL:
                 self._on_wheel(event)
             elif event.type == pygame.MOUSEMOTION:
-                if self._scroll_drag is not None:
+                if self._lead_drag:
+                    buttons = getattr(event, "buttons", (1, 0, 0))
+                    if buttons and buttons[0]:
+                        self._lead_at(event.pos, inp, drag=True)
+                    else:
+                        self._lead_drag = False
+                elif self._scroll_drag is not None:
                     buttons = getattr(event, "buttons", (1, 0, 0))
                     if buttons and buttons[0]:
                         self._drag_scroll(event.pos)
                 elif self._split_drag is not None:
                     self._drag_splitter(event.pos)
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                self._lead_drag = False
                 self._scroll_drag = None
                 self._finish_block_drag(event.pos)
                 self._split_drag = None
@@ -2811,6 +2826,8 @@ class TrainMonitor:
             str(getattr(view, "mode_label", "") or ""),
             str(getattr(view, "teacher_counts", "") or ""),
             str(getattr(view, "teacher_skips", "") or ""),
+            str(getattr(view, "lead_plaque", "") or ""),
+            round(float(getattr(view, "teacher_weight", 0.0) or 0.0), 3),
         )
 
     def _brain_panel_fresh(self, view: MonitorView, content) -> bool:
@@ -3790,6 +3807,7 @@ class TrainMonitor:
     def _draw_mb(self, screen, view: MonitorView, panel) -> int:
         import pygame
 
+        self.lead_slider_rect = pygame.Rect(0, 0, 0, 0)
         sm = self.font_sm
         rx, col_w = panel.x, panel.w
         limit = panel.right - 4
@@ -3868,7 +3886,80 @@ class TrainMonitor:
                 label_color=tone,
                 status_samples=SKIP_STATUS,
             )
+        y = self._draw_lead_row(screen, view, panel, y)
         return y
+
+    def _lead_at(self, win_pos, inp, drag: bool) -> bool:
+        """Map a pointer x onto the teacher weight. Drag keeps the track."""
+        import pygame
+
+        rect = getattr(self, "lead_slider_rect", None)
+        if rect is None or rect.w < 8:
+            return False
+        logical = self._logical_pos(win_pos)
+        point = pygame.Rect(rect)
+        if drag:
+            point.inflate_ip(0, 28)
+        if not point.collidepoint(logical[0], logical[1]):
+            return False
+        span = float(rect.w)
+        share = (float(logical[0]) - float(rect.x)) / span
+        if share < 0.0:
+            share = 0.0
+        elif share > 1.0:
+            share = 1.0
+        inp.teacher_weight = share
+        return True
+
+    def _draw_lead_row(self, screen, view, panel, y: int) -> int:
+        """Plaque and weight track. Omitted whole when the block is short."""
+        import pygame
+
+        from .teacher_lead import lead_plaque
+
+        self.lead_slider_rect = pygame.Rect(0, 0, 0, 0)
+        if getattr(view, "learner", "") != "mb":
+            return y
+        weight = float(getattr(view, "teacher_weight", 0.0) or 0.0)
+        if weight < 0.0:
+            weight = 0.0
+        elif weight > 1.0:
+            weight = 1.0
+        plaque = str(getattr(view, "lead_plaque", "") or "") or lead_plaque(weight)
+
+        def paint_plaque() -> None:
+            screen.blit(self.font_sm.render(plaque, True, LABEL), (panel.x, y))
+
+        nxt = self._paint_line(screen, panel, y, "lead", paint_plaque)
+        if nxt is None:
+            return y
+        y = nxt
+        row = self._brain_row_h()
+        if y + row > panel.bottom:
+            return y
+        band = pygame.Rect(panel.x, y, panel.w, row)
+        track = pygame.Rect(panel.x + 8, band.centery - 3, max(1, panel.w - 16), 6)
+
+        def paint_track() -> None:
+            pygame.draw.rect(screen, INSET, track, border_radius=3)
+            fill_w = int(round(track.w * weight))
+            if fill_w > 0:
+                pygame.draw.rect(screen, PEACH, pygame.Rect(track.x, track.y, fill_w, track.h), border_radius=3)
+            pygame.draw.rect(screen, LINE, track, width=1, border_radius=3)
+            thumb_x = track.x + int(round((track.w - 1) * weight))
+            thumb = pygame.Rect(0, 0, 8, 14)
+            thumb.center = (thumb_x, track.centery)
+            if thumb.x < track.x:
+                thumb.x = track.x
+            if thumb.right > track.right:
+                thumb.right = track.right
+            pygame.draw.rect(screen, PEACH, thumb, border_radius=2)
+
+        nxt = self._paint_line(screen, panel, y, "lead-slider", paint_track)
+        if nxt is None:
+            return y
+        self.lead_slider_rect = track
+        return nxt
 
     def _progress_line(self, screen, line: str, x: int, y: int, limit=None) -> None:
         if line.startswith("метки "):

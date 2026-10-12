@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ONBOARD = ROOT / "robot" / "flybrain_onboard"
 
 # ui_theme.py is not in this list. learn_flash keeps a dark card if it is missing.
+# teacher_lead.py is. The dog mixes the teacher command with the fly.
 SIM_FILES = (
     "mb_runtime.py",
     "mb_train.py",
@@ -49,6 +50,7 @@ SIM_FILES = (
     "pilot.py",
     "hemifield.py",
     "npz_compat.py",
+    "teacher_lead.py",
 )
 
 FORBIDDEN = (

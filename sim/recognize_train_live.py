@@ -639,6 +639,111 @@ def _mirror_remote(session: LiveSession, status: dict) -> None:
             session.log.append(str(line))
 
 
+def take_teacher_weight(session, inp) -> None:
+    """Slider motion. None means the pointer is not on the track."""
+    value = getattr(inp, "teacher_weight", None)
+    if value is None:
+        return
+    from .teacher_lead import clamp_weight
+
+    session.teacher_weight = clamp_weight(value)
+
+
+def _lead_of(session):
+    from .teacher_lead import TeacherLead
+
+    lead = getattr(session, "lead", None)
+    if lead is None:
+        lead = TeacherLead()
+        session.lead = lead
+    from .teacher_lead import clamp_weight
+
+    lead.weight = clamp_weight(getattr(session, "teacher_weight", 0.0))
+    return lead
+
+
+def _lead_boxes(session):
+    teacher = getattr(session, "teacher", None)
+    if teacher is not None:
+        boxes = getattr(teacher, "boxes", None)
+        if boxes:
+            return list(boxes)
+    return list(getattr(session, "teacher_boxes", ()) or ())
+
+
+def refresh_teacher_wish(session, now: float, dist_m, forward_m):
+    """Teacher command from the latest boxes. Does not move the dog."""
+    lead = _lead_of(session)
+    boxes = _lead_boxes(session)
+    lead.update_from_boxes(now, boxes, dist_m, forward_m)
+    teacher = getattr(session, "teacher", None)
+    overlap = float(getattr(session, "overlap", 0.4) or 0.4)
+    if teacher is not None and boxes:
+        from .yolo_teacher import hemisphere_hits
+
+        hit_l, hit_r = hemisphere_hits(boxes, overlap, conf_min=float(getattr(teacher, "conf", 0.5)), center_only=True)
+    else:
+        hit_l, hit_r = False, False
+    lead.hit_l = bool(hit_l)
+    lead.hit_r = bool(hit_r)
+    return lead
+
+
+def publish_teacher_aim(session, onboard, now: float, dist_m, forward_m) -> None:
+    """Send the teacher's wish to the dog. The dog mixes it with the fly."""
+    if onboard is None:
+        return
+    if float(now) - float(getattr(session, "_aim_post_t", -1.0)) < 0.10:
+        return
+    lead = refresh_teacher_wish(session, now, dist_m, forward_m)
+    teacher = getattr(session, "teacher", None)
+    learning = bool(getattr(session, "learn", False))
+    if getattr(session, "onboard", False):
+        learning = bool((getattr(session, "remote", {}) or {}).get("learning", False))
+    teacher_on = bool(teacher is not None and teacher.on and learning)
+    session._aim_post_t = float(now)
+    onboard.post(
+        "teacher_aim",
+        x=float(lead.teacher_x),
+        z=float(lead.teacher_z),
+        weight=float(lead.weight),
+        hit_l=bool(lead.hit_l) and teacher_on,
+        hit_r=bool(lead.hit_r) and teacher_on,
+    )
+
+
+def blend_local_command(session, cmd, now: float, estop: bool, autonomy: bool, dist_m, forward_m):
+    """Replace an autonomy command when the teacher weight is above zero.
+
+    Weight 0 returns the fly command unchanged. Match PAM is applied here
+    for a local brain. The onboard brain does that itself.
+    """
+    from .pilot import DriveCommand
+    from .teacher_lead import apply_guards, commands_match, mix_velocity
+
+    lead = refresh_teacher_wish(session, now, dist_m, forward_m)
+    lead.fly_x = float(cmd.x)
+    lead.fly_z = float(cmd.z)
+    matched = commands_match(cmd.x, cmd.z, lead.teacher_x, lead.teacher_z)
+    teacher = getattr(session, "teacher", None)
+    teacher_on = bool(teacher is not None and getattr(teacher, "on", False))
+    learning = bool(getattr(session, "learn", False))
+    if autonomy and not estop:
+        lead.note(now, matched)
+        mb = getattr(session, "mb", None)
+        if mb is not None:
+            kind_l, kind_r = lead.action_kinds(now, matched, learning, teacher_on)
+            if kind_l or kind_r:
+                mb.teach_sides(kind_l, kind_r, float(now))
+    session.lead_match = lead.fraction(now)
+    if not autonomy or lead.weight <= 0.005:
+        return cmd
+    mixed_x, mixed_z = mix_velocity(cmd.x, cmd.z, lead.teacher_x, lead.teacher_z, lead.weight)
+    out_x, out_z, stopped = apply_guards(mixed_x, mixed_z, bool(estop), forward_m)
+    who = "учитель" if lead.weight >= 0.995 else "смешанно"
+    return DriveCommand(out_x, out_z, stopped, cmd.phase, who, cmd.hint)
+
+
 def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now: float, frames_ok: bool) -> str:
     if session.mb is None:
         eye_l, eye_r = None, None
@@ -658,6 +763,15 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         r_r=0.0 if session.mb is None else float(session.mb.r_r),
         recognized_l=eye_l,
         recognized_r=eye_r,
+    )
+    cmd = blend_local_command(
+        session,
+        cmd,
+        session.now(),
+        bool(inp.estop or session.pilot.mode == "estop"),
+        bool(session.pilot.autonomy),
+        session.aim_dist,
+        session.forward_m,
     )
     if cmd.hint and cmd.hint != session._hint_logged:
         session._log(cmd.hint)
@@ -735,6 +849,14 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
     # took_over and mode=manual without waiting for the next GET.
     _mirror_remote(session, onboard.status)
     _note_bridge(session, now, state)
+    remote = session.remote or {}
+    publish_teacher_aim(
+        session,
+        onboard,
+        now,
+        remote.get("distance_m"),
+        remote.get("forward_m"),
+    )
     if inp.stand_up:
         onboard.post("stand_up")
         session._log("StandUp")
@@ -1016,6 +1138,7 @@ def run_live_gui(
                 except FileNotFoundError:
                     session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
             now = time.monotonic()
+            take_teacher_weight(session, inp)
             frame_id, camera, lidar, scan, error, camera_jpeg = pull.latest()
             if session.onboard:
                 disp_lidar = lidar
@@ -1146,6 +1269,12 @@ def run_live_gui(
             pull.stop()
 
 
+def _live_lead_plaque(session) -> str:
+    from .teacher_lead import lead_plaque
+
+    return lead_plaque(float(getattr(session, "teacher_weight", 0.0) or 0.0))
+
+
 def _opt_float(payload: dict, key: str) -> float | None:
     """Missing status fields stay blank. An old onboard build has no lifetime totals."""
     if key not in payload or payload.get(key) is None:
@@ -1269,6 +1398,8 @@ def _live_view(
         teacher_flash_l=str(getattr(session, "teacher_flash_l_show", "") or ""),
         teacher_flash_r=str(getattr(session, "teacher_flash_r_show", "") or ""),
         teacher_boxes=list(getattr(session, "teacher_boxes", ()) or ()),
+        teacher_weight=float(getattr(session, "teacher_weight", 0.0) or 0.0),
+        lead_plaque=_live_lead_plaque(session),
     )
     if session.mb is not None:
         caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"

@@ -30,6 +30,14 @@ from sim.hemifield import DEFAULT_OVERLAP
 from sim.raw_sense import recog_label
 from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, eyes_state_label, phase_label
 from sim.pilot import forward_clearance, scrub_range
+from sim.teacher_lead import (
+    TeacherLead,
+    apply_guards,
+    clamp_weight,
+    commands_match,
+    lead_label,
+    mix_velocity,
+)
 
 try:
     from .drive import SportDrive
@@ -82,6 +90,15 @@ class BrainLoop:
         self._prev_camera = None
         self._prev_near = None
         self._learn_block_log = 0.0
+        self.teacher_weight = 0.0
+        self.fly_x = 0.0
+        self.fly_z = 0.0
+        self.teacher_x = 0.0
+        self.teacher_z = 0.0
+        self.lead_match = 0.0
+        self.lead = TeacherLead()
+        self._got_pam_l = False
+        self._got_pam_r = False
         self._lock = threading.Lock()
         self._log("наблюдение: SportClient не трогаем, пока нет автономии или перехвата")
 
@@ -204,6 +221,20 @@ class BrainLoop:
                 if mode in ("bilateral", "sectors"):
                     self.pilot.set_steer(mode)
                     self._log("руль: %s" % ("билатерально" if mode == "bilateral" else "секторы"))
+            elif op == "teacher_weight":
+                self.teacher_weight = clamp_weight(data.get("weight", 0.0))
+                self.lead.weight = self.teacher_weight
+            elif op == "teacher_aim":
+                self.teacher_weight = clamp_weight(data.get("weight", self.teacher_weight))
+                self.lead.weight = self.teacher_weight
+                self.lead.set_remote(
+                    now,
+                    data.get("x", 0.0),
+                    data.get("z", 0.0),
+                    bool(data.get("hit_l")),
+                    bool(data.get("hit_r")),
+                    self.teacher_weight,
+                )
             elif op == "heartbeat":
                 pass
 
@@ -239,6 +270,8 @@ class BrainLoop:
         self._teach = None
         self._teach_l = None
         self._teach_r = None
+        self._got_pam_l = False
+        self._got_pam_r = False
         if (kind or side_l or side_r) and not self.learn:
             if float(now) - self._learn_block_log > 1.0:
                 self._log("обучение выключено, T/X веса не меняют")
@@ -248,8 +281,13 @@ class BrainLoop:
             side_r = None
         if kind:
             self.mb.teach(fwd, kind, float(now))
+            if kind == "pam":
+                self._got_pam_l = True
+                self._got_pam_r = True
         elif side_l or side_r:
             self.mb.teach_sides(side_l, side_r, float(now))
+            self._got_pam_l = side_l == "pam"
+            self._got_pam_r = side_r == "pam"
         with self._lock:
             self.recognized = seen
             self.sector = self.marks.aim_sector if seen else None
@@ -322,8 +360,45 @@ class BrainLoop:
             recognized_l=recognized_l,
             recognized_r=recognized_r,
         )
+        cmd = self._blend_teacher(cmd, now, forward_m)
         self._emit(cmd, now)
         return cmd
+
+    def _blend_teacher(self, cmd: DriveCommand, now: float, forward_m) -> DriveCommand:
+        """Keep the fly command at weight 0. Otherwise mix, then apply the stops."""
+        teacher_x, teacher_z, hit_l, hit_r = self.lead.remote(now)
+        self.fly_x = float(cmd.x)
+        self.fly_z = float(cmd.z)
+        self.teacher_x = float(teacher_x)
+        self.teacher_z = float(teacher_z)
+        self.lead.hit_l = bool(hit_l)
+        self.lead.hit_r = bool(hit_r)
+        self.lead.weight = float(self.teacher_weight)
+        matched = commands_match(cmd.x, cmd.z, teacher_x, teacher_z)
+        if self.pilot.mode == "auto":
+            self.lead.note(now, matched)
+            kind_l, kind_r = self.lead.action_kinds(
+                now,
+                matched,
+                bool(self.learn),
+                True,
+                self._got_pam_l,
+                self._got_pam_r,
+            )
+            if kind_l or kind_r:
+                self.mb.teach_sides(kind_l, kind_r, float(now))
+        self.lead_match = self.lead.fraction(now)
+        if self.pilot.mode != "auto" or self.teacher_weight <= 0.005:
+            return cmd
+        mixed_x, mixed_z = mix_velocity(cmd.x, cmd.z, teacher_x, teacher_z, self.teacher_weight)
+        out_x, out_z, stopped = apply_guards(
+            mixed_x,
+            mixed_z,
+            self.pilot.mode == "estop",
+            forward_m,
+        )
+        who = "учитель" if self.teacher_weight >= 0.995 else "смешанно"
+        return DriveCommand(out_x, out_z, stopped, cmd.phase, who, cmd.hint)
 
     def _release_stand_lock(self, now: float) -> None:
         if self.pilot.mode == "estop":
@@ -424,6 +499,14 @@ class BrainLoop:
                 "frames_ok": bool(self.frames_ok),
                 "link_ok": bool(link_ok),
                 "hint": self.pilot.hint,
+                "lead": lead_label(self.teacher_weight),
+                "teacher_weight": float(self.teacher_weight),
+                "teacher_x": float(self.teacher_x),
+                "teacher_z": float(self.teacher_z),
+                "fly_x": float(self.fly_x),
+                "fly_z": float(self.fly_z),
+                "lead_match": float(self.lead_match),
+                "lead_match_s": 8.0,
                 "kc_on": int(self.mb.last_kc_on),
                 "kc_n": int(self.mb.brain.n_kc),
                 "kc_l": _compact_kc(None if self.mb.last_fwd is None else self.mb.last_fwd.kc),

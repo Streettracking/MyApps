@@ -482,6 +482,8 @@ class RecognizeTrainSim:
                 yolo_state=str(getattr(self, "yolo_state", "") or ""),
                 teacher_counts=str(getattr(self, "teacher_counts", "") or ""),
                 teacher_boxes=list(getattr(self, "teacher_boxes", ()) or ()),
+                teacher_weight=float(getattr(self, "teacher_weight", 0.0) or 0.0),
+                lead_plaque=_lead_plaque(self),
             )
         assert self.recognizer is not None
         return MonitorView(
@@ -629,6 +631,12 @@ def _steer_name(mode: str) -> str:
     return "билатерально" if mode == "bilateral" else "секторы"
 
 
+def _lead_plaque(session) -> str:
+    from .teacher_lead import lead_plaque
+
+    return lead_plaque(float(getattr(session, "teacher_weight", 0.0) or 0.0))
+
+
 def _readouts(session: RecognizeTrainSim) -> tuple[float, float]:
     if session.mb is None:
         return 0.0, 0.0
@@ -658,6 +666,17 @@ def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, floa
         r_r=r_r,
         recognized_l=eye_l,
         recognized_r=eye_r,
+    )
+    from .recognize_train_live import blend_local_command
+
+    cmd = blend_local_command(
+        session,
+        cmd,
+        now,
+        bool(inp.estop or session.pilot.mode == "estop"),
+        bool(session.pilot.autonomy) and session.learner_kind == "mb",
+        session.aim_dist,
+        session.forward_m,
     )
     if cmd.hint and cmd.hint != session._hint_logged:
         session._log(cmd.hint)
@@ -765,6 +784,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         inp = mon.pump()
         if inp.quit:
             break
+        from .recognize_train_live import take_teacher_weight
+
+        take_teacher_weight(session, inp)
         if inp.record_toggle:
             on = rec.toggle()
             _path = rec.stats()[3]
