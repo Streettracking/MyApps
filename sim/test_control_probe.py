@@ -574,5 +574,112 @@ class SimRoundTests(unittest.TestCase):
             pygame.quit()
 
 
+class RunMarkerTests(unittest.TestCase):
+    def test_label_changes_once_and_frames_keep_it(self):
+        from sim.run_marker import RunMarker, apply_marker_fields
+        from sim.sim_status import apply_sim_command, sim_status
+
+        marker = RunMarker()
+        self.assertEqual(marker.label(), "до · слева")
+        self.assertFalse(marker.set_stage("до"))
+        self.assertTrue(marker.set_stage("train"))
+        self.assertEqual(marker.stage, "обучение")
+        self.assertTrue(marker.set_side("right"))
+        marker.note(1.0, 480.0, 12.5)
+        marker.note(1.1, -3.0, 20.0)
+        self.assertEqual(marker.drive_log[-1]["label"], "обучение · справа")
+        self.assertEqual(marker.drive_log[0]["drive_l"], 480.0)
+        self.assertEqual(marker.drive_log[0]["drive_r"], 12.5)
+        self.assertEqual(marker.drive_log[0]["label"], "обучение · справа")
+
+        class _Session:
+            paused = False
+            learn = True
+            mb = None
+            approach = None
+            pilot = None
+            log = []
+
+            def __init__(self):
+                self.run_marker = RunMarker()
+                self.world = type("W", (), {"t": 2.0})()
+
+            def _log(self, text):
+                self.log.append(text)
+
+        session = _Session()
+        session.run_marker.note(2.0, 11.0, 22.0)
+        body = sim_status(session)
+        self.assertEqual(body["run_label"], "до · слева")
+        self.assertEqual(body["drive_log"][0]["drive_l"], 11.0)
+        self.assertEqual(body["drive_log"][0]["drive_r"], 22.0)
+        self.assertEqual(body["drive_log"][0]["label"], "до · слева")
+        apply_sim_command(session, {"op": "run_marker", "stage": "после", "side": "слева"})
+        self.assertEqual(session.run_marker.label(), "после · слева")
+        self.assertEqual(sum(1 for line in session.log if line.startswith("заход:")), 1)
+        self.assertIn("после", session.log[-1])
+        self.assertIn("слева", session.log[-1])
+        apply_sim_command(session, {"op": "run_marker", "stage": "после", "side": "слева"})
+        self.assertEqual(sum(1 for line in session.log if line.startswith("заход:")), 1)
+        apply_marker_fields(session, "после", "справа")
+        self.assertTrue(any("после" in line and "справа" in line for line in session.log))
+        self.assertEqual(sum(1 for line in session.log if line.startswith("заход:")), 2)
+
+    def test_sim_step_logs_raw_drives_with_the_mark(self):
+        from sim.recognize_train import RecognizeTrainSim, _apply_pilot_keys
+        from sim.sim_status import sim_status
+        from sim.train_monitor import MonitorInput
+
+        session = RecognizeTrainSim(n_agents=1, seed=1, learner="mb", dan="teacher", auto_teach=False)
+        _apply_pilot_keys(session, MonitorInput(run_stage="обучение", run_side="справа"), 0.0)
+        self.assertTrue(any("заход:" in line and "обучение" in line and "справа" in line for line in session.log))
+        before = sum(1 for line in session.log if "заход:" in line)
+        _apply_pilot_keys(session, MonitorInput(run_stage="обучение", run_side="справа"), 0.0)
+        self.assertEqual(sum(1 for line in session.log if "заход:" in line), before)
+        session.step(0.0, 0.0)
+        session.step(0.0, 0.0)
+        body = sim_status(session)
+        self.assertEqual(body["run_label"], "обучение · справа")
+        self.assertGreaterEqual(len(body["drive_log"]), 2)
+        for row in body["drive_log"]:
+            self.assertEqual(row["label"], "обучение · справа")
+            self.assertEqual(row["stage"], "обучение")
+            self.assertEqual(row["side"], "справа")
+            self.assertIsInstance(row["drive_l"], float)
+            self.assertIsInstance(row["drive_r"], float)
+        view = session.view(True, "", "", "")
+        self.assertEqual(view.run_stage, "обучение")
+        self.assertEqual(view.run_side, "справа")
+
+    def test_onboard_status_keeps_the_mark_on_each_frame(self):
+        import json
+
+        import numpy as np
+
+        from robot.flybrain_onboard.app import BrainLoop
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import MbTrainer, default_npz
+
+        loop = BrainLoop(SportDrive(None), MbTrainer(default_npz(), seed=1), "/tmp/run_marker_status.npz")
+        loop.handle({"op": "run_marker", "stage": "до", "side": "слева"}, 1.0)
+        camera = np.zeros((48, 64, 3), dtype=np.uint8)
+        lidar = np.zeros_like(camera)
+        loop.ingest(camera, lidar, 1.0)
+        loop.handle({"op": "run_marker", "stage": "после", "side": "справа"}, 1.2)
+        loop.ingest(camera, lidar, 1.2)
+        body = json.loads(json.dumps(loop.status()))
+        self.assertEqual(body["run_stage"], "после")
+        self.assertEqual(body["run_side"], "справа")
+        self.assertEqual(body["run_label"], "после · справа")
+        self.assertEqual(len(body["drive_log"]), 2)
+        self.assertEqual(body["drive_log"][0]["label"], "до · слева")
+        self.assertEqual(body["drive_log"][1]["label"], "после · справа")
+        self.assertEqual(body["drive_log"][1]["t"], 1.2)
+        self.assertIsInstance(body["drive_log"][1]["drive_l"], float)
+        self.assertIsInstance(body["drive_log"][1]["drive_r"], float)
+        self.assertEqual(body["drive_l"], body["drive_log"][1]["drive_l"])
+        self.assertEqual(body["drive_r"], body["drive_log"][1]["drive_r"])
+
+
 if __name__ == "__main__":
     unittest.main()

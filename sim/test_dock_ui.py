@@ -252,6 +252,78 @@ class TrainerDockTests(unittest.TestCase):
         finally:
             pygame.quit()
 
+    def test_journal_run_marker_chips(self):
+        import pygame
+        import numpy as np
+
+        from sim.dock_layout import find_leaf
+        from sim.train_monitor import MonitorInput, MonitorView, TrainMonitor, window_from_logical
+        from sim.ui_theme import theme_name
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("run-marker")
+            mon._on_resize(1920, 1080)
+            mon._set_theme("dark")
+            self.assertEqual(theme_name(), "dark")
+            view = MonitorView(
+                title="recognition training",
+                learner="mb",
+                learning_on=True,
+                camera=np.zeros((90, 160, 3), dtype=np.uint8),
+                lidar=np.zeros((64, 64, 3), dtype=np.uint8),
+                log_lines=["  0.0s  строка журнала", "  0.1s  заход: до · слева"],
+                run_stage="до",
+                run_side="слева",
+                drive_l=483.2,
+                drive_r=12.1,
+            )
+            mon.draw(view)
+            self.assertGreater(mon.journal_rect.h, 80)
+            self.assertEqual([name for _rect, name in mon.run_stage_rects], ["до", "обучение", "после"])
+            self.assertEqual([name for _rect, name in mon.run_side_rects], ["слева", "справа"])
+            content = mon._content_of("journal")
+            chips_bottom = max(rect.bottom for rect, _name in mon.run_stage_rects + mon.run_side_rects)
+            self.assertLess(chips_bottom, content.bottom - 16)
+            for rect, _name in mon.run_stage_rects + mon.run_side_rects:
+                self.assertTrue(content.contains(rect))
+            selected = mon.run_stage_rects[0][0]
+            idle = mon.run_stage_rects[2][0]
+            peach = tuple(mon.screen.get_at((selected.x + 8, selected.centery))[:3])
+            rest = tuple(mon.screen.get_at((idle.x + 8, idle.centery))[:3])
+            self.assertEqual(peach, (201, 120, 91))
+            self.assertNotEqual(rest, peach)
+            out = __import__("pathlib").Path("/opt/cursor/artifacts")
+            out.mkdir(parents=True, exist_ok=True)
+            frame = mon.present_into((1920, 1080))
+            pygame.image.save(frame, str(out / "run_marker_journal_dark.png"))
+            crop = frame.subsurface(mon.journal_rect.clip(frame.get_rect()))
+            pygame.image.save(crop, str(out / "run_marker_chips_dark.png"))
+
+            after = next(rect for rect, name in mon.run_stage_rects if name == "после")
+            right = next(rect for rect, name in mon.run_side_rects if name == "справа")
+            inp = MonitorInput()
+            wx, wy = window_from_logical(after.center, 1920, 1080)
+            mon._on_primary_down((int(wx), int(wy)), inp)
+            self.assertEqual(inp.run_stage, "после")
+            inp2 = MonitorInput()
+            wx, wy = window_from_logical(right.center, 1920, 1080)
+            mon._on_primary_down((int(wx), int(wy)), inp2)
+            self.assertEqual(inp2.run_side, "справа")
+
+            find_leaf(mon.dock, "journal").collapsed = True
+            mon._apply_layout(mon.screen.get_height())
+            mon.draw(view)
+            self.assertLess(mon.journal_rect.h, 40)
+            self.assertEqual(mon.run_stage_rects, [])
+            self.assertEqual(mon.run_side_rects, [])
+            mon._set_theme("light")
+        finally:
+            from sim.ui_theme import apply_theme
+
+            apply_theme("light")
+            pygame.quit()
+
     def test_view_menu_checks_stay_open_and_the_theme_toggle_saves(self):
         import json
 

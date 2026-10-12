@@ -28,6 +28,7 @@ from sim.learn_flash import flash_payload
 from sim.map_marks import MarkLayer
 from sim.mb_train import PAUSE_GRACE_S, MbTrainer, default_npz
 from sim.hemifield import DEFAULT_OVERLAP, live_turn
+from sim.run_marker import RunMarker
 from sim.raw_sense import recog_label
 from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, eyes_state_label, phase_label
 from sim.pilot import forward_clearance, scrub_range
@@ -65,6 +66,7 @@ class BrainLoop:
         self._link_stop = False
         self.marks = MarkLayer()
         self.log = deque(maxlen=16)
+        self.run_marker = RunMarker()
         self.t0 = time.monotonic()
         self.last_hb = self.t0
         self.last_frame_t = 0.0
@@ -361,6 +363,9 @@ class BrainLoop:
                     or bool(data.get("hit_l"))
                     or bool(data.get("hit_r"))
                 )
+            elif op == "run_marker":
+                self.run_marker.set_stage(data.get("stage"))
+                self.run_marker.set_side(data.get("side"))
             elif op == "heartbeat":
                 pass
 
@@ -454,6 +459,7 @@ class BrainLoop:
             self.confidence_r_ready = bool(self.mb.conf_r.ready)
             dog = (float(now) - self._yolo_t) <= AIM_HOLD_S and bool(self._dog_in_frame)
             self.panel.note(float(now), float(value), dog, self.mb)
+            self.run_marker.note(float(now), float(self.mb.r_l), float(self.mb.r_r))
 
     def tick(self, now: float) -> DriveCommand:
         now = float(now)
@@ -714,6 +720,7 @@ class BrainLoop:
                 "flash_r": flash_payload(self.mb.flash_r),
                 "log": list(self.log),
             }
+            payload.update(self.run_marker.status())
             payload.update(widget_status(self.mb, self.panel))
             return payload
 

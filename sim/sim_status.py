@@ -33,6 +33,12 @@ def sim_status(session) -> dict:
         n_ppl1 = int(mb.n_ppl1)
     watch = getattr(session, "approach", None)
     index = None if watch is None else watch.index()
+    marker = getattr(session, "run_marker", None)
+    marked = (
+        marker.status()
+        if marker is not None
+        else {"run_stage": "", "run_side": "", "run_label": "", "drive_log": []}
+    )
     return {
         "mode": "sim",
         "paused": bool(getattr(session, "paused", False)),
@@ -45,6 +51,10 @@ def sim_status(session) -> dict:
         "n_ppl1": n_ppl1,
         "approach_index": None if index is None else float(index),
         "phase": str(getattr(getattr(session, "pilot", None), "phase", "") or ""),
+        "run_stage": marked["run_stage"],
+        "run_side": marked["run_side"],
+        "run_label": marked["run_label"],
+        "drive_log": marked["drive_log"],
     }
 
 
@@ -78,6 +88,10 @@ def apply_sim_command(session, data: dict) -> None:
         session.learn = True
         if mb is not None:
             mb.learn = True
+    elif op == "run_marker":
+        from .run_marker import apply_marker_fields
+
+        apply_marker_fields(session, data.get("stage"), data.get("side"))
 
 
 class _Handler(BaseHTTPRequestHandler):

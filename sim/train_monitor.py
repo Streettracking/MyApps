@@ -171,6 +171,8 @@ class MonitorInput:
     focused: bool = True
     teacher_weight: float | None = None
     approach_reset: bool = False
+    run_stage: str | None = None
+    run_side: str | None = None
 
 
 @dataclass
@@ -285,6 +287,8 @@ class MonitorView:
     pam_r: int = 0
     ppl1_l: int = 0
     ppl1_r: int = 0
+    run_stage: str = "до"
+    run_side: str = "слева"
 
 
 def fit_window(ww: int, wh: int) -> tuple:
@@ -818,6 +822,8 @@ class TrainMonitor:
         self.brain_packet = None
         self._card_cache: dict = {}
         self._journal_cache = None
+        self.run_stage_rects = []
+        self.run_side_rects = []
         self._brain_panel_cache = None
         self._bg = None
         self._win_bg = None
@@ -1713,6 +1719,14 @@ class TrainMonitor:
         if header:
             self._block_drag = header
             return
+        for rect, name in getattr(self, "run_stage_rects", ()) or ():
+            if rect.collidepoint(pos):
+                inp.run_stage = name
+                return
+        for rect, name in getattr(self, "run_side_rects", ()) or ():
+            if rect.collidepoint(pos):
+                inp.run_side = name
+                return
         bar = getattr(self, "estop_bar_rect", None)
         if bar is not None and bar.w >= 8 and bar.collidepoint(pos):
             inp.estop = True
@@ -1978,6 +1992,8 @@ class TrainMonitor:
                 self._sync_canvas(ww, wh)
         screen = self.screen
         self._fill_bg(screen)
+        self.run_stage_rects = []
+        self.run_side_rects = []
         self._fixed_rows = []
         self._anchors = []
         self._glyph_rects = []
@@ -2969,26 +2985,107 @@ class TrainMonitor:
         else:
             self._draw_hebb(screen, view, pygame.Rect(body.x + 4, body.y + 4, body.w - 8, body.h - 8))
 
+    def _run_marker_layout(self, content, view: MonitorView):
+        """Two chip rows and a drive sample, or nothing when the journal is short."""
+        import pygame
+
+        from .run_marker import SIDES, STAGES
+
+        if view.learner != "mb" or content.w < 160:
+            return [], [], None, 0
+        chip_h = max(18, int(self.font_sm.get_height()) + 4)
+        sample_h = int(self.font_sm.get_height())
+        gap = 3
+        block = chip_h + gap + chip_h + gap + sample_h + 6
+        if content.h < block + 16:
+            return [], [], None, 0
+        x = content.x + 4
+        width = content.w - 8
+        y = content.y + 2
+        stage_rects = self._chip_row(x, y, width, chip_h, STAGES)
+        side_rects = self._chip_row(x, y + chip_h + gap, width, chip_h, SIDES)
+        sample_y = y + chip_h + gap + chip_h + gap
+        return stage_rects, side_rects, sample_y, block
+
+    def _chip_row(self, x: int, y: int, width: int, height: int, names) -> list:
+        import pygame
+
+        gap = 4
+        count = len(names)
+        chip_w = max(1, (int(width) - gap * (count - 1)) // count)
+        rects = []
+        cursor = int(x)
+        for name in names:
+            rects.append((pygame.Rect(cursor, int(y), chip_w, int(height)), name))
+            cursor += chip_w + gap
+        return rects
+
+    def _paint_run_chips(self, screen, rects, selected: str) -> None:
+        import pygame
+
+        for rect, name in rects:
+            on = name == selected
+            pygame.draw.rect(screen, PEACH if on else INSET, rect, border_radius=4)
+            pygame.draw.rect(screen, LINE, rect, 1, border_radius=4)
+            glyph = self.font_sm.render(name, True, VALUE if on else LABEL)
+            screen.blit(
+                glyph,
+                (rect.centerx - glyph.get_width() // 2, rect.centery - glyph.get_height() // 2),
+            )
+
+    def _paint_run_sample(self, screen, view: MonitorView, x: int, y: int) -> None:
+        from .run_marker import run_label
+        from .tabnum import signed
+
+        tag = self.font_sm.render(run_label(view.run_stage, view.run_side), True, LABEL)
+        screen.blit(tag, (x, y))
+        cursor = x + tag.get_width() + 8
+        left = self.font_sm.render("Л", True, LABEL)
+        screen.blit(left, (cursor, y))
+        cursor += left.get_width() + 4
+        cursor = self._cells(screen, signed(view.drive_l, 7, 1), cursor, y, VALUE, size=13)
+        cursor += 8
+        right = self.font_sm.render("П", True, LABEL)
+        screen.blit(right, (cursor, y))
+        cursor += right.get_width() + 4
+        self._cells(screen, signed(view.drive_r, 7, 1), cursor, y, VALUE, size=13)
+
     def _draw_journal_block(self, screen, view: MonitorView, content) -> None:
+        from .tabnum import signed
+
         journal = self.journal_rect
-        log_n = max(5, (journal.h - 34) // 16) if journal is not None else 5
-        if view.learner == "mb" and self.flash_open:
-            log_n = max(3, (journal.h - 34) // 16)
+        stage_rects, side_rects, sample_y, switch_h = self._run_marker_layout(content, view)
+        self.run_stage_rects = stage_rects
+        self.run_side_rects = side_rects
+        floor = 3 if view.learner == "mb" and self.flash_open else 5
+        room = (journal.h - 34 - switch_h) if journal is not None else floor * 16
+        log_n = max(floor, room // 16)
         self.log_rows = int(log_n)
         lines = tuple(view.log_lines[-log_n:])
-        key = (int(content.w), int(content.h), lines, theme_name())
-        cached = None if no_snap() else self._journal_cache
+        stage = str(view.run_stage or "до")
+        side = str(view.run_side or "слева")
+        drives = (signed(view.drive_l, 7, 1), signed(view.drive_r, 7, 1))
+        key = (int(content.w), int(content.h), lines, theme_name(), stage, side, drives, int(switch_h))
+        # The drive sample registers monospace cells every frame. A cached blit
+        # would skip that registration and the column check would see fewer rows.
+        cached = None if no_snap() or switch_h else self._journal_cache
         if cached is not None and cached[0] == key:
             screen.blit(cached[1], content.topleft)
             return
-        y = content.y + 2
+        y = content.y + 2 + switch_h
+        if switch_h:
+            self._paint_run_chips(screen, stage_rects, stage)
+            self._paint_run_chips(screen, side_rects, side)
+            self._paint_run_sample(screen, view, content.x + 4, int(sample_y))
         width_chars = max(24, content.w // 8)
         for line in lines:
             if y + 16 > content.bottom:
                 break
             screen.blit(self.font_sm.render(line[:width_chars], True, LABEL), (content.x + 4, y))
             y += 16
-        if not no_snap() and screen.get_rect().contains(content):
+        if switch_h:
+            self._journal_cache = None
+        elif not no_snap() and screen.get_rect().contains(content):
             self._journal_cache = (key, _snap(screen, content))
 
     def _draw_controls_block(self, screen, view: MonitorView) -> None:

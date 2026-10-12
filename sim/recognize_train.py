@@ -32,6 +32,7 @@ from .pilot import (
     scrub_range,
 )
 from .mb_train import MbTrainer, default_npz
+from .run_marker import RunMarker
 from .raw_sense import N_AZ, OFF_LIDAR, add_recog_camera_only_arg, recog_label, render_view
 from .recognize import ConspecificRecognizer
 from .world import AgentState, ArenaConfig, ArenaWorld, default_agents
@@ -87,6 +88,7 @@ class RecognizeTrainSim:
         self.other_curve: list[tuple[float, float]] = []
         self.metric_curve: list[dict] = []
         self.log: deque[str] = deque(maxlen=200)
+        self.run_marker = RunMarker()
         self._prev_like = 0.0
         self._last_spike_t = -10.0
         self.last_like = 0.0
@@ -303,6 +305,7 @@ class RecognizeTrainSim:
                 bool(getattr(hit, "control", False)),
                 drive,
             )
+            self.run_marker.note(float(self.world.t), float(self.mb.r_l), float(self.mb.r_r))
         else:
             rec = self.recognizer
             assert rec is not None
@@ -529,6 +532,8 @@ class RecognizeTrainSim:
                 teacher_boxes=list(getattr(self, "teacher_boxes", ()) or ()),
                 teacher_weight=float(getattr(self, "teacher_weight", 0.0) or 0.0),
                 lead_plaque=_lead_plaque(self),
+                run_stage=self.run_marker.stage,
+                run_side=self.run_marker.side,
                 **panel_readout(self.mb, self.approach),
             )
         assert self.recognizer is not None
@@ -672,6 +677,9 @@ def _apply_pilot_keys(session: RecognizeTrainSim, inp, now: float) -> None:
     if inp.pause_learn:
         session.learn = not session.learn
         session._log("обучение выключено, T/X веса не меняют" if not session.learn else "обучение включено")
+    from .run_marker import apply_marker_input
+
+    apply_marker_input(session, inp)
 
 
 def _steer_name(mode: str) -> str:

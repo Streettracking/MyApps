@@ -37,6 +37,7 @@ from .hemifield import DEFAULT_OVERLAP, format_fly_line
 from .pilot import format_eyes_line, phase_label
 from .pilot import Pilot, TeachRepeater, clamp_velocity, format_range_line, forward_clearance, scrub_range
 from .recognize import ConspecificRecognizer
+from .run_marker import RunMarker
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATE = ROOT / "logs" / "mb_train_state.npz"
@@ -278,6 +279,7 @@ class LiveSession:
         self.other_curve: list[tuple[float, float]] = []
         self.metric_curve: list[dict] = []
         self.log: deque[str] = deque(maxlen=200)
+        self.run_marker = RunMarker()
         self.t0 = time.monotonic()
         self.last_like = 0.0
         self.last_match = 0.0
@@ -471,6 +473,7 @@ class LiveSession:
             )
             self._note_aim(feat, seen)
             self._note_approach(dt)
+            self.run_marker.note(self.now(), float(self.mb.r_l), float(self.mb.r_r))
             if self.now() - self._last_metric >= 1.0:
                 self.mb.note_drift(self.now())
                 self._record_metric()
@@ -658,6 +661,9 @@ def _apply_live_keys(session: LiveSession, inp, onboard: OnboardLink | None) -> 
         else:
             session.learn = not session.learn
             session._log("обучение выключено, T/X веса не меняют" if not session.learn else "обучение включено")
+    from .run_marker import apply_marker_input
+
+    apply_marker_input(session, inp, onboard)
 
 
 def _mirror_remote(session: LiveSession, status: dict) -> None:
@@ -694,6 +700,9 @@ def _mirror_remote(session: LiveSession, status: dict) -> None:
     session.eye_l_ready = bool(status.get("confidence_L_ready", False))
     session.eye_r_ready = bool(status.get("confidence_R_ready", False))
     session.phase_ru = str(status.get("phase_ru") or "")
+    marker = getattr(session, "run_marker", None)
+    if marker is not None and marker.adopt_status(status):
+        session._log("заход: %s" % marker.label())
     for line in status.get("log") or []:
         if line not in session.log:
             session.log.append(str(line))
@@ -1535,6 +1544,8 @@ def _live_view(
         search_lamp=not bool(getattr(session, "teacher_boxes", None)),
         teacher_weight=float(getattr(session, "teacher_weight", 0.0) or 0.0),
         lead_plaque=_live_lead_plaque(session),
+        run_stage=session.run_marker.stage,
+        run_side=session.run_marker.side,
     )
     if session.mb is not None:
         caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"
