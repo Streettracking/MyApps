@@ -1638,9 +1638,9 @@ class CardButtonTests(unittest.TestCase):
         mon = TrainMonitor("badge-gap")
         view = MonitorView(learner="mb", learning_on=True, autonomy_on=False, steer="bilateral")
         keyed = (
-            ("learn_rect", ("СТОП ОБУЧЕНИЯ", "СТАРТ ОБУЧЕНИЯ"), "P", True),
-            ("auto_rect", ("СТОП АВТО", "СТАРТ АВТО"), "A", True),
-            ("take_rect", ("ПЕРЕХВАТ",), "M", True),
+            ("learn_rect", ("ОБУЧЕНИЕ: ВКЛ", "ОБУЧЕНИЕ: ВЫКЛ"), "P", True),
+            ("auto_rect", ("АВТО: ВКЛ", "АВТО: ВЫКЛ"), "A", True),
+            ("take_rect", ("ПЕРЕХВАТ: ВКЛ", "ПЕРЕХВАТ: ВЫКЛ"), "M", True),
             ("steer_rect", ("БИЛАТЕРАЛЬНО", "СЕКТОРЫ"), "K", False),
             ("treat_rect", ("ЛАКОМСТВО",), "T", True),
             ("stand_up_rect", ("ВСТАТЬ",), "+", False),

@@ -954,9 +954,9 @@ class TrainMonitor:
             items = [
                 ("neg_btn", self._keyed_button_width(("НЕГАТИВ · 00000",), "N", True)),
                 ("kin_btn", self._keyed_button_width(("СОРОДИЧ · 00000",), "D", True)),
-                ("learn", self._keyed_button_width(("СТОП ОБУЧЕНИЯ", "СТАРТ ОБУЧЕНИЯ"), "P", True)),
-                ("auto", self._keyed_button_width(("СТОП АВТО", "СТАРТ АВТО"), "A", True)),
-                ("take", self._keyed_button_width(("ПЕРЕХВАТ",), "M", True)),
+                ("learn", self._keyed_button_width(("ОБУЧЕНИЕ: ВКЛ", "ОБУЧЕНИЕ: ВЫКЛ"), "P", True)),
+                ("auto", self._keyed_button_width(("АВТО: ВКЛ", "АВТО: ВЫКЛ"), "A", True)),
+                ("take", self._keyed_button_width(("ПЕРЕХВАТ: ВКЛ", "ПЕРЕХВАТ: ВЫКЛ"), "M", True)),
                 ("steer", self._keyed_button_width(("БИЛАТЕРАЛЬНО", "СЕКТОРЫ"), "K", False)),
                 ("treat", self._keyed_button_width(("ЛАКОМСТВО",), "T", True)),
                 ("punish", self._keyed_button_width(("ОШИБКА", "ошибка · стоп"), "X", False)),
@@ -3592,25 +3592,28 @@ class TrainMonitor:
         self._button(
             screen,
             self.learn_rect,
-            "СТОП ОБУЧЕНИЯ" if learn_on else "СТАРТ ОБУЧЕНИЯ",
+            "ОБУЧЕНИЕ: ВКЛ" if learn_on else "ОБУЧЕНИЕ: ВЫКЛ",
             PEACH if learn_on else LAMP_OFF,
             self.learn_rect.collidepoint(mouse),
+            label_color=None if learn_on else INK_DIM,
             key="P",
         )
         self._button(
             screen,
             self.auto_rect,
-            "СТОП АВТО" if auto_on else "СТАРТ АВТО",
+            "АВТО: ВКЛ" if auto_on else "АВТО: ВЫКЛ",
             PEACH if auto_on else LAMP_OFF,
             self.auto_rect.collidepoint(mouse),
+            label_color=None if auto_on else INK_DIM,
             key="A",
         )
         self._button(
             screen,
             self.take_rect,
-            "ПЕРЕХВАТ",
+            "ПЕРЕХВАТ: ВКЛ" if grabbed else "ПЕРЕХВАТ: ВЫКЛ",
             PEACH if grabbed else LAMP_OFF,
             self.take_rect.collidepoint(mouse),
+            label_color=None if grabbed else INK_DIM,
             key="M",
         )
         if view.learner == "mb":
