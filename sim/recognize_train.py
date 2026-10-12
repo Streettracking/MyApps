@@ -79,6 +79,8 @@ class RecognizeTrainSim:
         self.peers = agents[1:]
         self.state_path = Path(state_path) if state_path else DEFAULT_STATE
         self.learn = True
+        self.paused = False
+        self.freeze_peers = False
         self.peer_curve: list[tuple[float, float]] = []
         self.other_curve: list[tuple[float, float]] = []
         self.metric_curve: list[dict] = []
@@ -179,6 +181,17 @@ class RecognizeTrainSim:
             agent.yaw = _wrap(agent.yaw + np.pi)
         agent.x, agent.y = nxt_x, nxt_y
 
+    def peer_too_close(self) -> bool:
+        """True when a conspecific is near enough that its box fills the frame."""
+        from .stimuli import TOO_CLOSE_M
+
+        nearest = None
+        for peer in self.peers:
+            dist = float(np.hypot(peer.x - self.learner.x, peer.y - self.learner.y))
+            if nearest is None or dist < nearest:
+                nearest = dist
+        return nearest is not None and 0.05 < nearest <= float(TOO_CLOSE_M)
+
     def _wander_peers(self) -> None:
         for peer in self.peers:
             peer.yaw = _wrap(peer.yaw + float(self.rng.normal(0.0, 0.18)))
@@ -215,7 +228,10 @@ class RecognizeTrainSim:
         if learn is None:
             learn = self.learn
         self.world.step_environment()
-        self._wander_peers()
+        if not self.freeze_peers:
+            self._wander_peers()
+        if self.paused:
+            steer_x, steer_z = 0.0, 0.0
         self._move_body(self.learner, steer_x, steer_z, rate=rate)
         feat, hit = render_view(self.learner, self.world, include_agents=True)
         self.lidar_bank.update(self.learner, self.world, float(self.world.t))
@@ -234,11 +250,13 @@ class RecognizeTrainSim:
             # Auto-teach stands in for a human pressing T/X. It is a DAN, not a D/N label.
             kind = teach
             if kind is None and self.auto_teach and self.dan == "teacher":
-                if hit.dog and not hit.distractor:
+                if hit.dog and self.peer_too_close():
+                    kind = "ppl1"
+                elif hit.dog and not hit.distractor:
                     kind = "pam"
                 elif self.punish_auto and hit.distractor and not hit.dog:
                     kind = "ppl1"
-            stopped = self.pilot.mode == "estop" or bool(self.pilot.held_stop)
+            stopped = self.paused or self.pilot.mode == "estop" or bool(self.pilot.held_stop)
             moving = (not stopped) and (abs(float(steer_x)) + abs(float(steer_z)) > 1e-6)
             self.mb.note_motion_hold(stopped, moving, float(self.world.t))
             if self.mb.learning_hold:
@@ -993,6 +1011,47 @@ def _bin_delta(a: int, b: int) -> int:
     return min(delta, N_AZ - delta)
 
 
+def run_too_close(seed: int = 1) -> dict:
+    """Place a conspecific inside the close distance and let auto-teach punish it.
+
+    The peer is held still, in front of the learner, nearer than ``TOO_CLOSE_M``.
+    A far peer on the next check does not add another PPL1.
+    """
+    from .stimuli import TOO_CLOSE_M
+
+    session = RecognizeTrainSim(
+        n_agents=2,
+        seed=int(seed),
+        state_path=Path("/tmp/too_close_%s.npz" % int(seed)),
+        learner="mb",
+        dan="teacher",
+        auto_teach=True,
+    )
+    session.freeze_peers = True
+    session.world.distractors.clear()
+    session.learner.x, session.learner.y, session.learner.yaw = 2.0, 2.5, 0.0
+    peer = session.peers[0]
+    peer.x = float(session.learner.x) + float(TOO_CLOSE_M) * 0.7
+    peer.y = float(session.learner.y)
+    peer.vx = peer.vy = 0.0
+    before = 0 if session.mb is None else int(session.mb.n_ppl1)
+    for _ in range(4):
+        session.step(0.0, 0.0, learn=True)
+    punished = 0 if session.mb is None else int(session.mb.n_ppl1)
+    dist = float(np.hypot(peer.x - session.learner.x, peer.y - session.learner.y))
+    peer.x = float(session.learner.x) + 2.2
+    far_before = punished
+    session.step(0.0, 0.0, learn=True)
+    far_after = 0 if session.mb is None else int(session.mb.n_ppl1)
+    return {
+        "distance_m": dist,
+        "too_close_m": float(TOO_CLOSE_M),
+        "n_ppl1_before": before,
+        "n_ppl1": punished,
+        "far_added": int(far_after - far_before),
+    }
+
+
 def seek_trial(seed: int, teach_s: float = 25.0, seek_s: float = 20.0, state: Path | None = None) -> dict:
     """Scripted teacher, then autonomy. Distances are true arena metres, not the lidar estimate."""
     from .raw_sense import bearing_bin
@@ -1406,6 +1465,14 @@ def main(argv: list[str] | None = None) -> int:
     apply_go2_control_arg(session, args)
     if args.load or Path(args.state).is_file():
         try_load(session)
+    from .sim_status import SIM_STATUS_PORT, serve_sim
+
+    status_server = serve_sim(session, SIM_STATUS_PORT)
+    if status_server is None:
+        session._log("порт статуса %s занят, внешнее чтение метрик недоступно" % SIM_STATUS_PORT)
+    else:
+        session._log("статус и пауза на 127.0.0.1:%s" % SIM_STATUS_PORT)
+        session._status_server = status_server
     if args.headless:
         summary = run_headless(session, args.seconds or 30.0)
     else:
