@@ -2518,9 +2518,9 @@ class TrainMonitor:
             ("ЗАПИСЬ · 0000", "НЕГАТИВ", "СОРОДИЧ"),
             ("ЗАПИСЬ · 000", "НЕГАТИВ", "СОРОДИЧ"),
             ("ЗАПИСЬ · 00", "НЕГАТИВ", "СОРОДИЧ"),
-            # «СОР · 00» keeps a recording counter on the same button as «СОРОД».
-            ("ЗАПИСЬ · 00", "НЕГАТИВ", "СОР · 00"),
-            ("ЗАП · 00", "НЕГАТ", "СОР · 00"),
+            # 1024 cannot hold the full stems clear of the pill cap.
+            ("ЗАПИСЬ · 00", "НЕГ · 88", "СОР · 88"),
+            ("ЗАП · 00", "НЕГ", "СОР"),
         )
         variants = [(True, False, None), (False, False, None), (False, True, None)]
         variants += [(False, True, pack) for pack in tight_packs]
@@ -2620,8 +2620,8 @@ class TrainMonitor:
             ("brain", self._caption_slot("МОЗГ", lamp=True, key=False)),
             ("teacher", self._caption_slot("УЧИТ", lamp=True, key=False)),
             ("record", self._caption_slot("ЗАПИСЬ · 0000", lamp=True, key=False)),
-            ("neg", self._caption_slot("НЕГАТИВ", lamp=False, key=False)),
-            ("kin", self._caption_slot("СОРОДИЧ", lamp=False, key=False)),
+            ("neg", self._caption_slot("НЕГ", lamp=False, key=False)),
+            ("kin", self._caption_slot("СОР", lamp=False, key=False)),
         ]
 
     def _fit_label(self, avail: int, candidates) -> str:
@@ -2651,8 +2651,9 @@ class TrainMonitor:
         """Complete captions. No button is narrower than the glyphs it draws."""
 
         def face(text: str, lamp: bool) -> int:
+            # 12 px keeps the last letter off the pill's rounded end.
             left = 32 if lamp else 12
-            return left + self.font_sm.size(text)[0] + 4
+            return left + self.font_sm.size(text)[0] + 12
 
         return [
             ("go2", self._go2_need("УПР", True, 4)),
@@ -3960,7 +3961,7 @@ class TrainMonitor:
         if rect.w < 8 or rect.h < 8:
             return
         badge = None if getattr(self, "_header_short", False) else self._draw_key_badge(screen, rect, "Y")
-        room = (badge.left - 6 if badge is not None else rect.right - 4) - (rect.x + 32)
+        room = (badge.left - 6 if badge is not None else rect.right - 12) - (rect.x + 32)
         word = self._fit_label(room, ("УЧИТЕЛЬ", "УЧИТ"))
         title = self.font_sm.render(word, True, VALUE) if word else None
         if title is not None:
@@ -4183,14 +4184,14 @@ class TrainMonitor:
             return
         narrow = header and getattr(self, "_header_short", False)
         key = "" if narrow else key
-        stems = {"НЕГАТИВ": ("НЕГАТИВ", "НЕГАТ", "НЕГ"), "СОРОДИЧ": ("СОРОДИЧ", "СОРОД", "СОР")}.get(word, (word, short))
+        stems = {"НЕГАТИВ": ("НЕГАТИВ", "НЕГ"), "СОРОДИЧ": ("СОРОДИЧ", "СОР")}.get(word, (word, short))
         if narrow:
-            room = rect.w - 16
+            room = rect.w - 24
             if view.record_on and view.record_latch == label:
                 n = int(view.record_saved)
-                text = self._fit_label(room, tuple("%s · %d" % (stem, n) for stem in stems))
+                text = self._fit_label(room, tuple("%s · %d" % (stem, n) for stem in stems)) or stems[-1]
             else:
-                text = self._fit_label(room, stems)
+                text = self._fit_label(room, stems) or stems[-1]
         else:
             text = "%s · %d" % (word, int(view.record_saved)) if view.record_on and view.record_latch == label else word
         if view.record_on and view.record_latch == label:
