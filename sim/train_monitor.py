@@ -150,17 +150,22 @@ def dog_badge_label(
     steer: str = "bilateral",
     compact: bool = False,
     octet: str | None = None,
-) -> tuple[str, bool]:
-    """Header dog-mode text and whether the brain is driving.
+    operator: bool = False,
+) -> tuple[str, str]:
+    """Header dog-mode text and a tone: ``operator``, ``auto``, or ``idle``.
 
-    Driving is orange: ``.213 · АВТО · поиск`` while searching.
-    Standing is grey: ``.213 · стоит``. Compact drops «АВТО» when the bar is narrow.
+    The operator holds the stick: ``.213 · ведёт оператор`` in teacher blue.
+    The brain drives in orange: ``.213 · АВТО · поиск`` while searching.
+    Standing is grey: ``.213 · стоит``. Compact drops the long words when the bar is narrow.
     """
     host = octet or dog_octet()
+    if operator:
+        word = "оператор" if compact else "ведёт оператор"
+        return "%s · %s" % (host, word), "operator"
     name = str(phase or "")
     driving = bool(autonomy_on) and name in DRIVING_PHASES
     if not driving:
-        return "%s · стоит" % host, False
+        return "%s · стоит" % host, "idle"
     if name == "search":
         word = "поиск"
     elif name == "approach" and steer == "sectors":
@@ -170,8 +175,13 @@ def dog_badge_label(
     else:
         word = "доворот"
     if compact:
-        return "%s · %s" % (host, word), True
-    return "%s · АВТО · %s" % (host, word), True
+        return "%s · %s" % (host, word), "auto"
+    return "%s · АВТО · %s" % (host, word), "auto"
+
+
+def operator_has_stick(pilot_mode: str) -> bool:
+    """True while the mode line is the lit takeover, not a stop."""
+    return "ПЕРЕХВАТ" in str(pilot_mode or "")
 PANEL = CARD
 BTN = CARD
 BTN_EDGE = LINE
@@ -2424,14 +2434,15 @@ class TrainMonitor:
         compact = mode == "plain"
         pad = 24
         widest = 0
-        for driving, phase, steer in (
-            (True, "search", "bilateral"),
-            (True, "approach", "bilateral"),
-            (True, "approach", "sectors"),
-            (True, "align_l", "bilateral"),
-            (False, "stop", "bilateral"),
+        for driving, phase, steer, operator in (
+            (True, "search", "bilateral", False),
+            (True, "approach", "bilateral", False),
+            (True, "approach", "sectors", False),
+            (True, "align_l", "bilateral", False),
+            (False, "stop", "bilateral", False),
+            (False, "manual", "bilateral", True),
         ):
-            text, _on = dog_badge_label(driving, phase, steer, compact=compact)
+            text, _tone = dog_badge_label(driving, phase, steer, compact=compact, operator=operator)
             widest = max(widest, self.font.size(text)[0])
         mode_w = widest + pad
         if mode != "full" or not learning:
@@ -2448,11 +2459,12 @@ class TrainMonitor:
         view = getattr(self, "_last_view", None)
         if view is None:
             return
-        text, _driving = dog_badge_label(
+        text, _tone = dog_badge_label(
             bool(getattr(view, "autonomy_on", False)),
             str(getattr(view, "pilot_phase", "") or ""),
             str(getattr(view, "steer", "") or "bilateral"),
             compact=bool(getattr(self, "_badge_compact", False)),
+            operator=operator_has_stick(getattr(view, "pilot_mode", "")),
         )
         pad = 24
         height = 26
@@ -2464,13 +2476,16 @@ class TrainMonitor:
             self.learn_badge_rect = pygame.Rect(self.mode_badge_rect.right + 8, y, learn_w, height)
 
     def _draw_dog_badges(self, screen, view: MonitorView) -> None:
-        text, driving = dog_badge_label(
+        text, tone = dog_badge_label(
             bool(getattr(view, "autonomy_on", False)),
             str(getattr(view, "pilot_phase", "") or ""),
             str(getattr(view, "steer", "") or "bilateral"),
             compact=bool(getattr(self, "_badge_compact", False)),
+            operator=operator_has_stick(getattr(view, "pilot_mode", "")),
         )
-        if driving:
+        if tone == "operator":
+            fill, ink = TEACHER, ESTOP_LABEL
+        elif tone == "auto":
             fill, ink = PEACH, BADGE_INK
         else:
             fill, ink = KEY_BADGE, KEY_BADGE_INK
@@ -3740,14 +3755,26 @@ class TrainMonitor:
             self.auto_rect.collidepoint(mouse),
             key="A",
         )
-        self._button(
-            screen,
-            self.take_rect,
-            "ПЕРЕХВАТ",
-            PEACH if grabbed else LAMP_OFF,
-            self.take_rect.collidepoint(mouse),
-            key="M",
-        )
+        if grabbed:
+            self._button(
+                screen,
+                self.take_rect,
+                "ПЕРЕХВАТ",
+                None,
+                self.take_rect.collidepoint(mouse),
+                label_color=BADGE_INK,
+                fill=PEACH,
+                key="M",
+            )
+        else:
+            self._button(
+                screen,
+                self.take_rect,
+                "ПЕРЕХВАТ",
+                LAMP_OFF,
+                self.take_rect.collidepoint(mouse),
+                key="M",
+            )
         if view.learner == "mb":
             bilateral = view.steer != "sectors"
             self._button(

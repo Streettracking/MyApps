@@ -174,13 +174,17 @@ class HeaderChromeTests(unittest.TestCase):
         from sim.train_monitor import ESTOP, LEARN_BADGE, PEACH, MonitorView, TrainMonitor, dog_badge_label
         from sim.ui_theme import apply_theme
 
-        drive, driving = dog_badge_label(True, "search", "bilateral")
-        self.assertTrue(driving)
+        drive, tone = dog_badge_label(True, "search", "bilateral")
+        self.assertEqual(tone, "auto")
         self.assertEqual(drive, ".213 · АВТО · поиск")
         self.assertTrue(str(DEFAULT_IP).endswith("213"))
-        idle, driving = dog_badge_label(False, "manual")
-        self.assertFalse(driving)
+        idle, tone = dog_badge_label(False, "manual")
+        self.assertEqual(tone, "idle")
         self.assertEqual(idle, ".213 · стоит")
+        operator, tone = dog_badge_label(False, "manual", operator=True)
+        self.assertEqual(tone, "operator")
+        self.assertEqual(operator, ".213 · ведёт оператор")
+        self.assertEqual(dog_badge_label(True, "search", operator=True)[0], ".213 · ведёт оператор")
         self.assertEqual(dog_badge_label(True, "hold")[0], ".213 · стоит")
         self.assertEqual(dog_badge_label(True, "approach", "bilateral")[0], ".213 · АВТО · иду")
         self.assertEqual(dog_badge_label(True, "search", compact=True)[0], ".213 · поиск")
@@ -235,6 +239,39 @@ class HeaderChromeTests(unittest.TestCase):
             self.assertLess(abs(grey[1] - grey[2]), 16)
             self.assertNotEqual(grey, PEACH)
             self._save_menu(mon, "/opt/cursor/artifacts/header_dog_idle_dark.png")
+
+            from sim.train_monitor import TEACHER
+
+            grabbed = MonitorView(
+                title="recognition training",
+                learner="mb",
+                learning_on=True,
+                autonomy_on=False,
+                pilot_phase="manual",
+                pilot_mode="РУЧНОЕ · ПЕРЕХВАТ",
+                steer="bilateral",
+            )
+            mon.draw(grabbed)
+            self._assert_gaps(mon)
+            self.assertIn("ведёт оператор", dog_badge_label(False, "manual", operator=True)[0])
+            blue = self._rgb(mon, mon.mode_badge_rect.x + 8, mon.mode_badge_rect.centery)
+            self.assertEqual(blue, TEACHER)
+            self.assertFalse(mon._badge_compact)
+            self.assertGreaterEqual(mon.mode_badge_rect.w, mon.font.size(".213 · ведёт оператор")[0])
+            self.assertGreater(mon.take_rect.w, 40)
+            lit = self._rgb(mon, mon.take_rect.x + 6, mon.take_rect.centery)
+            self.assertEqual(lit, PEACH)
+            self._save_menu(mon, "/opt/cursor/artifacts/header_operator_badge_dark.png")
+            button = pygame.Rect(mon.take_rect.x, mon.take_rect.y, mon.take_rect.w, mon.take_rect.h)
+            crop = button.inflate(24, 16).clip(mon.screen.get_rect())
+            shot = mon.screen.subsurface(crop).copy()
+            big = pygame.transform.smoothscale(shot, (shot.get_width() * 2, max(1, shot.get_height() * 2)))
+            out = __import__("pathlib").Path("/opt/cursor/artifacts/takeover_button_lit.png")
+            pygame.image.save(big, str(out))
+
+            mon.draw(standing)
+            dim = self._rgb(mon, mon.take_rect.x + 6, mon.take_rect.centery)
+            self.assertNotEqual(dim, PEACH)
         finally:
             pygame.quit()
 

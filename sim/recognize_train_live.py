@@ -628,11 +628,19 @@ def _apply_live_keys(session: LiveSession, inp, onboard: OnboardLink | None) -> 
             onboard.post("space")
         session._log("стоп")
     if inp.takeover and not inp.estop:
-        session.pilot.takeover()
-        if onboard is not None:
-            onboard.pause()
-            onboard.post("takeover")
-        session._log("перехват: ручное, автономия сама не вернётся")
+        held = bool(session.remote.get("took_over")) if onboard is not None else bool(session.pilot.took_over)
+        if held:
+            if onboard is not None:
+                onboard.post("takeover_off")
+            else:
+                session.pilot.stop_auto()
+            session._log("перехват снят, мозг сам не поедет")
+        else:
+            session.pilot.takeover()
+            if onboard is not None:
+                onboard.pause()
+                onboard.post("takeover")
+            session._log("перехват: ручное, автономия сама не вернётся")
     if inp.autonomy_toggle and not inp.estop:
         if session.learner_kind != "mb" and not session.onboard:
             session._log("автономия только у грибовидного тела")

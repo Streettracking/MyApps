@@ -243,12 +243,25 @@ class BrainLoop:
         self._refresh_hold(float(now), False)
         self._log("перехват: ручное, автономия сама не вернётся")
 
+    def on_takeover_release(self, now: float) -> None:
+        """Drop the stick and stay paused. Autonomy does not start by itself."""
+        self._stop_once()
+        if self.pilot.mode != "estop":
+            self.pilot.stop_auto()
+        if not self.paused:
+            self.paused = True
+            self._log("пауза: ход ноль, пластичность заморожена")
+        self._refresh_hold(float(now), False)
+        self._log("перехват снят, мозг сам не поедет")
+
     def handle(self, data: dict, now: float) -> None:
         self.note_heartbeat(now)
         op = str(data.get("op", ""))
         with self._lock:
             if op == "autonomy_on":
-                if self.pilot.start_auto(now):
+                if self.paused and self.pilot.took_over:
+                    self._log("перехват держит руль, автономия ждёт явной команды")
+                elif self.pilot.start_auto(now):
                     self._log("автономия: поиск в одну сторону, z=+0.35, без качки")
                     self._log("руль: %s" % ("билатерально, z от R_L−R_R" if self.pilot.steer == "bilateral" else "секторы"))
                     self._log("сырой сектор — мозг; sector_smooth — медиана контроллера")
@@ -316,6 +329,8 @@ class BrainLoop:
                 self.on_space(now)
             elif op == "takeover":
                 self.on_takeover(now)
+            elif op == "takeover_off":
+                self.on_takeover_release(now)
             elif op == "stand_up":
                 code = self.drive.stand_up(now)
                 self._log(f"StandUp code={code}")
