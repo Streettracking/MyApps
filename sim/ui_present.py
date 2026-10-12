@@ -63,3 +63,25 @@ def driver_banner(view) -> str:
 
 def driver_journal_line(name: str) -> str:
     return "ведёт: %s" % name
+
+
+def known_weights_name(state_path) -> str:
+    """YOLO file the trainer already resolved, else the brain state file name."""
+    import os
+    from pathlib import Path
+
+    yolo = os.environ.get("RECOGNIZER_YOLO_WEIGHTS", "").strip()
+    if yolo:
+        path = Path(yolo)
+        if path.is_file():
+            return path.name
+    if state_path:
+        name = Path(str(state_path)).name
+        if name and name not in (".", ".."):
+            return name
+    return ""
+
+
+def weights_caption(name: str) -> str:
+    text = str(name or "").strip()
+    return "веса: %s" % text if text else "веса: ?"

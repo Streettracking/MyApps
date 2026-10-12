@@ -296,6 +296,7 @@ class MonitorView:
     teacher_status_note: str = ""
     teacher_stop_h: float = 0.45
     brain_offline: bool = False
+    weights_label: str = ""
 
 
 def fit_window(ww: int, wh: int) -> tuple:
@@ -2204,6 +2205,38 @@ class TrainMonitor:
         self._lamp(screen, (rect.x + 12, rect.centery), tone, 5)
         self._blit_clipped(screen, glyph, (rect.x + 22, rect.centery - glyph.get_height() // 2), rect)
 
+    def _draw_weights_label(self, screen, view: MonitorView) -> None:
+        """File name in the gap after the driver plaque. A long name is shortened, not clipped mid-letter."""
+        from .ui_present import weights_caption
+
+        text = weights_caption(getattr(view, "weights_label", ""))
+        import pygame
+
+        font = self.font_sm
+        driver = getattr(self, "driver_rect", None)
+        help_rect = getattr(self, "help_bar_rect", None)
+        if driver is None or driver.w < 8 or help_rect is None:
+            self.weights_rect = pygame.Rect(0, 0, 0, 0)
+            return
+
+        x = driver.right + 8
+        limit = help_rect.x - 6
+        room = limit - x
+        full = font.size(text)[0]
+        if room < font.size("веса: ?")[0]:
+            self.weights_rect = pygame.Rect(0, 0, 0, 0)
+            return
+        if full > room:
+            stem = text.split(": ", 1)[-1]
+            prefix = "веса: "
+            keep = stem
+            while keep and font.size(prefix + keep + "…")[0] > room:
+                keep = keep[:-1]
+            text = (prefix + keep + "…") if keep else "веса: ?"
+        glyph = font.render(text, True, LABEL)
+        self.weights_rect = pygame.Rect(x, 0, glyph.get_width(), MENU_H)
+        screen.blit(glyph, (x, (MENU_H - glyph.get_height()) // 2))
+
     def _draw_menu_bar(self, screen, view: MonitorView) -> None:
         import pygame
 
@@ -2221,6 +2254,7 @@ class TrainMonitor:
             screen.blit(title, (title_x, (MENU_H - title.get_height()) // 2))
             self._link_lamp(screen, view, title_x + title.get_width() + 18)
         self._draw_driver_plaque(screen, view, title_x, title.get_width(), hide_title)
+        self._draw_weights_label(screen, view)
         self._go2_button(screen)
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
