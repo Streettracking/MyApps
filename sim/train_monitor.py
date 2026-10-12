@@ -3155,9 +3155,7 @@ class TrainMonitor:
         return max(160, label + 2 * badge + 12 + 2 * gap)
 
     def _place_robot_row(self, inner) -> None:
-        """Stand, lie, recovery, and lidar reset share one row of this card."""
-        import pygame
-
+        """Stand, lie, and recovery stay on the first line. Lidar reset wraps whole."""
         specs = (
             ("stand_up", ("ВСТАТЬ",), "+", False),
             ("stand_down", ("ЛЕЧЬ",), "-", False),
@@ -3168,20 +3166,12 @@ class TrainMonitor:
             ("reset_weights", ("СБРОС ВЕСОВ", "точно?"), "", False),
         )
         gap = 8
-        widths = [self._keyed_button_width(labels, key, lamp) for _name, labels, key, lamp in specs]
-        # The card is the E-STOP row. These buttons use that content height,
-        # so the face under the row is not left empty.
+        items = [
+            (name, self._keyed_button_width(labels, key, lamp))
+            for name, labels, key, lamp in specs
+        ]
         row_h = max(1, min(inner.h, CONTROLS_BUTTON_H))
-        y = inner.y
-        x = inner.x
-        rects = {}
-        for (name, _labels, _key, _lamp), width in zip(specs, widths):
-            rw = max(1, int(width))
-            if x >= inner.right:
-                rects[name] = self._zero()
-                continue
-            rects[name] = pygame.Rect(x, y, rw, row_h)
-            x += rw + gap
+        rects = self._wrap_rows(items, inner.x, inner.y, inner.right, inner.bottom, row_h, gap)
         self.stand_up_rect = rects["stand_up"]
         self.stand_down_rect = rects["stand_down"]
         self.recovery_rect = rects["recovery"]
