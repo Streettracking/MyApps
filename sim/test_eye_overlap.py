@@ -255,8 +255,15 @@ class StateAndStatusTests(unittest.TestCase):
         from sim.mb_train import MbTrainer, default_npz
 
         brain = MbTrainer(default_npz(), seed=1, overlap=0.4)
+        self.assertEqual(brain.stimuli.status(), [])
         loop = BrainLoop(SportDrive(None), brain, "/tmp/mb_ui_status.npz")
         quiet = loop.status()
+        self.assertEqual(
+            quiet["stimuli"],
+            [{"name": "conspecific", "active": False, "value": 0.0}],
+        )
+        self.assertIsInstance(quiet["stimuli"][0]["active"], bool)
+        self.assertIsInstance(quiet["stimuli"][0]["value"], float)
         for key in (
             "kc_active_frac",
             "kc_active_frac_gd",

@@ -18,7 +18,7 @@ metric only.
 from __future__ import annotations
 
 from .pilot import STOP_M, X_MAX, Z_MAX, SLOW_X, clamp_velocity, scrub_range, search_yaw
-from .stimuli import camera_stimuli
+from .stimuli import Stimulus, camera_stimuli, reinforcement_value, signed_reinforcement
 
 TEACHER_WEIGHT_DEFAULT = 0.0
 MATCH_WINDOW_S = 8.0
@@ -123,6 +123,46 @@ def commands_match(
     tol_z: float = MATCH_TOL_Z,
 ) -> bool:
     return abs(float(fly_x) - float(teacher_x)) <= float(tol_x) and abs(float(fly_z) - float(teacher_z)) <= float(tol_z)
+
+
+def gated_outcome(
+    gate: PulseGate,
+    now: float,
+    hit_l: bool,
+    hit_r: bool,
+    centered: bool,
+    approaching: bool,
+    lost: bool,
+    too_close: bool,
+    last_l: bool,
+    last_r: bool,
+    learning: bool,
+    enabled: bool,
+    already_l: str | None = None,
+    already_r: str | None = None,
+) -> tuple[str | None, str | None]:
+    """One rate-limited outcome. A side already taught this frame is left alone."""
+    if not learning or not enabled:
+        return None, None
+    kind_l, kind_r = outcome_kinds(
+        bool(hit_l),
+        bool(hit_r),
+        bool(centered),
+        bool(approaching),
+        bool(lost),
+        bool(too_close),
+        bool(last_l),
+        bool(last_r),
+    )
+    if kind_l and already_l == kind_l:
+        kind_l = None
+    if kind_r and already_r == kind_r:
+        kind_r = None
+    if kind_l and not gate.allow(now, "L", kind_l):
+        kind_l = None
+    if kind_r and not gate.allow(now, "R", kind_r):
+        kind_r = None
+    return kind_l, kind_r
 
 
 def outcome_kinds(
@@ -422,24 +462,111 @@ class TeacherLead:
         already_r: str | None = None,
     ) -> tuple[str | None, str | None]:
         """Outcome pulses. ``already_*`` is a kind already applied to that eye this frame."""
-        if not learning or not teacher_on:
-            return None, None
-        kind_l, kind_r = outcome_kinds(
-            bool(self.hit_l),
-            bool(self.hit_r),
-            bool(self.centered),
-            bool(self.approaching),
-            bool(self.lost),
-            bool(self.too_close),
-            bool(self.last_hit_l),
-            bool(self.last_hit_r),
+        return gated_outcome(
+            self.gate,
+            now,
+            self.hit_l,
+            self.hit_r,
+            self.centered,
+            self.approaching,
+            self.lost,
+            self.too_close,
+            self.last_hit_l,
+            self.last_hit_r,
+            learning,
+            teacher_on,
+            already_l,
+            already_r,
         )
-        if kind_l and already_l == kind_l:
-            kind_l = None
-        if kind_r and already_r == kind_r:
-            kind_r = None
-        if kind_l and not self.gate.allow(now, "L", kind_l):
-            kind_l = None
-        if kind_r and not self.gate.allow(now, "R", kind_r):
-            kind_r = None
-        return kind_l, kind_r
+
+    def aim_fresh(self, now: float) -> bool:
+        """A teacher post is still inside the hold window."""
+        return float(now) - self._remote_t <= AIM_HOLD_S
+
+
+class ConspecificStimulus(Stimulus):
+    """The one reinforcement source wired today: a conspecific seen by YOLO.
+
+    Approach or a centred box is appetitive. A loss or a box that fills the
+    frame is aversive. The mushroom body never names this class.
+    """
+
+    def __init__(self) -> None:
+        Stimulus.__init__(self, "conspecific")
+        self.gate = PulseGate()
+        self.enabled = False
+        self.hit_l = False
+        self.hit_r = False
+        self.centered = False
+        self.approaching = False
+        self.lost = False
+        self.too_close = False
+        self.last_l = False
+        self.last_r = False
+
+    def observe(
+        self,
+        enabled: bool,
+        hit_l: bool,
+        hit_r: bool,
+        centered: bool,
+        approaching: bool,
+        lost: bool,
+        too_close: bool,
+        last_l: bool,
+        last_r: bool,
+    ) -> None:
+        self.enabled = bool(enabled)
+        self.active = bool(enabled)
+        self.hit_l = bool(hit_l)
+        self.hit_r = bool(hit_r)
+        self.centered = bool(centered)
+        self.approaching = bool(approaching)
+        self.lost = bool(lost)
+        self.too_close = bool(too_close)
+        self.last_l = bool(last_l)
+        self.last_r = bool(last_r)
+
+    def offer(self, now: float, learning: bool, skip_l: str | None = None, skip_r: str | None = None) -> tuple[float, float]:
+        kind_l, kind_r = gated_outcome(
+            self.gate,
+            now,
+            self.hit_l,
+            self.hit_r,
+            self.centered,
+            self.approaching,
+            self.lost,
+            self.too_close,
+            self.last_l,
+            self.last_r,
+            learning,
+            self.enabled,
+            skip_l,
+            skip_r,
+        )
+        self.value = reinforcement_value(kind_l, kind_r)
+        return signed_reinforcement(kind_l), signed_reinforcement(kind_r)
+
+
+def attach_recognition_stimuli(board) -> None:
+    """Plug in the only source used for recognition. Further sources attach the same way."""
+    if board.get("conspecific") is None:
+        board.attach(ConspecificStimulus())
+
+
+def observe_recognition(board, lead: TeacherLead, enabled: bool) -> None:
+    """Hand the latest YOLO situation to the conspecific source, if it is attached."""
+    stim = board.get("conspecific")
+    if stim is None:
+        return
+    stim.observe(
+        enabled,
+        lead.hit_l,
+        lead.hit_r,
+        lead.centered,
+        lead.approaching,
+        lead.lost,
+        lead.too_close,
+        lead.last_hit_l,
+        lead.last_hit_r,
+    )

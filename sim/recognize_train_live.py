@@ -748,7 +748,7 @@ def blend_local_command(session, cmd, now: float, estop: bool, autonomy: bool, d
     match is recorded for status and does not teach.
     """
     from .pilot import DriveCommand
-    from .teacher_lead import apply_guards, commands_match, mix_velocity
+    from .teacher_lead import apply_guards, attach_recognition_stimuli, commands_match, mix_velocity, observe_recognition
 
     lead = refresh_teacher_wish(session, now, dist_m, forward_m)
     lead.fly_x = float(cmd.x)
@@ -763,9 +763,10 @@ def blend_local_command(session, cmd, now: float, estop: bool, autonomy: bool, d
         lead.note(now, matched)
         mb = getattr(session, "mb", None)
         if mb is not None:
-            kind_l, kind_r = lead.action_kinds(now, learning, teacher_on)
+            attach_recognition_stimuli(mb.stimuli)
+            observe_recognition(mb.stimuli, lead, teacher_on)
+            kind_l, kind_r = mb.reinforce_stimuli(float(now), learning=learning)
             if kind_l or kind_r:
-                mb.teach_sides(kind_l, kind_r, float(now))
                 session._outcome_l = kind_l
                 session._outcome_r = kind_r
     session.lead_match = lead.fraction(now)

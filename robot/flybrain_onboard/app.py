@@ -34,10 +34,12 @@ from sim.teacher_lead import (
     AIM_HOLD_S,
     TeacherLead,
     apply_guards,
+    attach_recognition_stimuli,
     clamp_weight,
     commands_match,
     lead_label,
     mix_velocity,
+    observe_recognition,
 )
 
 try:
@@ -98,6 +100,7 @@ class BrainLoop:
         self.teacher_z = 0.0
         self.lead_match = 0.0
         self.lead = TeacherLead()
+        attach_recognition_stimuli(self.mb.stimuli)
         self._taught_l: str | None = None
         self._taught_r: str | None = None
         self._pam_event = False
@@ -443,15 +446,14 @@ class BrainLoop:
         matched = commands_match(cmd.x, cmd.z, teacher_x, teacher_z)
         if self.pilot.mode == "auto":
             self.lead.note(now, matched)
-            kind_l, kind_r = self.lead.action_kinds(
+            observe_recognition(self.mb.stimuli, self.lead, self.lead.aim_fresh(now))
+            kind_l, kind_r = self.mb.reinforce_stimuli(
                 now,
-                bool(self.learn),
-                True,
                 self._taught_l,
                 self._taught_r,
+                learning=bool(self.learn),
             )
             if kind_l or kind_r:
-                self.mb.teach_sides(kind_l, kind_r, float(now))
                 self._note_dan(kind_l, kind_r)
         self.lead_match = self.lead.fraction(now)
         if self.pilot.mode != "auto" or self.teacher_weight <= 0.005:
@@ -587,6 +589,7 @@ class BrainLoop:
                 "ppl1_event": bool(self._ppl1_event),
                 "pam_count": int(self.mb.n_pam),
                 "ppl1_count": int(self.mb.n_ppl1),
+                "stimuli": self.mb.stimuli.status(),
                 "kc_l": _compact_kc(None if self.mb.last_fwd is None else self.mb.last_fwd.kc),
                 "kc_r": _compact_kc(None if self.mb.last_fwd_r is None else self.mb.last_fwd_r.kc),
                 "drift": float(self.mb.last_drift),

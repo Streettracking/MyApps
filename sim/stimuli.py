@@ -1,5 +1,7 @@
-"""Camera stimuli that may reinforce the mushroom body.
+"""Pluggable reinforcement, plus the camera measures a stimulus may read.
 
+The mushroom body does not name a stimulus. It sums signed values from
+whatever is attached: positive is appetitive, negative is aversive.
 Lidar range is not a source. A close return still stops the dog in the
 pilot and in ``apply_guards``; that reflex never enters this registry.
 """
@@ -18,6 +20,93 @@ LEARNING_SOURCES = ("yolo_bbox",)
 
 def learning_sources() -> tuple[str, ...]:
     return LEARNING_SOURCES
+
+
+def signed_reinforcement(kind: str | None) -> float:
+    """+1 appetitive, -1 aversive, 0 when this side is silent."""
+    if kind == "pam":
+        return 1.0
+    if kind == "ppl1":
+        return -1.0
+    return 0.0
+
+
+def reinforcement_kind(signed: float) -> str | None:
+    """The dopamine a summed value asks for. Zero stays silent."""
+    if float(signed) > 1e-9:
+        return "pam"
+    if float(signed) < -1e-9:
+        return "ppl1"
+    return None
+
+
+def reinforcement_value(kind_l: str | None, kind_r: str | None) -> float:
+    """One status value for a stimulus. Agreeing eyes stay at +1 or -1."""
+    signs = []
+    for kind in (kind_l, kind_r):
+        signed = signed_reinforcement(kind)
+        if signed != 0.0:
+            signs.append(signed)
+    if not signs:
+        return 0.0
+    if all(item > 0.0 for item in signs):
+        return 1.0
+    if all(item < 0.0 for item in signs):
+        return -1.0
+    return float(sum(signs)) / float(len(signs))
+
+
+class Stimulus:
+    """One reinforcement source. The brain reads ``name``, ``active``, and ``value``."""
+
+    def __init__(self, name: str):
+        self.name = str(name)
+        self.active = False
+        self.value = 0.0
+
+    def status(self) -> dict:
+        return {"name": self.name, "active": bool(self.active), "value": float(self.value)}
+
+    def offer(self, now: float, learning: bool, skip_l: str | None = None, skip_r: str | None = None) -> tuple[float, float]:
+        """Signed reinforcement for the left eye and the right eye. Silence is (0, 0)."""
+        return 0.0, 0.0
+
+
+class StimulusSet:
+    """The plug. Attach a source; the brain never looks up its name."""
+
+    def __init__(self) -> None:
+        self._items: list[Stimulus] = []
+
+    def attach(self, stimulus: Stimulus) -> None:
+        name = stimulus.name
+        self._items = [item for item in self._items if item.name != name]
+        self._items.append(stimulus)
+
+    def get(self, name: str) -> Stimulus | None:
+        for item in self._items:
+            if item.name == name:
+                return item
+        return None
+
+    def status(self) -> list:
+        return [item.status() for item in self._items]
+
+    def reinforcement(
+        self,
+        now: float,
+        learning: bool,
+        skip_l: str | None = None,
+        skip_r: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Sum every attached source, then turn the sign into PAM or PPL1."""
+        left = 0.0
+        right = 0.0
+        for item in self._items:
+            part_l, part_r = item.offer(now, learning, skip_l, skip_r)
+            left += float(part_l)
+            right += float(part_r)
+        return reinforcement_kind(left), reinforcement_kind(right)
 
 
 def _metrics(box) -> tuple[float, float, float]:

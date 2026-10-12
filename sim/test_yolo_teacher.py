@@ -996,6 +996,58 @@ class TeacherLeadTests(unittest.TestCase):
         self.assertAlmostEqual(held[1], 0.3)
         self.assertFalse(held[2])
 
+    def test_conspecific_is_a_pluggable_stimulus(self):
+        from sim.stimuli import Stimulus, StimulusSet
+        from sim.teacher_lead import TeacherLead, attach_recognition_stimuli, observe_recognition
+
+        board = StimulusSet()
+        self.assertEqual(board.status(), [])
+        attach_recognition_stimuli(board)
+        lead = TeacherLead()
+        lead.hit_r = True
+        lead.approaching = True
+        observe_recognition(board, lead, False)
+        self.assertEqual(board.reinforcement(0.0, True), (None, None))
+        self.assertEqual(board.status(), [{"name": "conspecific", "active": False, "value": 0.0}])
+        observe_recognition(board, lead, True)
+        self.assertEqual(board.reinforcement(0.0, False), (None, None))
+        self.assertEqual(board.status()[0]["active"], True)
+        self.assertEqual(board.status()[0]["value"], 0.0)
+        self.assertEqual(board.reinforcement(0.0, True), (None, "pam"))
+        self.assertEqual(board.status()[0]["value"], 1.0)
+        self.assertEqual(board.reinforcement(0.1, True), (None, None))
+        self.assertEqual(board.status()[0]["value"], 0.0)
+        self.assertEqual(board.reinforcement(0.6, True), (None, "pam"))
+        held = StimulusSet()
+        attach_recognition_stimuli(held)
+        eye = TeacherLead()
+        eye.hit_l = True
+        eye.centered = True
+        observe_recognition(held, eye, True)
+        self.assertEqual(held.reinforcement(1.0, True, "pam", None), (None, None))
+        self.assertEqual(held.status()[0]["value"], 0.0)
+        self.assertEqual(held.reinforcement(1.0, True), ("pam", None))
+
+        class Marker(Stimulus):
+            def offer(self, now, learning, skip_l=None, skip_r=None):
+                self.active = True
+                self.value = -1.0
+                if not learning:
+                    return 0.0, 0.0
+                return 0.0, -1.0
+
+        both = StimulusSet()
+        attach_recognition_stimuli(both)
+        both.attach(Marker("marker"))
+        other = TeacherLead()
+        other.hit_r = True
+        other.approaching = True
+        observe_recognition(both, other, True)
+        self.assertEqual(both.reinforcement(0.0, True), (None, None))
+        self.assertEqual([row["name"] for row in both.status()], ["conspecific", "marker"])
+        self.assertEqual(both.status()[0]["value"], 1.0)
+        self.assertEqual(both.status()[1], {"name": "marker", "active": True, "value": -1.0})
+
     def test_outcome_rewards_and_a_match_does_not(self):
         from sim.teacher_lead import TeacherLead, apply_guards, commands_match, outcome_kinds
 
@@ -1157,6 +1209,8 @@ class TeacherLeadTests(unittest.TestCase):
         )
         reward.tick(6.0)
         self.assertEqual(reward.mb.teacher_pam_l, before + 1)
+        reward_stim = reward.status()["stimuli"]
+        self.assertEqual(reward_stim, [{"name": "conspecific", "active": True, "value": 1.0}])
 
         punish = loop_at(7.0)
         before_pam = punish.mb.teacher_pam_l
@@ -1175,6 +1229,7 @@ class TeacherLeadTests(unittest.TestCase):
         punish.tick(7.0)
         self.assertEqual(punish.mb.teacher_ppl1_l, before_ppl + 1)
         self.assertEqual(punish.mb.teacher_pam_l, before_pam)
+        self.assertEqual(punish.status()["stimuli"], [{"name": "conspecific", "active": True, "value": -1.0}])
 
         miss = loop_at(5.0)
         before = miss.mb.teacher_pam_l
@@ -1186,6 +1241,7 @@ class TeacherLeadTests(unittest.TestCase):
         self.assertAlmostEqual(cmd.x, 0.2)
         self.assertAlmostEqual(cmd.z, 0.4)
         self.assertEqual(miss.mb.teacher_pam_l, before)
+        self.assertEqual(miss.status()["stimuli"], [{"name": "conspecific", "active": True, "value": 0.0}])
         self.assertEqual(miss.status()["lead"], "смешанно")
         self.assertAlmostEqual(miss.status()["fly_z"], 0.0)
         self.assertAlmostEqual(miss.status()["teacher_z"], 0.8)

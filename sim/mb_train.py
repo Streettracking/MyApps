@@ -6,8 +6,9 @@ weight on later frames. α/β-p does not learn. Default DAN is the operator:
 T injects appetitive PAM, X injects aversive PPL1. Familiarity is the other
 DAN: repetition depresses KC→novelty-MBON, still only from γ-d. Monitor
 labels never enter either rule. There is no wire from a motor command into
-KC. The stored readouts are approach minus avoidance. The turn is the left
-readout minus the right one.
+KC. Reinforcement is whatever stimulus is attached; this trainer does not
+name the source. The stored readouts are approach minus avoidance. The turn
+is the left readout minus the right one.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from .mb_confidence import Confidence, ConfidenceCalibrator, TrainProgress
 from .mb_runtime import MBForward, MushroomBodyRuntime
 from .npz_compat import open_npz
 from .raw_sense import RawProjector, probe_features
+from .stimuli import StimulusSet
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -113,6 +115,9 @@ class MbTrainer:
         self.teacher_ppl1_l = 0
         self.teacher_ppl1_r = 0
         self.reinforce = ""
+        # Empty until the recognition app plugs a source in. Saving weights
+        # does not write this list.
+        self.stimuli = StimulusSet()
         self.cal = ConfidenceCalibrator()
         self.cal_l = ConfidenceCalibrator()
         self.cal_r = ConfidenceCalibrator()
@@ -264,6 +269,26 @@ class MbTrainer:
             self.brain.recover(self.last_fwd.kc, bool(dopamine_l))
         if self.last_fwd_r is not None:
             self.brain_r.recover(self.last_fwd_r.kc, bool(dopamine_r))
+
+    def reinforce_stimuli(
+        self,
+        now: float,
+        skip_l: str | None = None,
+        skip_r: str | None = None,
+        learning: bool | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Apply the attached stimuli. Their names are not read here.
+
+        ``skip_*`` is a kind already delivered to that eye on this frame.
+        ``learning`` defaults to this trainer's flag. A source can be live
+        while learning is off; then the returned kinds stay empty.
+        """
+        if learning is None:
+            learning = self.learn
+        kind_l, kind_r = self.stimuli.reinforcement(float(now), bool(learning), skip_l, skip_r)
+        if (kind_l or kind_r) and self.learn:
+            self.teach_sides(kind_l, kind_r, float(now))
+        return kind_l, kind_r
 
     def teach_sides(self, kind_l: str | None, kind_r: str | None, t: float) -> bool:
         """DAN on one hemisphere or each. Operator ``teach`` still pulses both.
