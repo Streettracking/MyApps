@@ -1478,13 +1478,17 @@ def run_live_gui(
                 )
             elif inp.lidar_reset and session.onboard:
                 session._log("свежий лидар ведёт борт, это окно его не сбрасывает")
-            if inp.recalibrate:
+            if inp.recalibrate and onboard is not None and not onboard_supports(session, "recalibrate"):
+                session._log("перекалибровка: борт не поддерживает")
+            elif inp.recalibrate:
                 if onboard is not None:
                     onboard.post("recalibrate")
                     session._log("перекалибровка «УЗНАЮ» на борту: 0/200, веса не тронуты")
                 else:
                     session.recalibrate()
-            if inp.brain_restart:
+            if inp.brain_restart and onboard is not None and not onboard_supports(session, "restart"):
+                session._log("перезапуск мозга: борт не поддерживает")
+            elif inp.brain_restart:
                 if onboard is not None:
                     if (onboard.status or {}).get("restarting"):
                         session._log("перезапуск на борту уже идёт, повтор пропущен")
@@ -1614,6 +1618,8 @@ def run_live_gui(
                     session._log("ошибка YOLO не сохранена: %s" % exc)
             view = _live_view(session, camera, disp_lidar, error, link, inp.focused, command_name, onboard)
             view.yolo_errors = yolo_err.count if session.learner_kind == "mb" else -1
+            view.recal_ok = onboard_supports(session, "recalibrate")
+            view.restart_ok = onboard_supports(session, "restart")
             rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
             labelled = weak_label_now(marks, session.now()) is not None
             view.record_on = rec_on
@@ -1743,6 +1749,14 @@ def _scaled(session: LiveSession, rows: list[tuple[float, float]]) -> list[tuple
     if rows is session.peer_curve:
         return dog
     return none
+
+
+def onboard_supports(session, op: str) -> bool:
+    """Sim always. Onboard only when its status lists ``op`` in "caps" (old builds have none)."""
+    if not getattr(session, "onboard", False):
+        return True
+    caps = (getattr(session, "remote", None) or {}).get("caps")
+    return isinstance(caps, (list, tuple)) and op in caps
 
 
 def _recog_line(session: LiveSession, remote: dict) -> str:

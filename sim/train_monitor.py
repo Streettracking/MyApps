@@ -132,6 +132,12 @@ BTN = CARD
 BTN_EDGE = LINE
 
 
+def _view_flag(mon, name: str) -> bool:
+    """A MonitorView flag from the last drawn frame. No frame yet means allowed."""
+    view = getattr(mon, "_last_view", None)
+    return True if view is None else bool(getattr(view, name, True))
+
+
 @dataclass
 class MonitorInput:
     quit: bool = False
@@ -250,6 +256,9 @@ class MonitorView:
     learning_on: bool = True
     autonomy_on: bool = False
     onboard: bool = False
+    # Onboard build answers recalibrate / restart (status "caps"). Sim is always True.
+    recal_ok: bool = True
+    restart_ok: bool = True
     record_on: bool = False
     yolo_errors: int = -1
     record_saved: int = 0
@@ -1778,9 +1787,11 @@ class TrainMonitor:
         elif self.lidar_reset_rect.collidepoint(pos):
             inp.lidar_reset = True
         elif getattr(self, "brain_restart_rect", None) is not None and self.brain_restart_rect.w >= 8 and self.brain_restart_rect.collidepoint(pos):
-            self._press_restart(inp)
+            if _view_flag(self, "restart_ok"):
+                self._press_restart(inp)
         elif getattr(self, "recal_rect", None) is not None and self.recal_rect.w >= 4 and self.recal_rect.collidepoint(pos):
-            inp.recalibrate = True
+            if _view_flag(self, "recal_ok"):
+                inp.recalibrate = True
         elif self.lidar_fresh_rect.collidepoint(pos):
             inp.lidar_toggle = True
         elif self.learn_rect.collidepoint(pos):
@@ -3672,6 +3683,10 @@ class TrainMonitor:
         rect = getattr(self, "brain_restart_rect", None)
         if rect is None or rect.w < 8:
             return
+        if not _view_flag(self, "restart_ok"):
+            # TODO(UIRoboBot): style the disabled state / real tooltip.
+            self._button(screen, rect, "борт не поддерживает", None, False, label_color=INK_DIM)
+            return
         if self.restart_armed():
             self._button(screen, rect, "точно? ещё раз", None, False, label_color=ESTOP_LABEL, fill=AMBER)
             return
@@ -3690,7 +3705,7 @@ class TrainMonitor:
         if btn.x < inner.x + inner.w // 2 + 200:
             self.recal_rect = self._zero()
             return
-        hot = btn.collidepoint(self._mouse())
+        hot = btn.collidepoint(self._mouse()) and bool(view.recal_ok)
         pygame.draw.rect(screen, CARD, btn, border_radius=5)
         pygame.draw.rect(screen, PEACH if hot else LINE, btn, 1, border_radius=5)
         cx, cy = btn.center
@@ -3704,7 +3719,8 @@ class TrainMonitor:
         digits = "%3d/%d" % (n, int(view.calib_total))
         dx = btn.x - 8 - cell_px(14) * len(digits)
         self._cells(screen, digits, dx, inner.y + height // 2 - 8, INK_DIM)
-        word = self.font_tiny.render("калибровка", True, INK_DIM)
+        # TODO(UIRoboBot): style; the old onboard build has no recalibrate.
+        word = self.font_tiny.render("калибровка" if view.recal_ok else "калибровка · борт не поддерживает", True, INK_DIM)
         screen.blit(word, (dx - 6 - word.get_width(), inner.y + (height - word.get_height()) // 2))
 
     def _record_button(self, screen, view: MonitorView) -> None:
