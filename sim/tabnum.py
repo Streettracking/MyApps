@@ -571,6 +571,14 @@ def format_drift(value) -> str:
     return "дрейф KC→MBON  %s" % signed(value, NUM_W, 1)
 
 
+def format_drift_span(session, lifetime) -> str:
+    """Panel line. Session is the growth since load. Lifetime is from birth."""
+    return "дрейф: сессия %s · с начала %s" % (
+        signed(session, NUM_W, 1),
+        signed(lifetime, NUM_W, 1),
+    )
+
+
 def format_drift_axis(lo, hi) -> str:
     return "min %s  max %s" % (signed(lo, NUM_W, 1), signed(hi, NUM_W, 1))
 

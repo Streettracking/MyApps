@@ -81,7 +81,7 @@ from .tabnum import (
     SOUND_STATUS,
     format_box_tag,
     format_command,
-    format_drift_axis,
+    format_drift_span,
     format_drive_line,
     format_familiar,
     format_kc_scales,
@@ -204,6 +204,7 @@ class MonitorView:
     kc_bins: np.ndarray | None = None
     drift: float = 0.0
     session_drift: float | None = None
+    search_lamp: bool = False
     drift_curve: list[tuple[float, float]] = field(default_factory=list)
     dan_events: list[tuple[float, str]] = field(default_factory=list)
     treat_flash: bool = False
@@ -3896,6 +3897,7 @@ class TrainMonitor:
 
         self.lead_slider_rect = pygame.Rect(0, 0, 0, 0)
         self.approach_rect = pygame.Rect(0, 0, 0, 0)
+        self.search_lamp_at = (0, 0)
         sm = self.font_sm
         rx, col_w = panel.x, panel.w
         limit = panel.right - 4
@@ -3934,18 +3936,21 @@ class TrainMonitor:
             elif view.drift:
                 series = [(float(view.t), float(view.drift))]
         from .brain_panel import drift_axis
-        from .tabnum import NUM_W, signed
 
         drift_lo, drift_hi = drift_axis(series)
-        drift_line = "дрейф KC→MBON  всё %s  сессия %s  %s" % (
-            signed(view.drift, NUM_W, 1),
-            signed(view.session_drift, NUM_W, 1),
-            format_drift_axis(drift_lo, drift_hi),
-        )
-        drift_pattern = "дрейф KC→MBON  всё {7}  сессия {7}  min {7}  max {7}"
+        drift_line = format_drift_span(view.session_drift, view.drift)
+        drift_pattern = "дрейф: сессия {7} · с начала {7}"
 
         def drift_row() -> None:
-            self._mixed(screen, drift_line, rx, y, drift_pattern, VALUE, limit=limit)
+            self._mixed(screen, drift_line, rx, y, drift_pattern, VALUE, limit=limit - 78)
+            lamp_x = limit - 62
+            cy = y + self._brain_row_h() // 2
+            color = AMBER if view.search_lamp else LAMP_OFF
+            self._lamp(screen, (lamp_x, cy), color, 5)
+            self.search_lamp_at = (lamp_x, cy)
+            word = self.font_sm.render("поиск", True, AMBER if view.search_lamp else INK_DIM)
+            screen.blit(word, (lamp_x + 12, y))
+            self._keep_glyphs([pygame.Rect(lamp_x + 12, y, word.get_width(), word.get_height())])
 
         nxt = self._paint_line(screen, panel, y, "drift", drift_row)
         if nxt is None:
