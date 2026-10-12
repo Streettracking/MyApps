@@ -4063,10 +4063,8 @@ class TrainMonitor:
             return
         self._button(screen, rect, "ПЕРЕЗАПУСК МОЗГА", None, rect.collidepoint(self._mouse()))
 
-    def _calib_strip(self, screen, inner, height: int, view: MonitorView) -> None:
-        """«калибровка N/200» and a small «↻» button at the right end of the «УЗНАЮ» veil."""
-        import math
-
+    def _calib_origin(self, inner, height: int, view: MonitorView):
+        """Left edge of «калибровка», digit origin, and the «↻» button. None when hidden."""
         import pygame
 
         from .tabnum import cell_px
@@ -4074,8 +4072,26 @@ class TrainMonitor:
         size = 22
         btn = pygame.Rect(inner.right - size - 8, inner.y + (height - size) // 2, size, size)
         if btn.x < inner.x + inner.w // 2 + 200:
+            return None
+        n = max(0, min(int(view.calib_n), int(view.calib_total)))
+        digits = "%3d/%d" % (n, int(view.calib_total))
+        dx = btn.x - 8 - cell_px(14) * len(digits)
+        # The old onboard build has no recalibrate; the longer caption is the logic's notice.
+        label = "калибровка" if view.recal_ok else "калибровка · борт не поддерживает"
+        word_w = self.font_tiny.size(label)[0]
+        return dx - 6 - word_w, dx, btn
+
+    def _calib_strip(self, screen, inner, height: int, view: MonitorView) -> None:
+        """«калибровка N/200» and a small «↻» button at the right end of the «УЗНАЮ» veil."""
+        import math
+
+        import pygame
+
+        origin = self._calib_origin(inner, height, view)
+        if origin is None:
             self.recal_rect = self._zero()
             return
+        _word_x, dx, btn = origin
         hot = btn.collidepoint(self._mouse()) and bool(view.recal_ok)
         pygame.draw.rect(screen, CARD, btn, border_radius=5)
         pygame.draw.rect(screen, PEACH if hot else LINE, btn, 1, border_radius=5)
@@ -4088,11 +4104,11 @@ class TrainMonitor:
         self.recal_rect = btn
         n = max(0, min(int(view.calib_n), int(view.calib_total)))
         digits = "%3d/%d" % (n, int(view.calib_total))
-        dx = btn.x - 8 - cell_px(14) * len(digits)
         self._cells(screen, digits, dx, inner.y + height // 2 - 8, INK_DIM)
         # TODO(UIRoboBot): style; the old onboard build has no recalibrate.
-        word = self.font_tiny.render("калибровка" if view.recal_ok else "калибровка · борт не поддерживает", True, INK_DIM)
-        screen.blit(word, (dx - 6 - word.get_width(), inner.y + (height - word.get_height()) // 2))
+        label = "калибровка" if view.recal_ok else "калибровка · борт не поддерживает"
+        word = self.font_tiny.render(label, True, INK_DIM)
+        screen.blit(word, (_word_x, inner.y + (height - word.get_height()) // 2))
 
     def _record_button(self, screen, view: MonitorView) -> None:
         import pygame
@@ -4371,6 +4387,8 @@ class TrainMonitor:
         veil.fill((*CARD, 210))
         screen.blit(veil, (inner.x, inner.y))
         sees_l, sees_r = self._teacher_sees(view)
+        origin = self._calib_origin(inner, height, view)
+        right_limit = origin[0] - 6 if origin is not None else None
         self.eye_lamps = {
             "Л": self._eye_plaque(
                 screen,
@@ -4391,6 +4409,7 @@ class TrainMonitor:
                 view.eye_r_confidence,
                 view.teacher_flash_r,
                 sees_r,
+                text_limit=right_limit,
             ),
         }
         self._calib_strip(screen, inner, height, view)
@@ -4405,6 +4424,7 @@ class TrainMonitor:
         percent: float,
         flash: str = "",
         sees: bool = False,
+        text_limit=None,
     ) -> dict:
         from .tabnum import cell_px
 
@@ -4413,21 +4433,32 @@ class TrainMonitor:
         self._lamp(screen, recog, LAMP_OFF if calibrating else self._eye_lamp_color(recognized, ready, percent), 7)
         word = "УЗНАЮ" if recognized else "—"
         text_x = rect.x + 34
-        teacher_x = text_x + cell_px(14) * len(format_plaque(name, word)) + 16
+        slot_x = text_x + cell_px(14) * len(format_plaque(name, word)) + 16
         if calibrating:
             # Grey «калибровка» in place of the word until the 200-frame baseline is full.
             self._cells(screen, name, text_x, rect.centery - 8, VALUE)
             grey = self.font_sm.render("калибровка", True, INK_DIM)
             gx = text_x + cell_px(14) * 3
             screen.blit(grey, (gx, rect.centery - grey.get_height() // 2))
-            teacher_x = max(teacher_x, gx + grey.get_width() + 16)
+            teacher_x = max(slot_x, gx + grey.get_width() + 16)
+            floor = gx + grey.get_width() + 14
         else:
             self._cells(screen, format_plaque(name, word), text_x, rect.centery - 8, VALUE)
+            teacher_x = slot_x
+            # The plaque pads the word out to six cells. The lamp may sit in that
+            # padding so «уч» stays clear of the calibration strip.
+            floor = text_x + cell_px(14) * 3 + self.font_sm.size(word)[0] + 14
+        caption = self.font_tiny.render(self._teacher_caption(flash, sees), True, INK_DIM)
+        if text_limit is not None and teacher_x + 12 + caption.get_width() > int(text_limit):
+            wanted = int(text_limit) - 12 - caption.get_width()
+            if wanted >= floor:
+                teacher_x = wanted
+        draw_caption = text_limit is None or teacher_x + 12 + caption.get_width() <= int(text_limit)
         teacher = (teacher_x, rect.centery)
         flashing = flash in ("pam", "ppl1")
         self._lamp(screen, teacher, self._teacher_lamp_color(flash, sees), 8 if flashing else 6)
-        caption = self.font_tiny.render(self._teacher_caption(flash, sees), True, INK_DIM)
-        screen.blit(caption, (teacher_x + 12, rect.centery - caption.get_height() // 2))
+        if draw_caption:
+            screen.blit(caption, (teacher_x + 12, rect.centery - caption.get_height() // 2))
         return {"recog": recog, "teacher": teacher}
 
     def _eyes_banner(self, screen, view: MonitorView, rx: int, col_w: int, y: int, bottom: int | None = None) -> int:
