@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from .hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield, live_turn
-from .kc_pathways import VisualPathway, lobula_channels, medulla_channels
+from .kc_pathways import VisualPathway, lobula_channels, medulla_channels, mirror_kenyon
 from .raw_sense import drop_lidar
 from .learn_flash import LearnFlash, MbLayout, build_layout, record_teacher_step
 from .mb_confidence import Confidence, ConfidenceCalibrator, TrainProgress
@@ -93,7 +93,9 @@ class MbTrainer:
         self.brain.vision = VisualPathway(self.brain, "left")
         self.brain_r.vision = VisualPathway(self.brain_r, "right")
         self.brain.gamma_d_kc = self.brain.vision.gamma_mask
-        self.brain_r.gamma_d_kc = self.brain_r.vision.gamma_mask
+        # The right eye keeps its own cells for the pathway split, then the
+        # readout is replayed on this left map. Plasticity follows those cells.
+        self.brain_r.gamma_d_kc = self.brain.vision.gamma_mask.copy()
         self.proj = RawProjector(self.brain.n_pn, seed=seed + 17)
         self.learn = True
         self.drift_curve: list[tuple[float, float]] = []
@@ -107,7 +109,7 @@ class MbTrainer:
         self.last_fwd_r: MBForward | None = None
         self.r_l = 0.0
         self.r_r = 0.0
-        # Birth drive of the current view. The live yaw subtracts it.
+        # Birth drive of the current view. Kept for the status readout.
         self.base_l = 0.0
         self.base_r = 0.0
         self.yaw = 0.0
@@ -162,6 +164,10 @@ class MbTrainer:
         kc = brain.vision.kenyon(feat, yolo)
         if float(kc.max()) <= 0.0:
             return None, 0.0
+        if brain is self.brain_r:
+            kc = mirror_kenyon(brain.vision, self.brain.vision)
+            if float(kc.max()) <= 0.0:
+                return None, 0.0
         mbon, scores = brain.scores_of_kc(kc)
         fwd = MBForward(
             pn=_pn_trace(brain.n_pn, feat, yolo),

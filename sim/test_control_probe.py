@@ -250,7 +250,7 @@ class ControlSceneTests(unittest.TestCase):
         report = run_approach_probe()
         turn = report["turn"]
         self.assertGreater(turn["raw_left"], 0.0)
-        self.assertGreater(turn["raw_right"], 0.0)
+        self.assertLess(turn["raw_right"], 0.0)
         self.assertGreater(turn["gain_left"], 0.0)
         self.assertLess(turn["gain_right"], 0.0)
         before = report["before"]
@@ -448,7 +448,7 @@ class SimRoundTests(unittest.TestCase):
         from sim.control_scene import _hemidrives, _place_opposed, _train_side, _view, arrange, make_scene
         from sim.hemifield import live_turn
         from sim.mb_train import MbTrainer, default_npz
-        from sim.raw_sense import probe_features
+        from sim.raw_sense import OFF_BODY, OFF_MOTION, probe_features
         from sim.teacher_lead import attach_recognition_stimuli
 
         world, learner = make_scene(1)
@@ -461,7 +461,13 @@ class SimRoundTests(unittest.TestCase):
             return float(live_turn(trainer.r_l, trainer.r_r, trainer.base_l, trainer.base_r))
 
         self.assertEqual(yaw(probe_features("empty")), 0.0)
-        self.assertLess(abs(yaw(probe_features("dog"))), 0.05)
+        symmetric = probe_features("empty")
+        for sector, value in ((3, 0.8), (2, 0.45)):
+            mirror = 7 - sector
+            for slot in (sector, mirror):
+                symmetric[OFF_BODY + slot * 3 : OFF_BODY + slot * 3 + 3] = value
+                symmetric[OFF_MOTION + slot] = 0.3
+        self.assertLess(abs(yaw(symmetric)), 0.05)
         arrange(world, learner, conspecific="left", control=None, motion="static")
         left_before = yaw(_view(learner, world)[0])
         arrange(world, learner, conspecific="right", control=None, motion="static")

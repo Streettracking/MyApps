@@ -4165,19 +4165,19 @@ class TrainMonitor:
         if nxt is None:
             return y
         y = nxt
-        bar_h = 12
-        if y + bar_h <= panel.bottom and panel.w >= 80:
-            gap = 16
-            half = max(8, (panel.w - gap) // 2)
-            bars = pygame.Rect(panel.x, y, panel.w, bar_h)
+        track_h = 8
+        gap = 4
+        block_h = track_h + gap + track_h
+        if y + block_h <= panel.bottom and panel.w >= 80:
+            bars = pygame.Rect(panel.x, y, panel.w, block_h)
             self._note_brain_row(bars, "drive-bars")
             scale = 1.0
             for value in (view.drive_l, view.drive_r):
                 if value is not None:
                     scale = max(scale, abs(float(value)))
-            self._signed_bar(screen, pygame.Rect(panel.x, y + 2, half, 8), view.drive_l, scale)
-            self._signed_bar(screen, pygame.Rect(panel.x + half + gap, y + 2, panel.w - half - gap, 8), view.drive_r, scale)
-            y += bar_h
+            self._mirror_bars(screen, pygame.Rect(panel.x, y, panel.w, track_h), view.drive_l, view.drive_r, scale)
+            self._zero_bar(screen, pygame.Rect(panel.x, y + track_h + gap, panel.w, track_h), view.turn)
+            y += block_h
         stim = format_stim_line(view.stim_dog, view.stim_cube)
 
         def stim_row() -> None:
@@ -4308,30 +4308,62 @@ class TrainMonitor:
             ab,
         )
 
-    def _signed_bar(self, screen, rect, value, scale: float) -> None:
-        """Zero in the middle. Approach fills to the right, avoidance to the left."""
+    def _mirror_bars(self, screen, rect, left, right, scale: float) -> None:
+        """One centre. Л grows left, П grows right. Approach is peach."""
         import pygame
 
         if rect.w < 8 or rect.h < 4:
             return
         pygame.draw.rect(screen, INSET, rect, border_radius=3)
         pygame.draw.rect(screen, LINE, rect, width=1, border_radius=3)
+        mid = rect.x + rect.w // 2
+        half = max(1, rect.w // 2)
+        self._outward(screen, rect, mid, half, left, scale, -1)
+        self._outward(screen, rect, mid, half, right, scale, 1)
+        pygame.draw.line(screen, LINE, (mid, rect.y), (mid, rect.bottom - 1))
+
+    def _outward(self, screen, rect, mid: int, half: int, value, scale: float, sign: int) -> None:
+        """Fill away from ``mid``. ``sign`` −1 is the left half."""
+        import pygame
+
         if value is None or scale <= 0:
             return
-        share = float(value) / float(scale)
+        share = abs(float(value)) / float(scale)
         if share > 1.0:
             share = 1.0
-        elif share < -1.0:
-            share = -1.0
-        mid = rect.x + rect.w // 2
-        if share >= 0.0:
-            width = int(round((rect.w // 2) * share))
-            if width > 0:
-                pygame.draw.rect(screen, PEACH, pygame.Rect(mid, rect.y, width, rect.h))
+        width = int(round(half * share))
+        if width <= 0:
+            return
+        color = PEACH if float(value) >= 0.0 else INK_DIM
+        if sign < 0:
+            box = pygame.Rect(mid - width, rect.y, width, rect.h)
         else:
-            width = int(round((rect.w // 2) * -share))
+            box = pygame.Rect(mid, rect.y, width, rect.h)
+        pygame.draw.rect(screen, color, box)
+
+    def _zero_bar(self, screen, rect, value) -> None:
+        """Yaw with zero in the middle. Left (positive) fills toward Л."""
+        import pygame
+
+        if rect.w < 8 or rect.h < 4:
+            return
+        pygame.draw.rect(screen, INSET, rect, border_radius=3)
+        pygame.draw.rect(screen, LINE, rect, width=1, border_radius=3)
+        mid = rect.x + rect.w // 2
+        if value is not None:
+            share = float(value)
+            if share > 1.0:
+                share = 1.0
+            elif share < -1.0:
+                share = -1.0
+            width = int(round((rect.w // 2) * abs(share)))
             if width > 0:
-                pygame.draw.rect(screen, INK_DIM, pygame.Rect(mid - width, rect.y, width, rect.h))
+                if share >= 0.0:
+                    box = pygame.Rect(mid - width, rect.y, width, rect.h)
+                else:
+                    box = pygame.Rect(mid, rect.y, width, rect.h)
+                pygame.draw.rect(screen, PEACH, box)
+        pygame.draw.line(screen, LINE, (mid, rect.y), (mid, rect.bottom - 1))
 
     def _kc_scale(self, screen, track, frac) -> None:
         """0–20% track. The green band is the 5–10% sparsity the eye keeps."""

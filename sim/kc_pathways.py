@@ -216,3 +216,24 @@ class VisualPathway:
         if self.n_abp:
             np.add.at(kc, self.abp_idx, abp)
         return kc
+
+
+def mirror_kenyon(source: VisualPathway, template: VisualPathway) -> np.ndarray:
+    """Write this eye's expanded rates onto the other eye's cells.
+
+    Both pathways already turn one hemifield into the same channel order.
+    The anatomical right Kenyon cells are wired, at birth, onto avoidance
+    more than approach, so scoring them makes a positive left drive and a
+    negative right drive. Replaying the right eye's rates on the left map
+    makes both hemispheres compute approach minus avoidance the same way.
+    The caller scores that vector with the right brain's own weights, so
+    the two sides still learn apart.
+    """
+    kc = np.zeros(int(template.n_kc), dtype=np.float32)
+    if source.n_gd and template.n_gd:
+        n = min(int(source.n_gd), int(template.n_gd))
+        np.add.at(kc, template.gamma_idx[:n], source.last_gamma[:n])
+    if source.n_abp and template.n_abp:
+        n = min(int(source.n_abp), int(template.n_abp))
+        np.add.at(kc, template.abp_idx[:n], source.last_abp[:n])
+    return kc

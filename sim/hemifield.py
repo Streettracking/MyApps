@@ -23,8 +23,7 @@ from .mb_constants import (
     LIVE_DEAD,
     TURN_MEMORY,
     TURN_PRESENCE,
-    TURN_SCALE_L,
-    TURN_SCALE_R,
+    TURN_SCALE,
     TURN_TANH,
     YAW_DEAD,
     YAW_EPS,
@@ -185,46 +184,43 @@ def fly_turn(drive_l: float, drive_r: float) -> float:
 
     ``drive_l`` and ``drive_r`` are approach minus avoidance on that side.
     The command is that difference, with the gain and deadband in ``mb_constants``.
-    A live command uses ``live_turn``: this ratio saturates when the two
-    drives have opposite sign, which is how every hemisphere is born.
+    A live command uses ``live_turn``, which stays smooth when both drives
+    are large and share a sign.
     """
     return bilateral_yaw(drive_l, drive_r)
 
 
-def _present(base: float, scale: float) -> float:
+def _present(base: float) -> float:
     """Near 1 when this hemisphere sees a pattern, 0 when the half is empty.
 
-    The magnitude is compressed, so two patterns of different brightness still
-    cancel. The sign follows ``base / scale``: both birth scales are chosen so
-    a visible pattern is positive.
+    The magnitude is compressed, so a brighter and a dimmer hemifield still
+    cancel. The sign is the sign of the birth drive. Both hemispheres use
+    the same convention, so an approach pattern is positive on either side.
     """
-    if abs(base) < 1e-6 or abs(scale) < 1e-6:
+    if abs(base) < 1e-6 or abs(TURN_SCALE) < 1e-6:
         return 0.0
-    unit = math.tanh(abs(base) / (TURN_PRESENCE * abs(scale)))
-    if (base > 0.0) != (scale > 0.0):
+    unit = math.tanh(abs(base) / (TURN_PRESENCE * abs(TURN_SCALE)))
+    if base < 0.0:
         return -unit
     return unit
 
 
 def live_turn(drive_l: float, drive_r: float, base_l: float | None = None, base_r: float | None = None) -> float:
-    """Smooth yaw. Left is positive. Blank and symmetric views sit near zero.
+    """Smooth yaw. Left is positive. Blank and matched views sit near zero.
 
-    Each hemisphere is divided by its birth scale, so the innate positive left
-    drive and the innate negative right drive cancel when both see a pattern.
-    ``base_*`` is that same view at the birth weights. The memory term is the
-    rise above that birth drive. Omitted bases use the drives themselves, so
-    the command is only the innate side. ``tanh`` keeps the result inside ±1
-    without pinning a modest difference at the stop.
+    ``z`` follows left minus right. Each side is the same function: a
+    saturated presence, plus the rise above that side's birth drive.
+    ``base_*`` is the birth drive of this view. Omitted bases use the drives
+    themselves, so the command is only which side is occupied. ``tanh`` keeps
+    the result inside ±1.
     """
     left = float(drive_l)
     right = float(drive_r)
     born_l = left if base_l is None else float(base_l)
     born_r = right if base_r is None else float(base_r)
-    present_l = _present(born_l, TURN_SCALE_L)
-    present_r = _present(born_r, TURN_SCALE_R)
-    appetite_l = (left - born_l) / abs(TURN_SCALE_L)
-    appetite_r = (right - born_r) / abs(TURN_SCALE_R)
-    raw = (present_l - present_r) + TURN_MEMORY * (appetite_l - appetite_r)
+    appetite_l = (left - born_l) / abs(TURN_SCALE)
+    appetite_r = (right - born_r) / abs(TURN_SCALE)
+    raw = (_present(born_l) - _present(born_r)) + TURN_MEMORY * (appetite_l - appetite_r)
     z = math.tanh(TURN_TANH * raw)
     if abs(z) < LIVE_DEAD:
         return 0.0

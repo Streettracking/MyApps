@@ -395,9 +395,9 @@ class OnboardEyeDriveTests(unittest.TestCase):
         loop.recognized_l = True
         loop.recognized_r = True
         loop.mb.r_l = 480.0
-        loop.mb.r_r = -40.0
+        loop.mb.r_r = 40.0
         loop.mb.base_l = 480.0
-        loop.mb.base_r = -40.0
+        loop.mb.base_r = 40.0
         cmd = loop.tick(0.0)
         self.assertEqual(cmd.phase, "approach")
         self.assertAlmostEqual(cmd.x, 0.4)
@@ -413,9 +413,9 @@ class OnboardEyeDriveTests(unittest.TestCase):
         other.recognized_l = True
         other.recognized_r = True
         other.mb.r_l = 40.0
-        other.mb.r_r = -480.0
+        other.mb.r_r = 480.0
         other.mb.base_l = 40.0
-        other.mb.base_r = -480.0
+        other.mb.base_r = 480.0
         cmd = other.tick(0.0)
         self.assertAlmostEqual(cmd.x, 0.4)
         self.assertLess(cmd.z, -0.2)
@@ -430,9 +430,9 @@ class OnboardEyeDriveTests(unittest.TestCase):
         loop.recognized_l = False
         loop.recognized_r = True
         loop.mb.r_l = 0.0
-        loop.mb.r_r = -480.0
+        loop.mb.r_r = 480.0
         loop.mb.base_l = 0.0
-        loop.mb.base_r = -480.0
+        loop.mb.base_r = 480.0
         cmd = loop.tick(0.0)
         self.assertEqual(cmd.phase, "approach")
         self.assertAlmostEqual(cmd.x, 0.4)
@@ -1113,13 +1113,14 @@ class PlasticityBiologyTests(unittest.TestCase):
 
         trainer.forward(probe_features("dog"))
         dog_g = trainer.brain.vision.last_gamma > 0
-        for vis, kc in (
-            (trainer.brain.vision, trainer.last_fwd.kc),
-            (trainer.brain_r.vision, trainer.last_fwd_r.kc),
+        mirror = trainer.brain.vision
+        for vis, kc, home in (
+            (trainer.brain.vision, trainer.last_fwd.kc, trainer.brain.vision),
+            (trainer.brain_r.vision, trainer.last_fwd_r.kc, mirror),
         ):
             _group_ok(vis.last_gamma)
             _group_ok(vis.last_abp)
-            self.assertEqual(int(((kc > 0) & ~vis.gamma_mask & ~vis.abp_mask).sum()), 0)
+            self.assertEqual(int(((kc > 0) & ~home.gamma_mask & ~home.abp_mask).sum()), 0)
 
         trainer.forward(probe_features("distractor"))
         other = trainer.brain.vision.last_gamma > 0
@@ -1181,6 +1182,25 @@ class PlasticityBiologyTests(unittest.TestCase):
         self.assertGreater(grown, birth)
         self.assertLessEqual(grown, float(ceil[idx]) + 1e-3)
         np.testing.assert_array_equal(quiet.brain.kc_mbon_w[abp], abp_before)
+
+    def test_identical_image_gives_the_same_sign(self):
+        from sim.hemifield import hemifield, live_turn
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.raw_sense import probe_features
+
+        trainer = MbTrainer(default_npz(), seed=1)
+        half = hemifield(probe_features("dog"), "L", 0.0)
+        _fwd_l, left = trainer._drive(trainer.brain, half, None)
+        _fwd_r, right = trainer._drive(trainer.brain_r, half, None)
+        self.assertGreater(left, 0.0)
+        self.assertGreater(right, 0.0)
+        self.assertAlmostEqual(right, left, places=3)
+        self.assertLess(abs(live_turn(left, right)), 0.05)
+        blank = hemifield(probe_features("empty"), "L", 0.0)
+        _empty_l, zero_l = trainer._drive(trainer.brain, blank, None)
+        _empty_r, zero_r = trainer._drive(trainer.brain_r, blank, None)
+        self.assertEqual(zero_l, 0.0)
+        self.assertEqual(zero_r, 0.0)
 
     def test_turn_is_left_drive_minus_right_drive(self):
         from sim.hemifield import fly_turn

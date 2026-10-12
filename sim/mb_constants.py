@@ -32,15 +32,12 @@ YAW_K = 1.0
 YAW_EPS = 1e-3
 YAW_DEAD = 0.08
 
-# Live yaw. The left hemisphere is born near +492 for a pattern in one hemifield,
-# the right near −508, so the raw difference points left for every view.
-# Dividing by those scales cancels a blank frame and a symmetric view.
-# The learned term is the same view's drive minus its birth drive, in those units.
-# tanh stops a few hundred counts from pinning the command at ±1.
-TURN_SCALE_L = 492.0
-TURN_SCALE_R = -508.0
-# Presence saturates, so a brighter and a dimmer hemifield both read near one
-# and a symmetric pair does not grow a turn as the bearings widen.
+# Live yaw. Both hemispheres are born near +520 for a pattern in one hemifield,
+# with the same sign. Dividing by that scale, and saturating presence, cancels
+# a blank frame and a pair of occupied hemifields whose birth magnitudes differ
+# by a few tens of counts. The learned term is this view's drive minus its
+# birth drive, in those units. tanh keeps the command inside ±1.
+TURN_SCALE = 520.0
 TURN_PRESENCE = 0.35
 TURN_MEMORY = 4.0
 TURN_TANH = 1.05
