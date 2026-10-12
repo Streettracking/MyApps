@@ -589,7 +589,7 @@ class BrainPanelStatusTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(fields, {})
         self.assertEqual(brain_header(True), BRAIN_OFFLINE_TITLE)
-        self.assertEqual(BRAIN_OFFLINE_TITLE, "нет данных с борта")
+        self.assertEqual(BRAIN_OFFLINE_TITLE, "Мозг на .213 не запущен")
         for broken in (None, {}, {"drift": 1.0}):
             ok, fields = brain_panel_from_status(broken, 0.1)
             self.assertFalse(ok)
@@ -649,8 +649,8 @@ class BrainPanelStatusTests(unittest.TestCase):
             content = mon._content_of("brain")
             plate = offline_plate(_scheme_rgb("card"), _scheme_rgb("ink_dim"))
             color = mon.screen.get_at((content.centerx, content.centery))
-            self.assertEqual(tuple(color[:3]), plate)
-            self.assertNotEqual(plate, _scheme_rgb("card"))
+            self.assertEqual(tuple(color[:3]), _scheme_rgb("card"))
+            self.assertNotEqual(tuple(color[:3]), plate)
         finally:
             pygame.quit()
 

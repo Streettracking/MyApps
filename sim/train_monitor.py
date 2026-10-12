@@ -3220,11 +3220,12 @@ class TrainMonitor:
 
         body = pygame.Rect(content.x, content.y, content.w, content.h)
         if getattr(view, "brain_offline", False):
-            from .brain_panel import offline_plate
-
-            plate = offline_plate(_scheme_rgb("card"), _scheme_rgb("ink_dim"))
-            pygame.draw.rect(screen, plate, body)
+            # TODO: «ПЕРЕЗАПУСК МОЗГА» posts a restart to :8090 and only
+            # restarts a brain that is already up. It is not a launch from
+            # dead. Do not add a start command here.
             self._brain_panel_cache = None
+            line = self.font.render("Мозг на .213 не запущен", True, LABEL)
+            screen.blit(line, (body.x + 12, body.y + 12))
             return
         log_source = self.journal_rect
         self.log_rows = max(5, (log_source.h - 34) // 16) if log_source is not None else 5
