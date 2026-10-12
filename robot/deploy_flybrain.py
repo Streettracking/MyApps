@@ -40,6 +40,7 @@ ONBOARD = ROOT / "robot" / "flybrain_onboard"
 # teacher_lead.py is. The dog mixes the teacher command with the fly.
 SIM_FILES = (
     "mb_runtime.py",
+    "mb_constants.py",
     "mb_train.py",
     "mb_confidence.py",
     "raw_sense.py",

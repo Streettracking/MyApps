@@ -1,9 +1,11 @@
 """Mushroom-body recognition training: raw features → PN → KC → MBON.
 
-Only KC→MBON weights change, and only when a DAN teaching signal is present.
-Default DAN is the operator: T injects appetitive PAM, X injects aversive PPL1.
-Familiarity is the other DAN: repetition depresses KC→novelty-MBON.
-Monitor labels never enter either rule.
+KC→MBON weights change when a DAN fires, and they also ease back toward the
+birth weight on later frames. Default DAN is the operator: T injects
+appetitive PAM, X injects aversive PPL1. Familiarity is the other DAN:
+repetition depresses KC→novelty-MBON. Monitor labels never enter either rule.
+The stored readouts are approach minus avoidance. The turn is the left
+readout minus the right one.
 """
 
 from __future__ import annotations
@@ -208,6 +210,20 @@ class MbTrainer:
             self.r_r = self._value(self.brain_r, self.last_fwd_r)
             self.last_readout = float(self.r_l + self.r_r)
 
+    def settle(self, dopamine_l: bool = False, dopamine_r: bool = False) -> None:
+        """One frame of homeostasis. Learning off leaves the weights alone.
+
+        Depressed synapses move back toward their birth weight. A Kenyon cell
+        that fired with no dopamine on that side gains a little. ``r_l`` and
+        ``r_r`` stay the approach-minus-avoidance drives ``forward`` stored.
+        """
+        if not self.learn:
+            return
+        if self.last_fwd is not None:
+            self.brain.recover(self.last_fwd.kc, bool(dopamine_l))
+        if self.last_fwd_r is not None:
+            self.brain_r.recover(self.last_fwd_r.kc, bool(dopamine_r))
+
     def teach_sides(self, kind_l: str | None, kind_r: str | None, t: float) -> bool:
         """DAN on one hemisphere or each. Operator ``teach`` still pulses both.
 
@@ -333,6 +349,7 @@ class MbTrainer:
                         % (w.shape, self.brain_r.kc_mbon_w.shape)
                     )
                 self.brain_r.kc_mbon_w = w
+                self.brain_r._bound_weights()
                 fam = np.asarray(z["kc_fam_r"], dtype=np.float32) if "kc_fam_r" in z.files else None
                 if fam is not None and fam.shape == self.brain_r.kc_fam.shape:
                     self.brain_r.kc_fam = fam

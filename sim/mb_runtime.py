@@ -7,9 +7,34 @@ from pathlib import Path
 
 import numpy as np
 
+from .mb_constants import IDLE_GROWTH, RECOVERY_RATE, W_CEIL_FRAC, W_FLOOR_FRAC, kc_winner_count
 from .npz_compat import as_plain, open_npz, scalar_str
 
 ACTIONS = ("Approach_A", "Avoid_A", "Approach_B", "Avoid_B", "Explore", "Freeze")
+
+
+def apl_sparsify(drive: np.ndarray) -> np.ndarray:
+    """Global inhibition (APL) as k-winner-take-all.
+
+    A silent frame stays silent. Otherwise the strongest Kenyon cells, about
+    7% and always inside 5–10%, keep their rate and the strongest is scaled to 1.
+    """
+    n = int(drive.shape[0])
+    out = np.zeros(n, dtype=np.float32)
+    if n == 0 or float(drive.max()) <= 0.0:
+        return out
+    if n <= 10:
+        np.maximum(drive, 0.0, out=out)
+        out /= np.float32(out.max())
+        return out
+    k = kc_winner_count(n)
+    pick = np.argpartition(drive, n - k)[n - k :]
+    keep = pick[drive[pick] > 0.0]
+    if keep.size == 0:
+        return out
+    out[keep] = drive[keep]
+    out /= np.float32(out.max())
+    return out
 
 
 @dataclass
@@ -51,6 +76,8 @@ class MushroomBodyRuntime:
             z["kc_mbon_pre"], z["kc_mbon_post"], z["kc_mbon_w"], self._g2kc, self._g2mbon
         )
         self.kc_mbon_w = self.kc_mbon_w0.astype(np.float32).copy()
+        self.w_floor = (self.kc_mbon_w0 * np.float32(W_FLOOR_FRAC)).astype(np.float32)
+        self.w_ceil = (self.kc_mbon_w0 * np.float32(W_CEIL_FRAC)).astype(np.float32)
         self.mask_av = z["kc_mbon_mask_aversive"].astype(bool)
         self.mask_ap = z["kc_mbon_mask_appetitive"].astype(bool)
         if len(self.mask_av) != len(self.kc_mbon_w):
@@ -145,10 +172,7 @@ class MushroomBodyRuntime:
         kc = np.zeros(self.n_kc, dtype=np.float32)
         if len(self.pn_kc_w):
             np.add.at(kc, self.pn_kc_post, self.pn_kc_w * pn[self.pn_kc_pre])
-        if kc.max() > 0:
-            kc /= kc.max()
-        thr = np.quantile(kc, 0.95) if self.n_kc > 10 else 0.0
-        kc = np.where(kc >= thr, kc, 0.0).astype(np.float32)
+        kc = apl_sparsify(kc)
 
         mbon, scores = self.scores_of_kc(kc)
         scores[ACTIONS.index("Explore")] += 0.15 * (float(scores.max()) + 1.0)
@@ -181,7 +205,8 @@ class MushroomBodyRuntime:
         (r>0, appetitive mask) reaches avoidance MBONs, so a reward weakens
         avoidance and the paired pattern approaches. PPL1 (r<0, aversive
         mask) reaches approach MBONs, so punishment weakens approach.
-        The opposite synapse is not potentiated. Weights stay non-negative.
+        The opposite synapse is not potentiated. Weights stay inside the
+        birth-weight floor and ceiling, so a synapse does not sit at zero.
         """
         if abs(r) < 1e-9 or last.kc.sum() <= 0 or len(self.kc_mbon_w) == 0:
             return
@@ -204,7 +229,7 @@ class MushroomBodyRuntime:
             dec = mask & np.isin(post_action, list(avoid_ids))
             self.kc_mbon_w[dec] -= self.eta * r * pre_act[dec]
 
-        np.clip(self.kc_mbon_w, 0.0, None, out=self.kc_mbon_w)
+        self._bound_weights()
 
     def appetitive_drive(self, scores: np.ndarray) -> float:
         """Approach MBON sum minus avoid MBON sum. PAM raises this by weakening avoidance."""
@@ -237,9 +262,33 @@ class MushroomBodyRuntime:
         mask = self.mask_av & post_ok & (pre > 0) & (self.kc_fam[self.kc_mbon_pre] > 0.05)
         if np.any(mask):
             self.kc_mbon_w[mask] -= self.eta * self.kc_fam[self.kc_mbon_pre][mask] * pre[mask]
-            np.clip(self.kc_mbon_w, 0.0, None, out=self.kc_mbon_w)
+            self._bound_weights()
         self.kc_fam = 0.985 * self.kc_fam + 0.015 * active.astype(np.float32)
         return novelty
+
+    def _bound_weights(self) -> None:
+        if len(self.kc_mbon_w) == 0:
+            return
+        np.clip(self.kc_mbon_w, self.w_floor, self.w_ceil, out=self.kc_mbon_w)
+
+    def recover(self, kc: np.ndarray, dopamine: bool) -> None:
+        """Return depressed KC→MBON weights toward the weight they were born with.
+
+        A Kenyon cell that fired on this frame, with no dopamine, also gains a
+        little. The floor and the ceiling still hold.
+        """
+        if len(self.kc_mbon_w) == 0:
+            return
+        gap = self.kc_mbon_w0 - self.kc_mbon_w
+        rising = gap > 0.0
+        if np.any(rising):
+            self.kc_mbon_w[rising] += np.float32(RECOVERY_RATE) * gap[rising]
+        if not dopamine and kc is not None and float(kc.max()) > 0.0:
+            pre = kc[self.kc_mbon_pre]
+            active = pre > 0.0
+            if np.any(active):
+                self.kc_mbon_w[active] += np.float32(IDLE_GROWTH) * pre[active]
+        self._bound_weights()
 
     def reset_plastic(self) -> None:
         self.kc_mbon_w = self.kc_mbon_w0.astype(np.float32).copy()
@@ -267,6 +316,7 @@ class MushroomBodyRuntime:
                 "форма KC→MBON %s не совпала с мозгом %s" % (w.shape, self.kc_mbon_w.shape)
             )
         self.kc_mbon_w = w
+        self._bound_weights()
         fam = np.asarray(z["kc_fam"], dtype=np.float32) if "kc_fam" in z.files else None
         if fam is not None and fam.shape == self.kc_fam.shape:
             self.kc_fam = fam

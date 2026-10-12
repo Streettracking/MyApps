@@ -285,14 +285,21 @@ class BrainLoop:
             kind = None
             side_l = None
             side_r = None
+        pulsed_l = False
+        pulsed_r = False
         if kind:
             self.mb.teach(fwd, kind, float(now))
             self._taught_l = kind
             self._taught_r = kind
+            pulsed_l = kind in ("pam", "ppl1")
+            pulsed_r = pulsed_l
         elif side_l or side_r:
             self.mb.teach_sides(side_l, side_r, float(now))
             self._taught_l = side_l
             self._taught_r = side_r
+            pulsed_l = side_l in ("pam", "ppl1")
+            pulsed_r = side_r in ("pam", "ppl1")
+        self.mb.settle(pulsed_l, pulsed_r)
         with self._lock:
             self.recognized = seen
             self.sector = self.marks.aim_sector if seen else None

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .hemifield import bilateral_yaw
+from .hemifield import fly_turn
 from .map_marks import bin_angle, feature_range
 from .raw_sense import FOV, N_AZ
 
@@ -435,7 +435,7 @@ class ApproachTrack:
         self.r_l = float(self._ema_l)
         self.r_r = float(self._ema_r)
         self.r_diff = self.r_l - self.r_r
-        self.yaw_z = bilateral_yaw(self.r_l, self.r_r)
+        self.yaw_z = fly_turn(self.r_l, self.r_r)
 
     def update(self, now: float, recognized: bool, sector: int | None) -> None:
         now = float(now)

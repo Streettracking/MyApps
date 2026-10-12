@@ -845,5 +845,154 @@ class WeightFileTests(unittest.TestCase):
             np.testing.assert_array_equal(kept.brain_r.kc_mbon_w, born.brain.kc_mbon_w)
 
 
+class PlasticityBiologyTests(unittest.TestCase):
+    def test_reward_raises_approach_minus_avoidance(self):
+        from sim.mb_runtime import ACTIONS
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.raw_sense import probe_features
+
+        trainer = MbTrainer(default_npz(), seed=1)
+        feat = probe_features("dog")
+        trainer.forward(feat)
+        before = trainer.brain.appetitive_drive(trainer.last_fwd.action_scores)
+        trainer.brain.plasticity(trainer.last_fwd, 1.0)
+        trainer.forward(feat)
+        after = trainer.brain.appetitive_drive(trainer.last_fwd.action_scores)
+        self.assertGreater(after, before)
+
+        fresh = MbTrainer(default_npz(), seed=1)
+        fresh.forward(feat)
+        punish_before = fresh.brain.appetitive_drive(fresh.last_fwd.action_scores)
+        fresh.brain.plasticity(fresh.last_fwd, -1.0)
+        fresh.forward(feat)
+        punish_after = fresh.brain.appetitive_drive(fresh.last_fwd.action_scores)
+        self.assertLess(punish_after, punish_before)
+
+        post = trainer.brain.mbon_action[trainer.brain.kc_mbon_post]
+        avoid = [ACTIONS.index("Avoid_A"), ACTIONS.index("Avoid_B")]
+        approach = [ACTIONS.index("Approach_A"), ACTIONS.index("Approach_B")]
+        dw = trainer.brain.kc_mbon_w - trainer.brain.kc_mbon_w0
+        self.assertGreater(int(np.sum((dw < -1e-6) & np.isin(post, avoid))), 0)
+        self.assertEqual(int(np.sum((np.abs(dw) > 1e-6) & np.isin(post, approach))), 0)
+
+    def test_one_frame_keeps_a_sparse_distinct_kenyon_code(self):
+        from sim.mb_constants import KC_FRAC_MAX, KC_FRAC_MIN, kc_winner_count
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.raw_sense import probe_features
+
+        trainer = MbTrainer(default_npz(), seed=1)
+        n = trainer.brain.n_kc
+        k = kc_winner_count(n)
+        self.assertGreaterEqual(k / float(n), KC_FRAC_MIN)
+        self.assertLessEqual(k / float(n), KC_FRAC_MAX)
+
+        trainer.forward(probe_features("dog"))
+        dog_l = trainer.last_fwd.kc > 0
+        dog_r = trainer.last_fwd_r.kc > 0
+        self.assertEqual(int(dog_l.sum()), k)
+        self.assertEqual(int(dog_r.sum()), k)
+        self.assertGreaterEqual(float(dog_l.mean()), KC_FRAC_MIN)
+        self.assertLessEqual(float(dog_l.mean()), KC_FRAC_MAX)
+
+        trainer.forward(probe_features("distractor"))
+        other = trainer.last_fwd.kc > 0
+        self.assertEqual(int(other.sum()), k)
+        inter = int(np.logical_and(dog_l, other).sum())
+        union = int(np.logical_or(dog_l, other).sum())
+        self.assertGreater(union, 0)
+        self.assertLess(inter / float(union), 0.20)
+
+        trainer.forward(probe_features("empty"))
+        self.assertEqual(int(np.count_nonzero(trainer.last_fwd.kc)), 0)
+        self.assertEqual(int(np.count_nonzero(trainer.last_fwd_r.kc)), 0)
+
+    def test_depressed_weights_recover_and_stay_bounded(self):
+        from sim.mb_constants import W_CEIL_FRAC, W_FLOOR_FRAC
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.raw_sense import probe_features
+
+        trainer = MbTrainer(default_npz(), seed=1)
+        trainer.forward(probe_features("dog"))
+        brain = trainer.brain
+        fwd = trainer.last_fwd
+        born = brain.kc_mbon_w0
+        floor = born * np.float32(W_FLOOR_FRAC)
+        ceil = born * np.float32(W_CEIL_FRAC)
+        for _ in range(80):
+            brain.plasticity(fwd, -1.0)
+        floored = brain.kc_mbon_w.copy()
+        self.assertTrue(bool(np.all(floored + 1e-4 >= floor)))
+        self.assertGreater(float(floored.min()), 0.0)
+        self.assertGreater(int(np.sum(np.abs(floored - floor) < 1e-3)), 0)
+        gap_before = float(np.mean(np.abs(floored - born)))
+        for _ in range(300):
+            brain.recover(fwd.kc, dopamine=False)
+        restored = brain.kc_mbon_w
+        gap_after = float(np.mean(np.abs(restored - born)))
+        self.assertLess(gap_after, gap_before * 0.5)
+        self.assertEqual(int(np.sum(np.abs(restored - floor) < 1e-3)), 0)
+        self.assertTrue(bool(np.all(restored + 1e-4 >= floor)))
+        self.assertTrue(bool(np.all(restored <= ceil + 1e-3)))
+        self.assertGreater(float(restored.min()), 0.0)
+        self.assertGreater(float(restored.std()), float(born.std()) * 0.5)
+
+        quiet = MbTrainer(default_npz(), seed=1)
+        quiet.forward(probe_features("dog"))
+        pre = quiet.brain.kc_mbon_pre
+        active = quiet.last_fwd.kc[pre] > 0
+        self.assertTrue(bool(np.any(active)))
+        idx = int(np.flatnonzero(active)[0])
+        birth = float(quiet.brain.kc_mbon_w[idx])
+        quiet.brain.recover(quiet.last_fwd.kc, dopamine=True)
+        self.assertAlmostEqual(float(quiet.brain.kc_mbon_w[idx]), birth)
+        quiet.brain.recover(quiet.last_fwd.kc, dopamine=False)
+        grown = float(quiet.brain.kc_mbon_w[idx])
+        self.assertGreater(grown, birth)
+        self.assertLessEqual(grown, float(ceil[idx]) + 1e-3)
+
+    def test_turn_is_left_drive_minus_right_drive(self):
+        from sim.hemifield import fly_turn
+        from sim.mb_runtime import ACTIONS
+        from sim.mb_train import MbTrainer, default_npz
+
+        brain = MbTrainer(default_npz(), seed=1).brain
+        left = np.zeros(len(ACTIONS), dtype=np.float32)
+        right = np.zeros(len(ACTIONS), dtype=np.float32)
+        left[ACTIONS.index("Approach_A")] = 4.0
+        left[ACTIONS.index("Avoid_A")] = 1.0
+        right[ACTIONS.index("Approach_A")] = 1.0
+        right[ACTIONS.index("Avoid_A")] = 4.0
+        drive_l = brain.appetitive_drive(left)
+        drive_r = brain.appetitive_drive(right)
+        self.assertAlmostEqual(drive_l, 3.0)
+        self.assertAlmostEqual(drive_r, -3.0)
+        self.assertGreater(fly_turn(drive_l, drive_r), 0.0)
+        self.assertLess(fly_turn(drive_r, drive_l), 0.0)
+        self.assertEqual(fly_turn(1.05, 1.0), 0.0)
+
+    def test_a_quiet_onboard_frame_settles_when_learning_is_on(self):
+        from robot.flybrain_onboard.app import BrainLoop
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.raw_sense import probe_features
+
+        trainer = MbTrainer(default_npz(), seed=1)
+        trainer.forward(probe_features("dog"))
+        for _ in range(40):
+            trainer.brain.plasticity(trainer.last_fwd, -1.0)
+        born = trainer.brain.kc_mbon_w0
+        dropped = trainer.brain.kc_mbon_w.copy()
+        gap_dropped = float(np.mean(np.abs(dropped - born)))
+        loop = BrainLoop(SportDrive(None), trainer, "/tmp/mb_plastic_settle.npz")
+        camera = np.zeros((16, 16, 3), dtype=np.uint8)
+        loop.ingest(camera, None, 1.0)
+        np.testing.assert_array_equal(trainer.brain.kc_mbon_w, dropped)
+        loop.learn = True
+        loop.ingest(camera, None, 2.0)
+        gap_settled = float(np.mean(np.abs(trainer.brain.kc_mbon_w - born)))
+        self.assertLess(gap_settled, gap_dropped)
+        self.assertGreater(float(trainer.brain.kc_mbon_w.min()), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

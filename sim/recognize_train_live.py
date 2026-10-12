@@ -411,6 +411,8 @@ class LiveSession:
             if kind == "pam":
                 self.treat_flash = True
             self.mb.teach(fwd, kind, self.now())
+            pulsed = kind in ("pam", "ppl1")
+            self.mb.settle(pulsed, pulsed)
             self._log_teach(kind)
             if (
                 conf.ready

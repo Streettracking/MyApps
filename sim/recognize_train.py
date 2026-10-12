@@ -239,6 +239,8 @@ class RecognizeTrainSim:
             if kind == "pam":
                 self.treat_flash = True
             self.mb.teach(fwd, kind if self.dan == "teacher" else None, float(self.world.t))
+            pulsed = kind in ("pam", "ppl1") and self.dan == "teacher"
+            self.mb.settle(pulsed, pulsed)
             self.mb.progress.tick(self.world.cfg.dt, learn)
             self.mb.progress.note_label(self.operator, value, conf.recognized, conf.ready)
             if kind == "pam" and (self.mb.n_pam <= 2 or self.mb.n_pam % 15 == 0):

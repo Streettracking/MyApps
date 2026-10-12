@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .mb_constants import YAW_DEAD, YAW_EPS, YAW_K
 from .raw_sense import N_AZ, N_RAW, OFF_BODY, OFF_CLOSE, OFF_FLOOR, OFF_LIDAR, OFF_MOTION
 
 # Ego-left slots. A right-hemifield sector s is written to slot (N_AZ - 1 - s):
@@ -25,10 +26,6 @@ _LEFT = (4, 5, 6, 7)
 _RIGHT_SRC = (3, 2, 1, 0)
 # Default shared fraction of the field. 0 is the hard midline above.
 DEFAULT_OVERLAP = 0.40
-
-YAW_K = 1.0
-YAW_EPS = 1e-3
-YAW_DEAD = 0.08
 
 
 def _paint(src: np.ndarray, dst: np.ndarray, src_i: int, dst_i: int) -> None:
@@ -151,9 +148,11 @@ def hemifield(feat: np.ndarray, side: str, overlap: float = 0.0) -> np.ndarray:
 
 
 def bilateral_yaw(r_l: float, r_r: float) -> float:
-    """Yaw from the two readouts. Left is positive. A small imbalance is zero.
+    """Yaw from the two hemisphere drives. Left is positive.
 
-    ``z = k (R_L - R_R) / (|R_L| + |R_R| + ε)``, then clamped to [-1, 1].
+    Each drive is approach minus avoidance. The turn is the left drive minus
+    the right drive, then gain, scale, and a deadband:
+    ``z = k (drive_L - drive_R) / (|drive_L| + |drive_R| + ε)``.
     """
     left = float(r_l)
     right = float(r_r)
@@ -167,6 +166,15 @@ def bilateral_yaw(r_l: float, r_r: float) -> float:
     if abs(z) < YAW_DEAD:
         return 0.0
     return float(z)
+
+
+def fly_turn(drive_l: float, drive_r: float) -> float:
+    """Yaw command. Left is positive.
+
+    ``drive_l`` and ``drive_r`` are approach minus avoidance on that side.
+    The command is that difference, with the gain and deadband in ``mb_constants``.
+    """
+    return bilateral_yaw(drive_l, drive_r)
 
 
 def format_fly_line(r_l, r_r, diff, z, steer: str) -> str:
