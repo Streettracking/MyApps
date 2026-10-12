@@ -3839,7 +3839,6 @@ class TrainMonitor:
             "ОБУЧЕНИЕ: ВКЛ" if learn_on else "ОБУЧЕНИЕ: ВЫКЛ",
             PEACH if learn_on else LAMP_OFF,
             self.learn_rect.collidepoint(mouse),
-            label_color=None if learn_on else INK_DIM,
             key="P",
         )
         self._button(
@@ -3848,7 +3847,6 @@ class TrainMonitor:
             "АВТО: ВКЛ" if auto_on else "АВТО: ВЫКЛ",
             PEACH if auto_on else LAMP_OFF,
             self.auto_rect.collidepoint(mouse),
-            label_color=None if auto_on else INK_DIM,
             key="A",
         )
         self._button(
@@ -3857,7 +3855,6 @@ class TrainMonitor:
             "ПЕРЕХВАТ: ВКЛ" if grabbed else "ПЕРЕХВАТ: ВЫКЛ",
             PEACH if grabbed else LAMP_OFF,
             self.take_rect.collidepoint(mouse),
-            label_color=None if grabbed else INK_DIM,
             key="M",
         )
         if view.learner == "mb":
