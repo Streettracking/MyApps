@@ -48,7 +48,7 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  "
+    "A авто  M перехват  стрелки/стик  K руль  Y учитель  H рамки  J мозг  F11 экран  "
     "U запись  O ошибка YOLO  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
 )
 
@@ -1009,8 +1009,10 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
         onboard.poll()
         state["poll"] = now
     # post() already wrote onboard.status. Mirror it on this frame, including
-    # when the poll interval has not elapsed, so M sends op=manual from
-    # took_over and mode=manual without waiting for the next GET.
+    # when the poll interval has not elapsed, so M and a held arrow or stick
+    # send op=manual from took_over and mode=manual without waiting for the next GET.
+    # Pause does not stop the camera, the YOLO boxes, or frame recording:
+    # those stay on this laptop and run after this function returns.
     _mirror_remote(session, onboard.status)
     written = append_onboard_status(
         getattr(session, "status_log_root", None) or ROOT,

@@ -176,6 +176,58 @@ PANEL = CARD
 BTN = CARD
 BTN_EDGE = LINE
 
+# Below this, a resting stick reads as zero so noise does not creep the dog.
+STICK_DEADZONE = 0.15
+
+
+def drive_axes(axis_x: float = 0.0, axis_y: float = 0.0, hat: tuple[int, int] = (0, 0), up: bool = False, down: bool = False, left: bool = False, right: bool = False) -> tuple[float, float]:
+    """Forward is +x, left yaw is +z. Arrows, hat, and the left stick share that sign.
+
+    Pygame's stick is +x right and +y down, so both axes are flipped.
+    A hat uses the same signs: up is forward, left is positive yaw.
+    """
+
+    def shaped(value: float) -> float:
+        value = float(value)
+        if abs(value) <= STICK_DEADZONE:
+            return 0.0
+        sign = 1.0 if value > 0.0 else -1.0
+        span = (abs(value) - STICK_DEADZONE) / (1.0 - STICK_DEADZONE)
+        return sign * min(1.0, span)
+
+    sx = -shaped(axis_y)
+    sz = -shaped(axis_x)
+    hx, hy = int(hat[0]), int(hat[1])
+    if up or hy > 0:
+        sx += 1.0
+    if down or hy < 0:
+        sx -= 1.0
+    if left or hx < 0:
+        sz += 1.0
+    if right or hx > 0:
+        sz -= 1.0
+    return max(-1.0, min(1.0, sx)), max(-1.0, min(1.0, sz))
+
+
+def _joystick_sample() -> tuple[float, float, tuple[int, int]]:
+    """Left stick and hat of the first pad. Zeros when no pad is plugged in."""
+    import pygame
+
+    try:
+        if not pygame.joystick.get_init():
+            pygame.joystick.init()
+        if pygame.joystick.get_count() <= 0:
+            return 0.0, 0.0, (0, 0)
+        joy = pygame.joystick.Joystick(0)
+        if not joy.get_init():
+            joy.init()
+        axis_x = float(joy.get_axis(0)) if joy.get_numaxes() > 0 else 0.0
+        axis_y = float(joy.get_axis(1)) if joy.get_numaxes() > 1 else 0.0
+        hat = joy.get_hat(0) if joy.get_numhats() > 0 else (0, 0)
+        return axis_x, axis_y, (int(hat[0]), int(hat[1]))
+    except Exception:
+        return 0.0, 0.0, (0, 0)
+
 
 @dataclass
 class MonitorInput:
@@ -1999,10 +2051,20 @@ class TrainMonitor:
             self._on_resize(pending_size[0], pending_size[1])
         inp.focused = bool(pygame.key.get_focused())
         if inp.focused:
-            # Arrows do not drive. They used to move the dog: up and down
-            # were forward and back, left and right were yaw, left positive.
-            # Onboard sent that as a manual Move after takeover.
+            # Up and down are forward and back. Left is positive yaw.
+            # Onboard sends this as op=manual only after takeover.
+            # WASD stays on its own keys: A is autonomy, S saves, D labels.
             keys = pygame.key.get_pressed()
+            axis_x, axis_y, hat = _joystick_sample()
+            inp.steer_x, inp.steer_z = drive_axes(
+                axis_x,
+                axis_y,
+                hat,
+                up=bool(keys[pygame.K_UP]),
+                down=bool(keys[pygame.K_DOWN]),
+                left=bool(keys[pygame.K_LEFT]),
+                right=bool(keys[pygame.K_RIGHT]),
+            )
             inp.treat_down = bool(keys[pygame.K_t])
             inp.punish_down = bool(keys[pygame.K_x])
         self._sync_cursor()

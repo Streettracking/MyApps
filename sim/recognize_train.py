@@ -634,8 +634,8 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "T/X учить  A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  U запись  O ошибка YOLO  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
-HEBB_KEYS = "U запись   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
+SIM_KEYS = "T/X учить  A авто  M перехват  стрелки/стик  K руль  Y учитель  H рамки  J мозг  F11 экран  U запись  O ошибка YOLO  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
+HEBB_KEYS = "стрелки/стик ход   U запись   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
 
 
 def _command_name(steer_x: float, steer_z: float, hold: bool) -> str:

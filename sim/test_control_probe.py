@@ -824,6 +824,64 @@ class LinkHoldTests(unittest.TestCase):
             self.assertEqual(link.ops.count("heartbeat"), beats + 1)
 
 
+class TrainerStickTests(unittest.TestCase):
+    def test_onboard_stick_posts_manual_while_paused_and_autonomy_does_not(self):
+        import tempfile
+        from pathlib import Path
+
+        from sim.recognize_train_live import LiveSession, _drive_onboard
+        from sim.train_monitor import MonitorInput
+
+        class _Link:
+            def __init__(self, status):
+                self.status = dict(status)
+                self.posts = []
+                self.ok = True
+                self.last_command = ""
+
+            def heartbeat(self):
+                return self.status
+
+            def poll(self):
+                return self.status
+
+            def post(self, op, **extra):
+                self.posts.append((op, dict(extra)))
+                self.last_command = op
+                return self.status
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            session = LiveSession(root / "state.npz", onboard=True)
+            session.status_log_root = root
+            paused = {
+                "took_over": True,
+                "mode": "manual",
+                "autonomy": False,
+                "paused": True,
+                "learning_frozen": True,
+                "learning": False,
+                "phase": "stop",
+            }
+            link = _Link(paused)
+            tele = {"poll": 0.0, "bridge": 50.0, "manual": 0.0, "axes": False, "hb": 50.0}
+            inp = MonitorInput(steer_x=1.0, steer_z=1.0, focused=True)
+            _drive_onboard(session, link, inp, tele, 50.0)
+            manual = [row for row in link.posts if row[0] == "manual"]
+            self.assertEqual(len(manual), 1)
+            self.assertEqual(manual[0][1]["x"], 0.4)
+            self.assertEqual(manual[0][1]["z"], 1.0)
+            self.assertTrue(session.remote.get("paused"))
+            self.assertTrue(session.remote.get("learning_frozen"))
+            self.assertNotIn("move", [row[0] for row in link.posts])
+
+            auto = _Link({"took_over": False, "mode": "auto", "autonomy": True, "paused": False, "learning": True, "phase": "search"})
+            tele = {"poll": 0.0, "bridge": 50.0, "manual": 0.0, "axes": False, "hb": 60.0}
+            _drive_onboard(session, auto, MonitorInput(steer_x=1.0, steer_z=-1.0, focused=True), tele, 60.0)
+            self.assertFalse(any(row[0] == "manual" for row in auto.posts))
+            self.assertTrue(any("ПЕРЕХВАТ" in line for line in session.log))
+
+
 class OnboardTakeoverTests(unittest.TestCase):
     def test_takeover_pauses_on_8090_and_the_stick_moves_while_learning_stays_frozen(self):
         import numpy as np

@@ -584,16 +584,50 @@ class BrainTests(unittest.TestCase):
         self.assertLess(float(x1[0]), float(x0[0]))
         self.assertGreater(float(y1[0]), float(y0[0]))
 
-    def test_trainer_arrows_do_not_steer(self):
-        import inspect
+    def test_trainer_arrows_and_stick_fill_the_manual_axes(self):
+        from collections import defaultdict
 
-        from sim.train_monitor import TrainMonitor
+        import pygame
 
-        src = inspect.getsource(TrainMonitor.pump)
-        self.assertNotIn("steer_x", src)
-        self.assertNotIn("steer_z", src)
-        self.assertNotIn("K_UP", src)
-        self.assertNotIn("K_LEFT", src)
+        from sim.train_monitor import STICK_DEADZONE, TrainMonitor, drive_axes
+
+        self.assertEqual(drive_axes(up=True), (1.0, 0.0))
+        self.assertEqual(drive_axes(down=True), (-1.0, 0.0))
+        self.assertEqual(drive_axes(left=True), (0.0, 1.0))
+        self.assertEqual(drive_axes(right=True), (0.0, -1.0))
+        self.assertEqual(drive_axes(up=True, down=True), (0.0, 0.0))
+        self.assertEqual(drive_axes(axis_y=-1.0), (1.0, 0.0))
+        self.assertEqual(drive_axes(axis_x=-1.0), (0.0, 1.0))
+        self.assertEqual(drive_axes(axis_x=1.0, axis_y=1.0), (-1.0, -1.0))
+        self.assertEqual(drive_axes(axis_x=STICK_DEADZONE, axis_y=-STICK_DEADZONE), (0.0, 0.0))
+        self.assertEqual(drive_axes(hat=(0, 1)), (1.0, 0.0))
+        self.assertEqual(drive_axes(hat=(-1, 0)), (0.0, 1.0))
+        self.assertEqual(drive_axes(hat=(1, -1)), (-1.0, -1.0))
+
+        pygame.init()
+        try:
+            mon = TrainMonitor("arrows")
+            pressed = pygame.key.get_pressed
+            focused = pygame.key.get_focused
+            pygame.key.get_focused = lambda: True
+            pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_UP: True, pygame.K_LEFT: True})
+            try:
+                held = mon.pump()
+            finally:
+                pygame.key.get_pressed = pressed
+                pygame.key.get_focused = focused
+            self.assertEqual((held.steer_x, held.steer_z), (1.0, 1.0))
+            self.assertFalse(held.treat_down)
+            pygame.key.get_focused = lambda: False
+            pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_UP: True})
+            try:
+                idle = mon.pump()
+            finally:
+                pygame.key.get_pressed = pressed
+                pygame.key.get_focused = focused
+            self.assertEqual((idle.steer_x, idle.steer_z), (0.0, 0.0))
+        finally:
+            pygame.quit()
 
     def test_eyes_follow_the_plaques_and_frames_start_off(self):
         import pygame
