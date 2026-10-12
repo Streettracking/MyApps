@@ -259,6 +259,8 @@ class StateAndStatusTests(unittest.TestCase):
         quiet = loop.status()
         for key in (
             "kc_active_frac",
+            "kc_active_frac_gd",
+            "kc_active_frac_abp",
             "drive_l",
             "drive_r",
             "turn",
@@ -290,8 +292,17 @@ class StateAndStatusTests(unittest.TestCase):
         camera[:, :8, 1] = 220
         loop.ingest(camera, None, 1.0)
         seen = loop.status()
-        total = loop.mb.brain.vision.n_visual + loop.mb.brain_r.vision.n_visual
-        self.assertAlmostEqual(seen["kc_active_frac"], loop.mb.last_kc_on / float(total))
+        gd_on = loop.mb.brain.vision.last_gd_on + loop.mb.brain_r.vision.last_gd_on
+        gd_n = loop.mb.brain.vision.n_gd + loop.mb.brain_r.vision.n_gd
+        ab_on = loop.mb.brain.vision.last_abp_on + loop.mb.brain_r.vision.last_abp_on
+        ab_n = loop.mb.brain.vision.n_abp + loop.mb.brain_r.vision.n_abp
+        self.assertAlmostEqual(seen["kc_active_frac_gd"], gd_on / float(gd_n))
+        self.assertAlmostEqual(seen["kc_active_frac_abp"], ab_on / float(ab_n))
+        self.assertAlmostEqual(seen["kc_active_frac"], (gd_on + ab_on) / float(gd_n + ab_n))
+        self.assertGreaterEqual(seen["kc_active_frac_gd"], 0.0)
+        self.assertLessEqual(seen["kc_active_frac_gd"], 1.0)
+        self.assertGreaterEqual(seen["kc_active_frac_abp"], 0.0)
+        self.assertLessEqual(seen["kc_active_frac_abp"], 1.0)
         self.assertAlmostEqual(seen["drive_l"], loop.mb.brain.appetitive_drive(loop.mb.last_fwd.action_scores))
         self.assertAlmostEqual(seen["drive_r"], loop.mb.brain_r.appetitive_drive(loop.mb.last_fwd_r.action_scores))
         self.assertAlmostEqual(seen["turn"], fly_turn(seen["drive_l"], seen["drive_r"]))
@@ -919,28 +930,36 @@ class WeightFileTests(unittest.TestCase):
 class VisualPathwayTests(unittest.TestCase):
     def test_each_group_receives_only_its_own_features(self):
         from sim.kc_pathways import (
-            ALPHA_BETA_P_ABOUT,
-            GAMMA_D_ABOUT,
             N_MEDULLA,
             OFF_LOBULA_YOLO,
+            _group_indices,
             lobula_channels,
             medulla_channels,
         )
+        from sim.mb_constants import KC_ABP_PER_SIDE, KC_GD_PER_SIDE
         from sim.mb_train import MbTrainer, default_npz
         from sim.raw_sense import N_AZ, N_RAW, OFF_CLOSE, OFF_LIDAR, OFF_MOTION
 
         trainer = MbTrainer(default_npz(), seed=1)
         left = trainer.brain.vision
         right = trainer.brain_r.vision
-        self.assertEqual(len(left.gamma_idx), 140)
-        self.assertEqual(len(right.gamma_idx), 121)
-        self.assertEqual(len(left.abp_idx), 67)
-        self.assertEqual(len(right.abp_idx), 59)
-        self.assertLess(abs(len(left.gamma_idx) - GAMMA_D_ABOUT), 20)
-        self.assertLess(abs(len(left.abp_idx) - ALPHA_BETA_P_ABOUT), 15)
+        self.assertEqual(left.n_gd, KC_GD_PER_SIDE)
+        self.assertEqual(right.n_gd, KC_GD_PER_SIDE)
+        self.assertEqual(left.n_abp, KC_ABP_PER_SIDE)
+        self.assertEqual(right.n_abp, KC_ABP_PER_SIDE)
         self.assertFalse(bool(np.any(left.gamma_mask & left.abp_mask)))
-        self.assertEqual(len(set(left.gamma_idx.tolist()) & set(right.gamma_idx.tolist())), 0)
-        self.assertEqual(len(set(left.abp_idx.tolist()) & set(right.abp_idx.tolist())), 0)
+        self.assertEqual(len(set(np.unique(left.gamma_idx).tolist()) & set(np.unique(right.gamma_idx).tolist())), 0)
+        self.assertEqual(len(set(np.unique(left.abp_idx).tolist()) & set(np.unique(right.abp_idx).tolist())), 0)
+        for vision, side, type_name, idx in (
+            (left, "left", "KCg-d", left.gamma_idx),
+            (right, "right", "KCg-d", right.gamma_idx),
+            (left, "left", "KCab-p", left.abp_idx),
+            (right, "right", "KCab-p", right.abp_idx),
+        ):
+            seeds = _group_indices(trainer.brain if side == "left" else trainer.brain_r, type_name, side)
+            values, counts = np.unique(idx, return_counts=True)
+            self.assertEqual(set(values.tolist()), set(seeds.tolist()))
+            self.assertLessEqual(int(counts.max() - counts.min()), 1)
 
         motion = np.zeros(N_RAW, dtype=np.float32)
         motion[OFF_MOTION + 5] = 1.0
@@ -949,9 +968,9 @@ class VisualPathwayTests(unittest.TestCase):
         self.assertEqual(float(med[: N_MEDULLA - N_AZ].sum()), 0.0)
         self.assertEqual(float(lobula_channels(motion).sum()), 0.0)
         kc = left.kenyon(motion)
-        self.assertGreater(int((kc[left.gamma_idx] > 0).sum()), 0)
-        self.assertEqual(int((kc[left.abp_idx] > 0).sum()), 0)
-        on = np.flatnonzero(kc[left.gamma_idx] > 0)
+        self.assertGreater(int(np.count_nonzero(left.last_gamma)), 0)
+        self.assertEqual(int(np.count_nonzero(left.last_abp)), 0)
+        on = np.flatnonzero(left.last_gamma > 0)
         self.assertTrue(bool(np.all(left.gamma_chan[on] >= N_MEDULLA - 8)))
 
         yolo = np.array([0.9, 0.4, 0.5, 0.2], dtype=np.float32)
@@ -961,9 +980,9 @@ class VisualPathwayTests(unittest.TestCase):
         self.assertGreater(float(lob[OFF_LOBULA_YOLO]), 0.0)
         self.assertEqual(float(lob[:OFF_LOBULA_YOLO].sum()), 0.0)
         seen = left.kenyon(blank, yolo)
-        self.assertEqual(int((seen[left.gamma_idx] > 0).sum()), 0)
-        self.assertGreater(int((seen[left.abp_idx] > 0).sum()), 0)
-        picked = np.flatnonzero(seen[left.abp_idx] > 0)
+        self.assertEqual(int(np.count_nonzero(left.last_gamma)), 0)
+        self.assertGreater(int(np.count_nonzero(left.last_abp)), 0)
+        picked = np.flatnonzero(left.last_abp > 0)
         self.assertTrue(bool(np.all(left.abp_chan[picked] >= OFF_LOBULA_YOLO)))
         self.assertEqual(int(((seen > 0) & ~left.gamma_mask & ~left.abp_mask).sum()), 0)
 
@@ -973,6 +992,27 @@ class VisualPathwayTests(unittest.TestCase):
         self.assertEqual(int(np.count_nonzero(left.kenyon(lidar))), 0)
         again = left.kenyon(motion)
         np.testing.assert_array_equal(again, kc)
+
+    def test_onboard_step_fits_the_frame_slot(self):
+        import time
+
+        from robot.flybrain_onboard.app import BrainLoop
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import MbTrainer, default_npz
+
+        brain = MbTrainer(default_npz(), seed=1)
+        loop = BrainLoop(SportDrive(None), brain, "/tmp/mb_step_slot.npz")
+        loop.learn = True
+        camera = np.zeros((720, 1280, 3), dtype=np.uint8)
+        camera[200:400, 100:500] = (40, 180, 60)
+        lidar = np.zeros((240, 240, 3), dtype=np.uint8)
+        loop.ingest(camera, lidar, 1.0)
+        started = time.perf_counter()
+        loop.ingest(camera, lidar, 2.0)
+        loop.tick(2.0)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        # main.py sleeps 0.1 s, so the step has to finish inside that slot.
+        self.assertLess(elapsed_ms, 100.0)
 
     def test_visual_value_is_learned_on_gamma_only(self):
         from sim.mb_train import MbTrainer, default_npz
@@ -1029,29 +1069,29 @@ class PlasticityBiologyTests(unittest.TestCase):
 
         trainer = MbTrainer(default_npz(), seed=1)
 
-        def _group_ok(kc, idx):
-            n = len(idx)
+        def _group_ok(sparse):
+            n = int(sparse.shape[0])
             k = kc_winner_count(n)
-            on = int((kc[idx] > 0).sum())
+            on = int(np.count_nonzero(sparse))
             self.assertEqual(on, k)
             self.assertGreaterEqual(on / float(n), KC_FRAC_MIN)
             self.assertLessEqual(on / float(n), KC_FRAC_MAX)
 
         trainer.forward(probe_features("dog"))
-        dog_l = trainer.last_fwd.kc > 0
+        dog_g = trainer.brain.vision.last_gamma > 0
         for vis, kc in (
             (trainer.brain.vision, trainer.last_fwd.kc),
             (trainer.brain_r.vision, trainer.last_fwd_r.kc),
         ):
-            _group_ok(kc, vis.gamma_idx)
-            _group_ok(kc, vis.abp_idx)
+            _group_ok(vis.last_gamma)
+            _group_ok(vis.last_abp)
             self.assertEqual(int(((kc > 0) & ~vis.gamma_mask & ~vis.abp_mask).sum()), 0)
 
         trainer.forward(probe_features("distractor"))
-        other = trainer.last_fwd.kc > 0
-        _group_ok(trainer.last_fwd.kc, trainer.brain.vision.gamma_idx)
-        inter = int(np.logical_and(dog_l, other).sum())
-        union = int(np.logical_or(dog_l, other).sum())
+        other = trainer.brain.vision.last_gamma > 0
+        _group_ok(trainer.brain.vision.last_gamma)
+        inter = int(np.logical_and(dog_g, other).sum())
+        union = int(np.logical_or(dog_g, other).sum())
         self.assertGreater(union, 0)
         self.assertLess(inter / float(union), 0.20)
 

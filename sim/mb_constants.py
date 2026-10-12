@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import math
 
-# APL / k-WTA. One frame keeps this fraction of Kenyon cells.
+# APL / k-WTA. One frame keeps this fraction inside each visual group.
 KC_ACTIVE_FRAC = 0.07
 KC_FRAC_MIN = 0.05
 KC_FRAC_MAX = 0.10
+
+# Visual groups per hemisphere. The FlyWire cells of that type are repeated
+# until the group reaches this size, so the file's own mix is kept.
+KC_GD_PER_SIDE = 1500
+KC_ABP_PER_SIDE = 650
 
 # Depressed weights close this fraction of the gap to their birth value each frame.
 RECOVERY_RATE = 0.01

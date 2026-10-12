@@ -11,12 +11,10 @@ from __future__ import annotations
 import numpy as np
 
 from .hemifield import overlap_bands
+from .mb_constants import KC_ABP_PER_SIDE, KC_GD_PER_SIDE
 from .mb_runtime import apl_sparsify
 from .raw_sense import N_AZ, OFF_BODY, OFF_FLOOR, OFF_MOTION
 
-# The biologist's round counts. The file's own cells are used, not a padded set.
-GAMMA_D_ABOUT = 150
-ALPHA_BETA_P_ABOUT = 65
 GAMMA_D_TYPE = "KCg-d"
 ALPHA_BETA_P_TYPE = "KCab-p"
 
@@ -145,6 +143,25 @@ def _channels_for(n_cells: int, n_channels: int) -> np.ndarray:
     return np.arange(n_cells, dtype=np.int32) % int(n_channels)
 
 
+def _expand_seeds(seed_idx: np.ndarray, n_target: int) -> np.ndarray:
+    """Repeat each FlyWire cell until the group reaches ``n_target``.
+
+    Every real cell is kept. Copies differ by at most one, so the file's
+    proportion inside the group stays.
+    """
+    seeds = np.asarray(seed_idx, dtype=np.int32).ravel()
+    n_seed = int(seeds.shape[0])
+    n_target = int(n_target)
+    if n_seed <= 0 or n_target <= 0:
+        return np.zeros(0, dtype=np.int32)
+    reps = n_target // n_seed
+    extra = n_target % n_seed
+    counts = np.full(n_seed, reps, dtype=np.int32)
+    if extra:
+        counts[:extra] += 1
+    return np.repeat(seeds, counts)
+
+
 class VisualPathway:
     """γ-d from the medulla, α/β-p from the lobula, each with its own APL."""
 
@@ -153,25 +170,49 @@ class VisualPathway:
             raise ValueError(anatomical_side)
         self.side = anatomical_side
         self.n_kc = int(brain.n_kc)
-        self.gamma_idx = _group_indices(brain, GAMMA_D_TYPE, anatomical_side)
-        self.abp_idx = _group_indices(brain, ALPHA_BETA_P_TYPE, anatomical_side)
-        self.gamma_chan = _channels_for(len(self.gamma_idx), N_MEDULLA)
-        self.abp_chan = _channels_for(len(self.abp_idx), N_LOBULA)
+        gamma_seeds = _group_indices(brain, GAMMA_D_TYPE, anatomical_side)
+        abp_seeds = _group_indices(brain, ALPHA_BETA_P_TYPE, anatomical_side)
+        self.gamma_idx = _expand_seeds(gamma_seeds, KC_GD_PER_SIDE)
+        self.abp_idx = _expand_seeds(abp_seeds, KC_ABP_PER_SIDE)
+        self.n_gd = int(self.gamma_idx.shape[0])
+        self.n_abp = int(self.abp_idx.shape[0])
+        self.gamma_chan = _channels_for(self.n_gd, N_MEDULLA)
+        self.abp_chan = _channels_for(self.n_abp, N_LOBULA)
         self.gamma_mask = np.zeros(self.n_kc, dtype=bool)
         self.abp_mask = np.zeros(self.n_kc, dtype=bool)
-        self.gamma_mask[self.gamma_idx] = True
-        self.abp_mask[self.abp_idx] = True
-        self.n_visual = int(len(self.gamma_idx) + len(self.abp_idx))
+        if self.n_gd:
+            self.gamma_mask[np.unique(self.gamma_idx)] = True
+        if self.n_abp:
+            self.abp_mask[np.unique(self.abp_idx)] = True
+        self.n_visual = int(self.n_gd + self.n_abp)
+        self.last_gamma = np.zeros(self.n_gd, dtype=np.float32)
+        self.last_abp = np.zeros(self.n_abp, dtype=np.float32)
+        self.last_gd_on = 0
+        self.last_abp_on = 0
 
     def kenyon(self, feat: np.ndarray, yolo: np.ndarray | None = None) -> np.ndarray:
-        """KC rates for one eye. Cells outside the two groups stay silent."""
-        kc = np.zeros(self.n_kc, dtype=np.float32)
+        """KC rates for one eye. Cells outside the two groups stay silent.
+
+        APL runs on the expanded group. Clones then add onto their FlyWire cell,
+        which is what KC→MBON reads.
+        """
         medulla = medulla_channels(feat)
         lobula = lobula_channels(feat, yolo)
-        if len(self.gamma_idx):
-            kc[self.gamma_idx] = medulla[self.gamma_chan]
-            kc[self.gamma_idx] = apl_sparsify(kc[self.gamma_idx])
-        if len(self.abp_idx):
-            kc[self.abp_idx] = lobula[self.abp_chan]
-            kc[self.abp_idx] = apl_sparsify(kc[self.abp_idx])
+        gamma = np.zeros(self.n_gd, dtype=np.float32)
+        abp = np.zeros(self.n_abp, dtype=np.float32)
+        if self.n_gd:
+            gamma[:] = medulla[self.gamma_chan]
+            gamma = apl_sparsify(gamma)
+        if self.n_abp:
+            abp[:] = lobula[self.abp_chan]
+            abp = apl_sparsify(abp)
+        self.last_gamma = gamma
+        self.last_abp = abp
+        self.last_gd_on = int(np.count_nonzero(gamma))
+        self.last_abp_on = int(np.count_nonzero(abp))
+        kc = np.zeros(self.n_kc, dtype=np.float32)
+        if self.n_gd:
+            np.add.at(kc, self.gamma_idx, gamma)
+        if self.n_abp:
+            np.add.at(kc, self.abp_idx, abp)
         return kc

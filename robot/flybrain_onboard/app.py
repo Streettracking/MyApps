@@ -131,12 +131,33 @@ class BrainLoop:
             elif kind == "ppl1":
                 self._ppl1_event = True
 
+    def _group_counts(self, kind: str) -> tuple:
+        """Active cells and group size for γ-d or α/β-p, both hemispheres."""
+        on = 0
+        total = 0
+        for vision in (self.mb.brain.vision, self.mb.brain_r.vision):
+            if kind == "gd":
+                on += int(vision.last_gd_on)
+                total += int(vision.n_gd)
+            else:
+                on += int(vision.last_abp_on)
+                total += int(vision.n_abp)
+        return on, total
+
     def _kc_active_frac(self) -> float:
-        """Active visual Kenyon cells over γ-d and α/β-p on the last frame."""
-        total = int(self.mb.brain.vision.n_visual) + int(self.mb.brain_r.vision.n_visual)
+        """Active visual Kenyon cells over both groups on the last frame."""
+        gd_on, gd_n = self._group_counts("gd")
+        ab_on, ab_n = self._group_counts("abp")
+        total = gd_n + ab_n
         if total <= 0:
             return 0.0
-        return float(self.mb.last_kc_on) / float(total)
+        return float(gd_on + ab_on) / float(total)
+
+    def _kc_active_frac_group(self, kind: str) -> float:
+        on, total = self._group_counts(kind)
+        if total <= 0:
+            return 0.0
+        return float(on) / float(total)
 
     def driving(self) -> bool:
         """Autonomy, or manual after an explicit takeover. Watch-only is neither."""
@@ -557,6 +578,8 @@ class BrainLoop:
                 "kc_on": int(self.mb.last_kc_on),
                 "kc_n": int(self.mb.brain.n_kc),
                 "kc_active_frac": self._kc_active_frac(),
+                "kc_active_frac_gd": self._kc_active_frac_group("gd"),
+                "kc_active_frac_abp": self._kc_active_frac_group("abp"),
                 "drive_l": drive_l,
                 "drive_r": drive_r,
                 "turn": float(fly_turn(drive_l, drive_r)),
