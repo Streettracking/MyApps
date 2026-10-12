@@ -131,6 +131,8 @@ ESTOP = (184, 40, 36)
 AMBER = (214, 154, 52)  # #D69A34 warning
 LAMP_OFF = ("off",)
 LEARN_BADGE = "обучение вкл"
+BOARD_CAPTION = "борт"
+BOARD_DOWN = "мозг не запущен (8090)"
 BADGE_INK = (32, 22, 18)
 # Phases where the mushroom body is sending a turn or a walk.
 DRIVING_PHASES = ("search", "approach", "align_l", "align_r")
@@ -182,6 +184,21 @@ def dog_badge_label(
 def operator_has_stick(pilot_mode: str) -> bool:
     """True while the mode line is the lit takeover, not a stop."""
     return "ПЕРЕХВАТ" in str(pilot_mode or "")
+
+
+def link_answers(status: str) -> bool:
+    """True when a status line reports a live link."""
+    low = (status or "").lower()
+    return " ok" in low or low.endswith("ok")
+
+
+def board_caption(view) -> str:
+    """Onboard lamp text. A silent :8090 names that the brain is not running."""
+    if view is not None and getattr(view, "onboard", False) and not link_answers(getattr(view, "udp_status", "") or ""):
+        return BOARD_DOWN
+    return BOARD_CAPTION
+
+
 PANEL = CARD
 BTN = CARD
 BTN_EDGE = LINE
@@ -2374,7 +2391,7 @@ class TrainMonitor:
         if view is not None and view.title:
             title = view.title
         title_w = max(self.font.size("recognition training")[0], self.font.size(title)[0])
-        lamp_w = 14 + self.font_sm.size("борт")[0]
+        lamp_w = 16 + self.font_sm.size(board_caption(view))[0]
         lamp_end = self.doggibot_rect.right + 12 + title_w + 18 + lamp_w
         learning = bool(view is not None and getattr(view, "learning_on", False))
         # Full dog-mode and learning badges, then the mode badge alone, then neither.
@@ -3698,24 +3715,27 @@ class TrainMonitor:
     def _link_color(self, view: MonitorView):
         text = view.udp_status or ""
         low = text.lower()
+        if getattr(view, "onboard", False):
+            return GREEN if link_answers(text) else RED
         if "error" in low or "ошиб" in low:
             return RED
         if "нет связи" in text:
             return AMBER
-        if " ok" in low or low.endswith("ok"):
+        if link_answers(text):
             return PEACH
-        if view.onboard:
-            return AMBER
         return LAMP_OFF
 
     def _link_lamp(self, screen, view: MonitorView, x: int = 400) -> None:
         color = self._link_color(view)
         ink = INK_DIM if color == LAMP_OFF else color
-        label = self.font_sm.render("борт", True, ink)
+        label = self.font_sm.render(board_caption(view), True, ink)
         stop = self.brain_rect.x - 16
         bar = getattr(self, "help_bar_rect", None)
         if bar is not None and bar.w > 0:
             stop = min(stop, bar.x - 8)
+        badge = getattr(self, "mode_badge_rect", None)
+        if badge is not None and badge.w > 0:
+            stop = min(stop, badge.x - 8)
         if x + 14 > stop:
             return
         cy = MENU_H // 2

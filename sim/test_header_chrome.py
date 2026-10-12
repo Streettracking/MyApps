@@ -336,7 +336,7 @@ class HeaderChromeTests(unittest.TestCase):
                 self.assertFalse(left.colliderect(right), (left, right))
         title_w = mon.font.size("recognition training")[0]
         title_x = mon.doggibot_rect.right + 12
-        lamp_w = 14 + mon.font_sm.size("борт")[0]
+        lamp_w = 16 + mon.font_sm.size("борт")[0]
         lamp_end = title_x + title_w + 18 + lamp_w
         self.assertLess(lamp_end, mon.help_bar_rect.x)
         if mon.mode_badge_rect.w > 0:

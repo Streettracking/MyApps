@@ -1330,7 +1330,17 @@ class StatusColorTests(unittest.TestCase):
             self.assertEqual(mon._link_color(MonitorView(udp_status="udp 127.0.0.1:5451 ok")), PEACH)
             self.assertEqual(mon._link_color(MonitorView(udp_status="нет связи")), AMBER)
             self.assertEqual(mon._link_color(MonitorView(udp_status="link error")), RED)
-            self.assertEqual(mon._link_color(MonitorView(onboard="192.168.35.213", udp_status="")), AMBER)
+            self.assertEqual(mon._link_color(MonitorView(onboard="192.168.35.213", udp_status="")), RED)
+            quiet = "борт 192.168.35.213:8090  нет связи"
+            live = "борт 192.168.35.213:8090  ok   UDP 5451 не используется"
+            self.assertEqual(mon._link_color(MonitorView(onboard=True, udp_status=quiet)), RED)
+            self.assertEqual(mon._link_color(MonitorView(onboard=True, udp_status=live)), GREEN)
+            from sim.train_monitor import BOARD_CAPTION, BOARD_DOWN, board_caption
+
+            self.assertEqual(board_caption(MonitorView(onboard=True, udp_status=quiet)), BOARD_DOWN)
+            self.assertEqual(BOARD_DOWN, "мозг не запущен (8090)")
+            self.assertEqual(board_caption(MonitorView(onboard=True, udp_status=live)), BOARD_CAPTION)
+            self.assertEqual(board_caption(MonitorView(udp_status=quiet)), BOARD_CAPTION)
         finally:
             pygame.quit()
 
@@ -1445,6 +1455,81 @@ class BoardLampTests(unittest.TestCase):
             self.assertGreater(int((word.max(axis=2) > 40).sum()), 8)
         finally:
             pygame.quit()
+
+    def test_onboard_lamp_is_red_when_8090_is_silent_and_green_when_up(self):
+        import pygame
+
+        from sim.train_monitor import BOARD_DOWN, GREEN, MENU_H, RED, MonitorView, TrainMonitor, board_caption
+        from sim.ui_theme import apply_theme
+
+        pygame.init()
+        mon = TrainMonitor("board-link")
+        try:
+            mon._on_resize(1920, 1080)
+            apply_theme("dark")
+            title = "тренировка узнавания   мозг на роботе"
+            quiet = MonitorView(
+                title=title,
+                learner="mb",
+                onboard=True,
+                learning_on=True,
+                autonomy_on=False,
+                udp_status="борт 192.168.35.213:8090  нет связи",
+            )
+            mon.draw(quiet)
+            self.assertEqual(board_caption(quiet), BOARD_DOWN)
+            title_x = mon.doggibot_rect.right + 12
+            lamp_x = title_x + mon.font.size(title)[0] + 18
+            text_w = mon.font_sm.size(BOARD_DOWN)[0]
+            self.assertGreaterEqual(mon.mode_badge_rect.x, lamp_x + 16 + text_w)
+            self.assertLess(lamp_x + 16 + text_w, mon.help_bar_rect.x)
+            cy = MENU_H // 2
+            down = mon.screen.get_at((lamp_x, cy))
+            self.assertGreater(down.r, down.g + 20)
+            self.assertGreater(down.r, down.b + 20)
+            inked = 0
+            for dx in range(14, 14 + min(text_w, 80)):
+                pix = mon.screen.get_at((lamp_x + dx, cy))
+                if pix.r > pix.g + 15 and pix.r > 80:
+                    inked += 1
+            self.assertGreater(inked, 4)
+            self._save_menu(mon, "/opt/cursor/artifacts/board_lamp_down_dark.png")
+
+            live = MonitorView(
+                title=title,
+                learner="mb",
+                onboard=True,
+                learning_on=True,
+                autonomy_on=True,
+                pilot_phase="search",
+                pilot_mode="АВТОНОМИЯ",
+                udp_status="борт 192.168.35.213:8090  ok   UDP 5451 не используется",
+            )
+            mon.draw(live)
+            self.assertEqual(board_caption(live), "борт")
+            self.assertEqual(mon._link_color(live), GREEN)
+            self.assertEqual(mon._link_color(quiet), RED)
+            lamp_x = title_x + mon.font.size(title)[0] + 18
+            up = mon.screen.get_at((lamp_x, cy))
+            self.assertGreater(up.g, up.r)
+            self.assertGreater(up.g, up.b)
+            word_w = mon.font_sm.size("борт")[0]
+            self.assertGreaterEqual(mon.mode_badge_rect.x, lamp_x + 16 + word_w)
+            self._save_menu(mon, "/opt/cursor/artifacts/board_lamp_ok_dark.png")
+        finally:
+            pygame.quit()
+
+    def _save_menu(self, mon, path: str) -> None:
+        import pygame
+
+        from sim.train_monitor import MENU_H, WIN_W
+
+        out = __import__("pathlib").Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        crop = pygame.Rect(0, 0, WIN_W, MENU_H)
+        shot = mon.screen.subsurface(crop).copy()
+        big = pygame.transform.smoothscale(shot, (shot.get_width() * 2, shot.get_height() * 2))
+        pygame.image.save(big, str(out))
 
 
 class FooterClearanceTests(unittest.TestCase):
