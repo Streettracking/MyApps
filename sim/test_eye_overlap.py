@@ -290,7 +290,7 @@ class StateAndStatusTests(unittest.TestCase):
         camera[:, :8, 1] = 220
         loop.ingest(camera, None, 1.0)
         seen = loop.status()
-        total = loop.mb.brain.n_kc + loop.mb.brain_r.n_kc
+        total = loop.mb.brain.vision.n_visual + loop.mb.brain_r.vision.n_visual
         self.assertAlmostEqual(seen["kc_active_frac"], loop.mb.last_kc_on / float(total))
         self.assertAlmostEqual(seen["drive_l"], loop.mb.brain.appetitive_drive(loop.mb.last_fwd.action_scores))
         self.assertAlmostEqual(seen["drive_r"], loop.mb.brain_r.appetitive_drive(loop.mb.last_fwd_r.action_scores))
@@ -916,6 +916,82 @@ class WeightFileTests(unittest.TestCase):
             np.testing.assert_array_equal(kept.brain_r.kc_mbon_w, born.brain.kc_mbon_w)
 
 
+class VisualPathwayTests(unittest.TestCase):
+    def test_each_group_receives_only_its_own_features(self):
+        from sim.kc_pathways import (
+            ALPHA_BETA_P_ABOUT,
+            GAMMA_D_ABOUT,
+            N_MEDULLA,
+            OFF_LOBULA_YOLO,
+            lobula_channels,
+            medulla_channels,
+        )
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.raw_sense import N_AZ, N_RAW, OFF_CLOSE, OFF_LIDAR, OFF_MOTION
+
+        trainer = MbTrainer(default_npz(), seed=1)
+        left = trainer.brain.vision
+        right = trainer.brain_r.vision
+        self.assertEqual(len(left.gamma_idx), 140)
+        self.assertEqual(len(right.gamma_idx), 121)
+        self.assertEqual(len(left.abp_idx), 67)
+        self.assertEqual(len(right.abp_idx), 59)
+        self.assertLess(abs(len(left.gamma_idx) - GAMMA_D_ABOUT), 20)
+        self.assertLess(abs(len(left.abp_idx) - ALPHA_BETA_P_ABOUT), 15)
+        self.assertFalse(bool(np.any(left.gamma_mask & left.abp_mask)))
+        self.assertEqual(len(set(left.gamma_idx.tolist()) & set(right.gamma_idx.tolist())), 0)
+        self.assertEqual(len(set(left.abp_idx.tolist()) & set(right.abp_idx.tolist())), 0)
+
+        motion = np.zeros(N_RAW, dtype=np.float32)
+        motion[OFF_MOTION + 5] = 1.0
+        med = medulla_channels(motion)
+        self.assertGreater(float(med[N_MEDULLA - N_AZ + 5]), 0.0)
+        self.assertEqual(float(med[: N_MEDULLA - N_AZ].sum()), 0.0)
+        self.assertEqual(float(lobula_channels(motion).sum()), 0.0)
+        kc = left.kenyon(motion)
+        self.assertGreater(int((kc[left.gamma_idx] > 0).sum()), 0)
+        self.assertEqual(int((kc[left.abp_idx] > 0).sum()), 0)
+        on = np.flatnonzero(kc[left.gamma_idx] > 0)
+        self.assertTrue(bool(np.all(left.gamma_chan[on] >= N_MEDULLA - 8)))
+
+        yolo = np.array([0.9, 0.4, 0.5, 0.2], dtype=np.float32)
+        blank = np.zeros(N_RAW, dtype=np.float32)
+        self.assertEqual(float(medulla_channels(blank).sum()), 0.0)
+        lob = lobula_channels(blank, yolo)
+        self.assertGreater(float(lob[OFF_LOBULA_YOLO]), 0.0)
+        self.assertEqual(float(lob[:OFF_LOBULA_YOLO].sum()), 0.0)
+        seen = left.kenyon(blank, yolo)
+        self.assertEqual(int((seen[left.gamma_idx] > 0).sum()), 0)
+        self.assertGreater(int((seen[left.abp_idx] > 0).sum()), 0)
+        picked = np.flatnonzero(seen[left.abp_idx] > 0)
+        self.assertTrue(bool(np.all(left.abp_chan[picked] >= OFF_LOBULA_YOLO)))
+        self.assertEqual(int(((seen > 0) & ~left.gamma_mask & ~left.abp_mask).sum()), 0)
+
+        lidar = np.zeros(N_RAW, dtype=np.float32)
+        lidar[OFF_LIDAR + 4] = 1.0
+        lidar[OFF_CLOSE + 4] = 1.0
+        self.assertEqual(int(np.count_nonzero(left.kenyon(lidar))), 0)
+        again = left.kenyon(motion)
+        np.testing.assert_array_equal(again, kc)
+
+    def test_visual_value_is_learned_on_gamma_only(self):
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.raw_sense import probe_features
+
+        trainer = MbTrainer(default_npz(), seed=1)
+        trainer.forward(probe_features("dog"))
+        brain = trainer.brain
+        pre = brain.kc_mbon_pre
+        before = brain.kc_mbon_w.copy()
+        brain.plasticity(trainer.last_fwd, 1.0)
+        dw = brain.kc_mbon_w - before
+        changed = np.abs(dw) > 1e-6
+        self.assertGreater(int(changed.sum()), 0)
+        self.assertTrue(bool(np.all(brain.gamma_d_kc[pre][changed])))
+        self.assertEqual(int(np.sum(changed & brain.vision.abp_mask[pre])), 0)
+        self.assertEqual(int(np.sum(changed & ~brain.gamma_d_kc[pre])), 0)
+
+
 class PlasticityBiologyTests(unittest.TestCase):
     def test_reward_raises_approach_minus_avoidance(self):
         from sim.mb_runtime import ACTIONS
@@ -952,22 +1028,28 @@ class PlasticityBiologyTests(unittest.TestCase):
         from sim.raw_sense import probe_features
 
         trainer = MbTrainer(default_npz(), seed=1)
-        n = trainer.brain.n_kc
-        k = kc_winner_count(n)
-        self.assertGreaterEqual(k / float(n), KC_FRAC_MIN)
-        self.assertLessEqual(k / float(n), KC_FRAC_MAX)
+
+        def _group_ok(kc, idx):
+            n = len(idx)
+            k = kc_winner_count(n)
+            on = int((kc[idx] > 0).sum())
+            self.assertEqual(on, k)
+            self.assertGreaterEqual(on / float(n), KC_FRAC_MIN)
+            self.assertLessEqual(on / float(n), KC_FRAC_MAX)
 
         trainer.forward(probe_features("dog"))
         dog_l = trainer.last_fwd.kc > 0
-        dog_r = trainer.last_fwd_r.kc > 0
-        self.assertEqual(int(dog_l.sum()), k)
-        self.assertEqual(int(dog_r.sum()), k)
-        self.assertGreaterEqual(float(dog_l.mean()), KC_FRAC_MIN)
-        self.assertLessEqual(float(dog_l.mean()), KC_FRAC_MAX)
+        for vis, kc in (
+            (trainer.brain.vision, trainer.last_fwd.kc),
+            (trainer.brain_r.vision, trainer.last_fwd_r.kc),
+        ):
+            _group_ok(kc, vis.gamma_idx)
+            _group_ok(kc, vis.abp_idx)
+            self.assertEqual(int(((kc > 0) & ~vis.gamma_mask & ~vis.abp_mask).sum()), 0)
 
         trainer.forward(probe_features("distractor"))
         other = trainer.last_fwd.kc > 0
-        self.assertEqual(int(other.sum()), k)
+        _group_ok(trainer.last_fwd.kc, trainer.brain.vision.gamma_idx)
         inter = int(np.logical_and(dog_l, other).sum())
         union = int(np.logical_or(dog_l, other).sum())
         self.assertGreater(union, 0)
@@ -997,7 +1079,7 @@ class PlasticityBiologyTests(unittest.TestCase):
         self.assertGreater(int(np.sum(np.abs(floored - floor) < 1e-3)), 0)
         gap_before = float(np.mean(np.abs(floored - born)))
         for _ in range(300):
-            brain.recover(fwd.kc, dopamine=False)
+            brain.recover(fwd.kc, dopamine=True)
         restored = brain.kc_mbon_w
         gap_after = float(np.mean(np.abs(restored - born)))
         self.assertLess(gap_after, gap_before * 0.5)
@@ -1010,16 +1092,21 @@ class PlasticityBiologyTests(unittest.TestCase):
         quiet = MbTrainer(default_npz(), seed=1)
         quiet.forward(probe_features("dog"))
         pre = quiet.brain.kc_mbon_pre
+        gamma = quiet.brain.gamma_d_kc[pre]
+        abp = quiet.brain.vision.abp_mask[pre]
         active = quiet.last_fwd.kc[pre] > 0
-        self.assertTrue(bool(np.any(active)))
-        idx = int(np.flatnonzero(active)[0])
+        gamma_i = np.flatnonzero(active & gamma)
+        self.assertGreater(len(gamma_i), 0)
+        idx = int(gamma_i[0])
         birth = float(quiet.brain.kc_mbon_w[idx])
+        abp_before = quiet.brain.kc_mbon_w[abp].copy()
         quiet.brain.recover(quiet.last_fwd.kc, dopamine=True)
         self.assertAlmostEqual(float(quiet.brain.kc_mbon_w[idx]), birth)
         quiet.brain.recover(quiet.last_fwd.kc, dopamine=False)
         grown = float(quiet.brain.kc_mbon_w[idx])
         self.assertGreater(grown, birth)
         self.assertLessEqual(grown, float(ceil[idx]) + 1e-3)
+        np.testing.assert_array_equal(quiet.brain.kc_mbon_w[abp], abp_before)
 
     def test_turn_is_left_drive_minus_right_drive(self):
         from sim.hemifield import fly_turn

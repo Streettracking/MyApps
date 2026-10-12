@@ -41,6 +41,7 @@ ONBOARD = ROOT / "robot" / "flybrain_onboard"
 SIM_FILES = (
     "mb_runtime.py",
     "mb_constants.py",
+    "kc_pathways.py",
     "mb_train.py",
     "mb_confidence.py",
     "raw_sense.py",

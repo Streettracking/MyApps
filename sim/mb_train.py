@@ -1,10 +1,12 @@
-"""Mushroom-body recognition training: raw features → PN → KC → MBON.
+"""Mushroom-body recognition training: two visual roads into KC, then MBON.
 
-KC→MBON weights change when a DAN fires, and they also ease back toward the
-birth weight on later frames. Default DAN is the operator: T injects
-appetitive PAM, X injects aversive PPL1. Familiarity is the other DAN:
-repetition depresses KC→novelty-MBON. Monitor labels never enter either rule.
-The stored readouts are approach minus avoidance. The turn is the left
+Medulla features drive γ-d and lobula features drive α/β-p. KC→MBON weights
+of γ-d change when a DAN fires, and they also ease back toward the birth
+weight on later frames. α/β-p does not learn. Default DAN is the operator:
+T injects appetitive PAM, X injects aversive PPL1. Familiarity is the other
+DAN: repetition depresses KC→novelty-MBON, still only from γ-d. Monitor
+labels never enter either rule. There is no wire from a motor command into
+KC. The stored readouts are approach minus avoidance. The turn is the left
 readout minus the right one.
 """
 
@@ -17,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from .hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield
+from .kc_pathways import VisualPathway, lobula_channels, medulla_channels
 from .raw_sense import drop_lidar
 from .learn_flash import LearnFlash, MbLayout, build_layout, record_teacher_step
 from .mb_confidence import Confidence, ConfidenceCalibrator, TrainProgress
@@ -36,6 +39,19 @@ def default_npz() -> Path:
     if plain.is_file():
         return plain
     return folder / "connectome_mb_v1.npz"
+
+
+def _pn_trace(n_pn: int, feat: np.ndarray, yolo) -> np.ndarray:
+    """The visual channels that reached this eye, packed into the PN vector.
+
+    This is not a random map. An eye with no medulla and no lobula stays at zero.
+    """
+    packed = np.concatenate((medulla_channels(feat), lobula_channels(feat, yolo)))
+    pn = np.zeros(int(n_pn), dtype=np.float32)
+    n = min(int(n_pn), int(packed.shape[0]))
+    if n:
+        pn[:n] = np.clip(packed[:n], 0.0, 1.0)
+    return pn
 
 
 def bin_kc(kc: np.ndarray, n: int = 48) -> np.ndarray:
@@ -69,6 +85,10 @@ class MbTrainer:
         self.brain = MushroomBodyRuntime(npz, eta=eta, seed=seed)
         # Same connectome, own KC→MBON weights. MB_L is ``brain``, MB_R is ``brain_r``.
         self.brain_r = MushroomBodyRuntime(npz, eta=eta, seed=seed)
+        self.brain.vision = VisualPathway(self.brain, "left")
+        self.brain_r.vision = VisualPathway(self.brain_r, "right")
+        self.brain.gamma_d_kc = self.brain.vision.gamma_mask
+        self.brain_r.gamma_d_kc = self.brain_r.vision.gamma_mask
         self.proj = RawProjector(self.brain.n_pn, seed=seed + 17)
         self.learn = True
         self.drift_curve: list[tuple[float, float]] = []
@@ -106,13 +126,30 @@ class MbTrainer:
         self.flash: LearnFlash | None = None
         self.flash_r: LearnFlash | None = None
 
-    def _drive(self, brain: MushroomBodyRuntime, feat: np.ndarray) -> tuple[MBForward | None, float]:
-        """One hemisphere. An empty half is a zero readout and does not run KC."""
-        if not np.any(feat):
+    def _drive(
+        self,
+        brain: MushroomBodyRuntime,
+        feat: np.ndarray,
+        yolo: np.ndarray | None = None,
+    ) -> tuple[MBForward | None, float]:
+        """One hemisphere. An empty half is a zero readout and does not run KC.
+
+        The KC vector comes from the two visual pathways, not from the random
+        PN map. A motor command is not an input.
+        """
+        if brain.vision is None:
             return None, 0.0
-        pn = self.proj.project(feat)
-        pn_o, kc, mbon, scores = brain.readout({}, pn)
-        fwd = MBForward(pn=pn_o, kc=kc, mbon=mbon, action="Freeze", action_scores=scores)
+        kc = brain.vision.kenyon(feat, yolo)
+        if float(kc.max()) <= 0.0:
+            return None, 0.0
+        mbon, scores = brain.scores_of_kc(kc)
+        fwd = MBForward(
+            pn=_pn_trace(brain.n_pn, feat, yolo),
+            kc=kc,
+            mbon=mbon,
+            action="Freeze",
+            action_scores=scores,
+        )
         return fwd, self._value(brain, fwd)
 
     def _value(self, brain: MushroomBodyRuntime, fwd: MBForward) -> float:
@@ -130,11 +167,15 @@ class MbTrainer:
             return raw
         return drop_lidar(raw)
 
-    def forward(self, feat: np.ndarray) -> MBForward:
-        """Both halves. The stored readout is their sum, which is what the joint «УЗНАЮ» uses."""
+    def forward(self, feat: np.ndarray, yolo_l=None, yolo_r=None) -> MBForward:
+        """Both halves. The stored readout is their sum, which is what the joint «УЗНАЮ» uses.
+
+        ``yolo_l`` and ``yolo_r`` are optional conf/width/height/center vectors.
+        They reach α/β-p only. Leaving them out leaves those four channels at zero.
+        """
         feat = self._sense(feat)
-        fwd_l, self.r_l = self._drive(self.brain, self._half(feat, "L"))
-        fwd_r, self.r_r = self._drive(self.brain_r, self._half(feat, "R"))
+        fwd_l, self.r_l = self._drive(self.brain, self._half(feat, "L"), yolo_l)
+        fwd_r, self.r_r = self._drive(self.brain_r, self._half(feat, "R"), yolo_r)
         if fwd_l is None:
             fwd_l = self._silent(self.brain)
         if fwd_r is None:
@@ -170,8 +211,8 @@ class MbTrainer:
         A sector window is split the same way as a full frame. The mark uses the sum.
         """
         feat = self._sense(feat)
-        _fwd_l, left = self._drive(self.brain, self._half(feat, "L"))
-        _fwd_r, right = self._drive(self.brain_r, self._half(feat, "R"))
+        _fwd_l, left = self._drive(self.brain, self._half(feat, "L"), None)
+        _fwd_r, right = self._drive(self.brain_r, self._half(feat, "R"), None)
         return float(left + right)
 
     def teach(self, fwd: MBForward, kind: str | None, t: float) -> None:

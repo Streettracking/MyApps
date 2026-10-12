@@ -400,7 +400,15 @@ class LiveSession:
         # Operator D/N is intentionally not an argument of teaching or confidence.
         if self.mb is not None:
             self.mb.learn = self.learn
-            fwd = self.mb.forward(feat)
+            from .kc_pathways import yolo_vector
+
+            boxes = getattr(self, "teacher_boxes", None) or ()
+            overlap = float(getattr(self, "overlap", 0.4) or 0.4)
+            fwd = self.mb.forward(
+                feat,
+                yolo_l=yolo_vector(boxes, "L", overlap),
+                yolo_r=yolo_vector(boxes, "R", overlap),
+            )
             value = self.mb.last_readout
             conf = self.mb.observe(feat, value)
             now_m = time.monotonic()
@@ -667,6 +675,12 @@ def _lead_of(session):
     return lead
 
 
+def _yolo_list(boxes, side: str, overlap: float) -> list:
+    from .kc_pathways import yolo_vector
+
+    return [float(v) for v in yolo_vector(boxes, side, overlap)]
+
+
 def _lead_boxes(session):
     teacher = getattr(session, "teacher", None)
     if teacher is not None:
@@ -706,6 +720,8 @@ def publish_teacher_aim(session, onboard, now: float, dist_m, forward_m) -> None
         learning = bool((getattr(session, "remote", {}) or {}).get("learning", False))
     teacher_on = bool(teacher is not None and teacher.on and learning)
     session._aim_post_t = float(now)
+    boxes = _lead_boxes(session)
+    overlap = float(getattr(session, "overlap", 0.4) or 0.4)
     onboard.post(
         "teacher_aim",
         x=float(lead.teacher_x),
@@ -719,6 +735,8 @@ def publish_teacher_aim(session, onboard, now: float, dist_m, forward_m) -> None
         too_close=bool(lead.too_close) and teacher_on,
         last_l=bool(lead.last_hit_l) and teacher_on,
         last_r=bool(lead.last_hit_r) and teacher_on,
+        yolo_l=_yolo_list(boxes if teacher_on else (), "L", overlap),
+        yolo_r=_yolo_list(boxes if teacher_on else (), "R", overlap),
     )
 
 

@@ -201,6 +201,8 @@ class MushroomBodyRuntime:
     def plasticity(self, last: MBForward, r: float) -> None:
         """Dopamine depresses KC→MBON synapses of KCs that were active.
 
+        On the visual pathway that is γ-d only. α/β-p still drives the
+        current MBON sum, and its synapses stay at the birth weight.
         The change stays inside that dopamine neuron's compartment. PAM
         (r>0, appetitive mask) reaches avoidance MBONs, so a reward weakens
         avoidance and the paired pattern approaches. PPL1 (r<0, aversive
@@ -212,7 +214,7 @@ class MushroomBodyRuntime:
             return
         kc = last.kc
         pre_act = kc[self.kc_mbon_pre]
-        active = pre_act > 0
+        active = self._learned_pre(pre_act > 0)
         if not np.any(active):
             return
 
@@ -259,12 +261,23 @@ class MushroomBodyRuntime:
         novelty = float(np.clip(1.0 - float(fam.mean()), 0.0, 1.0))
         pre = kc[self.kc_mbon_pre]
         post_ok = np.isin(self.kc_mbon_post, self.novelty_posts)
-        mask = self.mask_av & post_ok & (pre > 0) & (self.kc_fam[self.kc_mbon_pre] > 0.05)
+        learned = self._learned_pre(pre > 0)
+        mask = self.mask_av & post_ok & learned & (self.kc_fam[self.kc_mbon_pre] > 0.05)
         if np.any(mask):
             self.kc_mbon_w[mask] -= self.eta * self.kc_fam[self.kc_mbon_pre][mask] * pre[mask]
             self._bound_weights()
         self.kc_fam = 0.985 * self.kc_fam + 0.015 * active.astype(np.float32)
         return novelty
+
+    def _learned_pre(self, active: np.ndarray) -> np.ndarray:
+        """Visual value is stored on γ-d. α/β-p keeps the weight it was born with.
+
+        A runtime with no pathway mask still learns on every active Kenyon cell.
+        """
+        gamma = getattr(self, "gamma_d_kc", None)
+        if gamma is None:
+            return active
+        return active & gamma[self.kc_mbon_pre]
 
     def _bound_weights(self) -> None:
         if len(self.kc_mbon_w) == 0:
@@ -285,7 +298,7 @@ class MushroomBodyRuntime:
             self.kc_mbon_w[rising] += np.float32(RECOVERY_RATE) * gap[rising]
         if not dopamine and kc is not None and float(kc.max()) > 0.0:
             pre = kc[self.kc_mbon_pre]
-            active = pre > 0.0
+            active = self._learned_pre(pre > 0.0)
             if np.any(active):
                 self.kc_mbon_w[active] += np.float32(IDLE_GROWTH) * pre[active]
         self._bound_weights()

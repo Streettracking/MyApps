@@ -31,6 +31,7 @@ from sim.raw_sense import recog_label
 from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, eyes_state_label, phase_label
 from sim.pilot import forward_clearance, scrub_range
 from sim.teacher_lead import (
+    AIM_HOLD_S,
     TeacherLead,
     apply_guards,
     clamp_weight,
@@ -101,6 +102,9 @@ class BrainLoop:
         self._taught_r: str | None = None
         self._pam_event = False
         self._ppl1_event = False
+        self._yolo_l = None
+        self._yolo_r = None
+        self._yolo_t = -1e9
         self._lock = threading.Lock()
         self._log("наблюдение: SportClient не трогаем, пока нет автономии или перехвата")
 
@@ -128,8 +132,8 @@ class BrainLoop:
                 self._ppl1_event = True
 
     def _kc_active_frac(self) -> float:
-        """Active Kenyon cells over both mushroom bodies on the last frame."""
-        total = int(self.mb.brain.n_kc) + int(self.mb.brain_r.n_kc)
+        """Active visual Kenyon cells over γ-d and α/β-p on the last frame."""
+        total = int(self.mb.brain.vision.n_visual) + int(self.mb.brain_r.vision.n_visual)
         if total <= 0:
             return 0.0
         return float(self.mb.last_kc_on) / float(total)
@@ -258,6 +262,9 @@ class BrainLoop:
                     last_l=bool(data.get("last_l")),
                     last_r=bool(data.get("last_r")),
                 )
+                self._yolo_l = _yolo_vec(data.get("yolo_l"))
+                self._yolo_r = _yolo_vec(data.get("yolo_r"))
+                self._yolo_t = float(now)
             elif op == "heartbeat":
                 pass
 
@@ -271,7 +278,12 @@ class BrainLoop:
         self._pam_event = False
         self._ppl1_event = False
         self.mb.learn = self.learn
-        fwd = self.mb.forward(feat)
+        yolo_fresh = float(now) - self._yolo_t <= AIM_HOLD_S
+        fwd = self.mb.forward(
+            feat,
+            yolo_l=self._yolo_l if yolo_fresh else None,
+            yolo_r=self._yolo_r if yolo_fresh else None,
+        )
         value = self.mb.last_readout
         conf = self.mb.observe(feat, value)
         seen = bool(conf.ready and conf.recognized)
@@ -559,6 +571,16 @@ class BrainLoop:
                 "flash_r": flash_payload(self.mb.flash_r),
                 "log": list(self.log),
             }
+
+
+def _yolo_vec(value):
+    """Four floats, or nothing when the laptop did not send a box."""
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        return np.asarray([float(item) for item in value], dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
 
 
 def _hemisphere_drive(brain, fwd) -> float:
