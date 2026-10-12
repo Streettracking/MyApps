@@ -21,7 +21,7 @@ import numpy as np
 LABEL_WINDOW_S = 0.5
 SIMILAR_MEAN = 4.0
 _DOG = ("T", "D")
-_NONE = ("X", "N")
+_NONE = ("N",)  # X is PPL1 only. It does not label frames.
 
 
 def _meta_has_label(meta: dict) -> bool:
@@ -86,7 +86,7 @@ def format_disk(n_bytes: int) -> str:
 
 
 class OperatorMarks:
-    """T/X/D/N presses in the last half-second. Not a training input."""
+    """T/D/N presses (X is PPL1 only) in the last half-second. Not a training input."""
 
     def __init__(self, window_s: float = LABEL_WINDOW_S) -> None:
         self.window_s = float(window_s)
@@ -133,11 +133,9 @@ class OperatorMarks:
 
 
 def note_operator(marks: OperatorMarks, t: float, inp) -> None:
-    """Record a key that is down on this frame. Held T/X stay inside the window."""
+    """Record a key that is down on this frame. Held T stays inside the window."""
     if inp.treat or inp.treat_down:
         marks.note("T", t)
-    if inp.punish or inp.punish_down:
-        marks.note("X", t)
     if inp.label == "dog":
         marks.note("D", t)
     elif inp.label == "none":
@@ -145,7 +143,7 @@ def note_operator(marks: OperatorMarks, t: float, inp) -> None:
 
 
 def weak_label_now(marks: OperatorMarks, t: float) -> str | None:
-    """dog / no_dog when T/D or X/N is inside the label window, else None."""
+    """dog / no_dog when T/D or N is inside the label window, else None."""
     _events, weak = marks.export(t)
     return weak
 
@@ -195,7 +193,7 @@ def make_meta(
 class FrameRecorder:
     """Queue JPEGs and write them off the teleop thread.
 
-    ``offer`` returns immediately. A frame with no T/X/D/N label in the
+    ``offer`` returns immediately. A frame with no T/D/N label in the
     window is not queued and does not use a rate-limit slot. Identical bytes
     and near-duplicate thumbnails are dropped in the writer. At most ``fps``
     labelled frames are queued per second.

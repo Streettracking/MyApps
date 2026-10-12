@@ -1241,6 +1241,12 @@ def run_live_gui(
                 inp.treat_down,
                 inp.punish_down,
             )
+            if teach == "ppl1" and not _learning_now(session):
+                # Learning off: X sends no PPL1, not even to the dog.
+                if session.now() - session._learn_block_log > 1.0:
+                    session._log("обучение выключено, X не наказывает")
+                    session._learn_block_log = session.now()
+                teach = None
             operator_busy = bool(teach)
             if teach and onboard is not None:
                 onboard.post("treat" if teach == "pam" else "punish")

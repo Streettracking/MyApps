@@ -111,6 +111,7 @@ MIN_CONTENT_W = int(round(WIN_W * MIN_SCALE))  # 1440
 MIN_FONT_PX = 13
 SCROLL_BAR = 8
 MENU_H = 32
+FLASH_PRESS_S = 0.5  # X and O light up this long after a press
 REC_WAIT_S = 3.0  # recording on, no new frame: ask for a label key
 FOOTER_H = 56
 
@@ -928,6 +929,7 @@ class TrainMonitor:
                 ("take", self._keyed_button_width(("ПЕРЕХВАТ",), "M", True)),
                 ("steer", self._keyed_button_width(("БИЛАТЕРАЛЬНО", "СЕКТОРЫ"), "K", False)),
                 ("treat", self._keyed_button_width(("ЛАКОМСТВО",), "T", True)),
+                ("punish", self._keyed_button_width(("НАКАЗАНИЕ", "наказание PPL1"), "X", False)),
                 ("yolo_err", self._keyed_button_width(("ошибка YOLO 000",), "O", False)),
             ]
             gap_b = 8
@@ -945,13 +947,14 @@ class TrainMonitor:
             placed_row = row(items, inner.x, inner.y, row_h, estop_rect.x - gap_b)
             placed_row["estop"] = estop_rect
         else:
-            placed_row = {name: self._zero() for name in ("learn", "auto", "take", "steer", "treat", "yolo_err", "estop")}
+            placed_row = {name: self._zero() for name in ("learn", "auto", "take", "steer", "treat", "punish", "yolo_err", "estop")}
         self.learn_rect = placed_row["learn"]
         self.auto_rect = placed_row["auto"]
         self.take_rect = placed_row["take"]
         self.steer_rect = placed_row["steer"]
         self.treat_rect = placed_row["treat"]
         self.yolo_err_rect = placed_row.get("yolo_err") or self._zero()
+        self.punish_rect = placed_row.get("punish") or self._zero()
         self.estop_rect = placed_row["estop"]
 
         robot = block("robot")
@@ -1702,6 +1705,9 @@ class TrainMonitor:
             inp.estop = True
         elif self.treat_rect.collidepoint(pos):
             inp.treat = True
+        elif getattr(self, "punish_rect", None) is not None and self.punish_rect.w >= 8 and self.punish_rect.collidepoint(pos):
+            if getattr(self, "_learning_on", False):
+                inp.punish = True
         elif getattr(self, "yolo_err_rect", None) is not None and self.yolo_err_rect.w >= 8 and self.yolo_err_rect.collidepoint(pos):
             inp.yolo_error = True
         elif self.lidar_reset_rect.collidepoint(pos):
@@ -1923,6 +1929,10 @@ class TrainMonitor:
                 inp.steer_z -= 1.0
             inp.treat_down = bool(keys[pygame.K_t])
             inp.punish_down = bool(keys[pygame.K_x])
+        import time as _time
+
+        if inp.punish and getattr(self, "_learning_on", False):
+            self._punish_at = _time.monotonic()
         self._sync_cursor()
         return inp
 
@@ -2972,6 +2982,7 @@ class TrainMonitor:
         self._mode_buttons(screen, view)
         if view.learner == "mb":
             self._treat_button(screen, view, self._mouse())
+            self._punish_button(screen, view)
         if view.yolo_errors >= 0:
             self._yolo_error_button(screen, view)
         self._button(
@@ -3615,6 +3626,21 @@ class TrainMonitor:
         self._button(screen, self.treat_rect, "ЛАКОМСТВО", lamp, self.treat_rect.collidepoint(mouse), key="T")
         if view.treat_flash:
             self._lamp(screen, (self.treat_rect.x + 16, self.treat_rect.centery), GREEN, 9)
+
+    def _punish_button(self, screen, view: MonitorView) -> None:
+        import time as _time
+
+        rect = getattr(self, "punish_rect", None)
+        if rect is None or rect.w < 8:
+            return
+        self._learning_on = bool(view.learning_on)
+        if not view.learning_on:
+            self._button(screen, rect, "НАКАЗАНИЕ", None, False, label_color=INK_DIM, key="X")
+            return
+        if _time.monotonic() - float(getattr(self, "_punish_at", -10.0)) <= FLASH_PRESS_S:
+            self._button(screen, rect, "наказание PPL1", None, False, label_color=ESTOP_LABEL, fill=RED, key="X")
+            return
+        self._button(screen, rect, "НАКАЗАНИЕ", RED, rect.collidepoint(self._mouse()), key="X")
 
     def _yolo_error_button(self, screen, view: MonitorView) -> None:
         rect = getattr(self, "yolo_err_rect", None)
