@@ -85,3 +85,21 @@ def known_weights_name(state_path) -> str:
 def weights_caption(name: str) -> str:
     text = str(name or "").strip()
     return "веса: %s" % text if text else "веса: ?"
+
+
+FRAME_STALE_S = 0.5
+
+
+def frame_age_caption(age_s, fps, stale_s: float = FRAME_STALE_S) -> tuple:
+    """``(text, stale)``. A missing clock or an old frame is «камера стоит»."""
+    try:
+        age = None if age_s is None else float(age_s)
+    except (TypeError, ValueError):
+        age = None
+    if age is None or age > float(stale_s):
+        return "камера стоит", True
+    try:
+        rate = 0 if fps is None else max(0, int(round(float(fps))))
+    except (TypeError, ValueError):
+        rate = 0
+    return "кадр %.1f с · %d fps" % (age, rate), False

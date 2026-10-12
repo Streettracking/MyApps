@@ -297,6 +297,8 @@ class MonitorView:
     teacher_stop_h: float = 0.45
     brain_offline: bool = False
     weights_label: str = ""
+    frame_age_s: float | None = None
+    frame_fps: float | None = None
 
 
 def fit_window(ww: int, wh: int) -> tuple:
@@ -2084,6 +2086,7 @@ class TrainMonitor:
         self._ensure_pin()
         self._last_view = view
         self._note_driver(view)
+        self._note_frame_clock(view)
         if self.window is not None and not self._minimized:
             ww, wh = self.window.get_size()
             if ww >= 64 and wh >= 64:
@@ -2154,6 +2157,41 @@ class TrainMonitor:
         notes.append(driver_journal_line(name))
         self._driver_notes = notes[-40:]
         self._journal_cache = None
+
+    def _camera_token(self, camera) -> tuple | None:
+        if camera is None or not getattr(camera, "size", 0):
+            return None
+        buf = memoryview(camera).cast("B")
+        n = len(buf)
+        if n < 3:
+            return (tuple(getattr(camera, "shape", ())), n)
+        mid = n // 2
+        return (tuple(camera.shape), bytes(buf[:3]), bytes(buf[mid : mid + 3]), bytes(buf[-3:]))
+
+    def _note_frame_clock(self, view: MonitorView) -> None:
+        """Age and fps from the view, or from changes of the camera array."""
+        import time
+
+        forced = getattr(view, "frame_age_s", None)
+        if forced is not None or getattr(view, "frame_fps", None) is not None:
+            self._frame_age_s = forced
+            self._frame_fps = getattr(view, "frame_fps", None)
+            return
+        now = time.monotonic()
+        token = self._camera_token(getattr(view, "camera", None))
+        if token is None:
+            self._frame_age_s = None
+            return
+        prev = getattr(self, "_frame_token", None)
+        prev_t = getattr(self, "_frame_token_t", None)
+        if token != prev:
+            if prev_t is not None:
+                dt = now - float(prev_t)
+                if dt > 1e-3:
+                    self._frame_fps = 1.0 / dt
+            self._frame_token = token
+            self._frame_token_t = now
+        self._frame_age_s = now - float(getattr(self, "_frame_token_t", now))
 
     def _driver_slot(self, view: MonitorView, title_x: int, title_w: int) -> tuple:
         """``(text, width, left_limit, right_limit)`` for the header plaque."""
@@ -2887,14 +2925,39 @@ class TrainMonitor:
     def _draw_camera_block(self, screen, view: MonitorView, content) -> None:
         cam_inner = self._frame(screen, content, view.camera, "", view.sensor_error, chrome=False)
         self.cam_inner = cam_inner
-        if cam_inner is None:
-            return
-        if view.learner == "mb":
+        host = cam_inner if cam_inner is not None else content
+        if cam_inner is not None and view.learner == "mb":
             self._camera_overlap(screen, cam_inner, view)
             self._draw_det_boxes(screen, cam_inner, view.teacher_boxes)
             self._eye_plaques(screen, cam_inner, view)
-        else:
+        elif cam_inner is not None:
             self._camera_halves(screen, cam_inner, view)
+        self._draw_frame_age(screen, host)
+
+    def _chip(self, screen, host, text: str, color, y: int, x: int | None = None):
+        import pygame
+
+        glyph = self.font_sm.render(text, True, color)
+        pad_x, pad_y = 6, 2
+        width = glyph.get_width() + pad_x * 2
+        height = glyph.get_height() + pad_y * 2
+        left = host.x + 8 if x is None else int(x)
+        rect = pygame.Rect(left, int(y), width, height)
+        if rect.right > host.right - 4:
+            rect.w = max(8, host.right - 4 - rect.x)
+        pygame.draw.rect(screen, CARD, rect, border_radius=6)
+        self._blit_clipped(screen, glyph, (rect.x + pad_x, rect.centery - glyph.get_height() // 2), rect)
+        return rect
+
+    def _draw_frame_age(self, screen, host) -> None:
+        from .ui_present import frame_age_caption
+
+        if host is None or host.w < 8 or host.h < 8:
+            return
+        text, stale = frame_age_caption(getattr(self, "_frame_age_s", None), getattr(self, "_frame_fps", None))
+        color = RED if stale else VALUE
+        rect = self._chip(screen, host, text, color, host.bottom - self.font_sm.get_height() - 10)
+        self.frame_age_rect = rect
 
     def _fresh_button_width(self) -> int:
         from .tabnum import SLOT_GAP, cell_px
