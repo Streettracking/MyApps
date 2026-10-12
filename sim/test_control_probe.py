@@ -379,6 +379,108 @@ class SimRoundTests(unittest.TestCase):
         self.assertGreater(report["n_ppl1"], report["n_ppl1_before"])
         self.assertEqual(report["far_added"], 0)
 
+    def test_empty_frame_scans_without_learning(self):
+        from sim.recognize_train import RecognizeTrainSim, _drive_sim
+        from sim.search_reflex import SEARCH_REFLEX_YAW
+        from sim.train_monitor import MonitorInput
+
+        session = RecognizeTrainSim(n_agents=2, seed=1, auto_teach=True)
+        session.state_path = None
+        session.learner.x, session.learner.y, session.learner.yaw = 3.0, 2.5, 0.0
+        for peer in session.peers:
+            peer.x, peer.y = session.learner.x - 1.6, session.learner.y
+        session.world.distractors.clear()
+        session.freeze_peers = True
+        session.pilot.start_auto(0.0)
+        born = np.array(session.mb.brain.kc_mbon_w, copy=True)
+        pam = int(session.mb.n_pam)
+        inp = MonitorInput()
+        for _ in range(6):
+            sx, sz, rate, _name = _drive_sim(session, inp, float(session.world.t))
+            self.assertEqual(sx, 0.0)
+            self.assertAlmostEqual(sz, SEARCH_REFLEX_YAW)
+            self.assertTrue(rate)
+            self.assertTrue(session.searching)
+            session.step(sx, sz, rate=rate)
+            self.assertEqual(session.mb.n_pam, pam)
+        np.testing.assert_array_equal(session.mb.brain.kc_mbon_w, born)
+        self.assertFalse(session.target_in_view)
+
+        session.learner.yaw = 0.0
+        session.peers[0].x = session.learner.x + 1.2
+        session.peers[0].y = session.learner.y
+        session.step(0.0, 0.0)
+        self.assertTrue(session.target_in_view)
+        sx, sz, rate, _name = _drive_sim(session, inp, float(session.world.t))
+        self.assertFalse(session.searching)
+        self.assertGreater(sx, 0.0)
+        self.assertTrue(rate)
+
+    def test_opposed_probe_alternates_sides(self):
+        from sim.control_scene import conspecific_side, run_approach_probe
+        from sim.raw_sense import FOV
+
+        self.assertEqual(conspecific_side(1), "left")
+        self.assertEqual(conspecific_side(2), "right")
+        report = run_approach_probe(seed=1, placement="opposed")
+        self.assertEqual(report["side"], "left")
+        self.assertEqual(report["swap"]["side"], "right")
+        half = float(FOV) / 2.0
+        for name in ("before", "after", "swap"):
+            row = report[name]
+            self.assertTrue(row["in_view_conspecific"], row)
+            self.assertTrue(row["in_view_control"], row)
+            self.assertLess(row["search_steps"], row["steps"], row)
+        left = report["after"]
+        right = report["swap"]
+        self.assertGreater(left["approach_steps"], 0, report)
+        self.assertGreater(left["search_steps"], left["approach_steps"], report)
+        self.assertGreater(left["rate_conspecific"], left["rate_control"], report)
+        self.assertGreater(right["rate_control"], right["rate_conspecific"], report)
+        self.assertAlmostEqual(left["rate_conspecific"], right["rate_control"], places=2)
+        self.assertGreater(left["seen_conspecific"], 0, report)
+        self.assertGreater(right["seen_control"], 0, report)
+        self.assertLess(half, 1.0)
+
+    def test_search_lamp_and_drift_span(self):
+        import pygame
+
+        from sim.tabnum import format_drift_span
+        from sim.test_brain_panel import _populated_view
+        from sim.train_monitor import TrainMonitor
+        from sim.ui_theme import apply_theme
+
+        line = format_drift_span(12.4, 169.8)
+        self.assertIn("дрейф: сессия", line)
+        self.assertIn("с начала", line)
+        self.assertIn("+12.4", line)
+        self.assertIn("+169.8", line)
+        pygame.init()
+        mon = TrainMonitor("search-lamp")
+        apply_theme("dark")
+        mon._bg = None
+        mon._win_bg = None
+        view = _populated_view()
+        view.session_drift = 12.4
+        view.drift = 169.8
+        view.search_lamp = True
+        try:
+            mon._on_resize(1920, 1017)
+            mon._brain_panel_cache = None
+            mon.draw(view)
+            x, y = mon.search_lamp_at
+            self.assertGreater(x, 0)
+            pixel = mon.screen.get_at((int(x), int(y)))
+            self.assertGreater(pixel.r, 140)
+            view.search_lamp = False
+            mon._brain_panel_cache = None
+            mon.draw(view)
+            dim = mon.screen.get_at((int(mon.search_lamp_at[0]), int(mon.search_lamp_at[1])))
+            self.assertLess(dim.g, pixel.g)
+        finally:
+            apply_theme("light")
+            pygame.quit()
+
 
 if __name__ == "__main__":
     unittest.main()

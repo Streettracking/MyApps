@@ -23,7 +23,8 @@ import numpy as np
 
 from .hemifield import DEFAULT_OVERLAP, fly_turn
 from .mb_train import MbTrainer, default_npz
-from .pilot import Pilot, STOP_M
+from .pilot import STOP_M, X_MAX, Pilot
+from .search_reflex import SEARCH_REFLEX_YAW
 from .raw_sense import (
     BODY_RADIUS,
     CONSPECIFIC_COLOR,
@@ -57,6 +58,8 @@ SWEEP_YAW = 1.05
 APPROACH_WALK = 0.55
 GAIN_MARGIN = 40.0
 ARENA_INSET = 0.45
+# Both objects start inside the 110° view, on opposite sides of the nose.
+OPPOSED_BEARING = 0.50
 
 
 def _rgb_u8(color) -> tuple:
@@ -517,32 +520,158 @@ def _isolated_turn(trainer, world, learner, birth_l, birth_r, kind: str, side: s
     return float(fly_turn(live_l, live_r)), float(fly_turn(live_l - base_l, live_r - base_r))
 
 
-def run_approach_probe(seed: int = 1, npz=None, motion: str = MOTION_MATCHED) -> dict:
+def conspecific_side(seed: int) -> str:
+    """Odd runs put the conspecific on the left. Even runs put it on the right."""
+    return "left" if int(seed) % 2 == 1 else "right"
+
+
+def _place_opposed(world, learner, side: str, motion: str) -> tuple:
+    """Conspecific and cube ahead, one in each hemifield, both inside the view."""
+    learner.x, learner.y, learner.yaw = 3.0, 2.5, 0.0
+    learner.vx = learner.vy = 0.0
+    peer = next(agent for agent in world.agents if agent.agent_id != learner.agent_id)
+    cube = world.controls[0]
+    bearing = OPPOSED_BEARING if side == "left" else -OPPOSED_BEARING
+    dist = PROBE_DIST_M
+    peer.x = float(learner.x + dist * np.cos(bearing))
+    peer.y = float(learner.y + dist * np.sin(bearing))
+    cube.x = float(learner.x + dist * np.cos(-bearing))
+    cube.y = float(learner.y + dist * np.sin(-bearing))
+    speed = MATCHED_SPEED if motion == MOTION_MATCHED else 0.0
+    peer.vx, cube.vx = 0.0, 0.0
+    peer.vy, cube.vy = speed, speed
+    return peer, cube
+
+
+def _bearing(obj, learner) -> float:
+    return _wrap(float(np.arctan2(obj.y - learner.y, obj.x - learner.x)) - learner.yaw)
+
+
+def _opposed_trial(trainer, world, learner, motion: str, side: str) -> dict:
+    """Start with both targets in view. Empty frames scan. A target uses fly_turn.
+
+    The yaw is the mushroom body's own left-minus-right law on the live drives.
+    Alternating ``side`` across runs puts the conspecific on the other hemifield.
+    """
+    peer, cube = _place_opposed(world, learner, side, motion)
+    dt = float(world.cfg.dt)
+    steps = int(round(APPROACH_S / dt))
+    half = float(FOV) / 2.0
+    open_dog = abs(_bearing(peer, learner)) <= half
+    open_cube = abs(_bearing(cube, learner)) <= half
+    aimed = {"conspecific": 0, "control": 0}
+    seen = {"conspecific": 0, "control": 0}
+    phases = {"search": 0, "approach": 0, "hold": 0}
+    min_d = {"conspecific": 99.0, "control": 99.0}
+    for _ in range(steps):
+        if motion == MOTION_MATCHED:
+            advance_scene(world, learner, dt)
+            _hold_inside(peer, world.cfg)
+            _hold_inside(cube, world.cfg)
+        feat, hit = _view(learner, world)
+        live_l, live_r = _hemidrives(trainer, feat)
+        dist_dog = float(np.hypot(peer.x - learner.x, peer.y - learner.y))
+        dist_cube = float(np.hypot(cube.x - learner.x, cube.y - learner.y))
+        min_d["conspecific"] = min(min_d["conspecific"], dist_dog)
+        min_d["control"] = min(min_d["control"], dist_cube)
+        ang_dog = _bearing(peer, learner)
+        ang_cube = _bearing(cube, learner)
+        dog_on = bool(hit.dog) and abs(ang_dog) <= half
+        cube_on = bool(hit.control) and abs(ang_cube) <= half
+        if dog_on:
+            seen["conspecific"] += 1
+        if cube_on:
+            seen["control"] += 1
+        if not dog_on and not cube_on:
+            yaw, speed, phase = SEARCH_REFLEX_YAW, 0.0, "search"
+        else:
+            yaw = float(fly_turn(live_l, live_r))
+            near = 99.0
+            if dog_on:
+                near = min(near, dist_dog)
+            if cube_on:
+                near = min(near, dist_cube)
+            if near <= STOP_M:
+                speed, phase = 0.0, "hold"
+            else:
+                speed, phase = float(X_MAX), "approach"
+            if yaw > 0.08:
+                chosen = "conspecific" if ang_dog >= ang_cube else "control"
+            elif yaw < -0.08:
+                chosen = "conspecific" if ang_dog <= ang_cube else "control"
+            else:
+                chosen = "conspecific" if dist_dog <= dist_cube else "control"
+            aimed[chosen] += 1
+        phases[phase] += 1
+        learner.yaw = _wrap(float(learner.yaw) + yaw * dt)
+        learner.x = float(learner.x + speed * np.cos(learner.yaw) * dt)
+        learner.y = float(learner.y + speed * np.sin(learner.yaw) * dt)
+        _hold_inside(learner, world.cfg)
+
+    def _rate(name: str) -> float:
+        return float(aimed[name]) / float(steps)
+
+    return {
+        "steps": steps,
+        "side": side,
+        "in_view_conspecific": bool(open_dog),
+        "in_view_control": bool(open_cube),
+        "rate_conspecific": _rate("conspecific"),
+        "rate_control": _rate("control"),
+        "reached_conspecific": bool(min_d["conspecific"] <= STOP_M + 0.05),
+        "reached_control": bool(min_d["control"] <= STOP_M + 0.05),
+        "min_conspecific": float(min_d["conspecific"]),
+        "min_control": float(min_d["control"]),
+        "seen_conspecific": int(seen["conspecific"]),
+        "seen_control": int(seen["control"]),
+        "search_steps": int(phases["search"]),
+        "approach_steps": int(phases["approach"]),
+        "hold_steps": int(phases["hold"]),
+        "score_conspecific": None,
+        "score_control": None,
+    }
+
+
+def run_approach_probe(seed: int = 1, npz=None, motion: str = MOTION_MATCHED, placement: str = "behind") -> dict:
     """20 s with no teacher, before training, after it, and after swapping places.
 
-    Search turns until the conspecific and the cube have each been alone in
-    view. The walk then follows the hemisphere whose drive rose. Raw yaw is
-    left on both sides; the probe does not steer with it.
+    ``behind`` keeps both objects out of the forward view and homes on the
+    learned gain. ``opposed`` starts with both in view, conspecific on the
+    left for an odd seed and on the right for an even seed. The swap trial
+    of an opposed run uses the other side, so one call covers both hemifields.
     """
     if motion not in (MOTION_STATIC, MOTION_MATCHED):
         raise ValueError("motion must be static or moving-matched")
+    if placement not in ("behind", "opposed"):
+        raise ValueError("placement must be behind or opposed")
     world, learner = make_scene(seed)
     trainer = MbTrainer(npz or default_npz(), seed=int(seed), camera_only=True, overlap=DEFAULT_OVERLAP)
     trainer.learn = True
     attach_recognition_stimuli(trainer.stimuli)
     birth_l = np.array(trainer.brain.kc_mbon_w, copy=True)
     birth_r = np.array(trainer.brain_r.kc_mbon_w, copy=True)
-    before = _approach_trial(trainer, world, learner, birth_l, birth_r, motion, False)
+    side = conspecific_side(seed)
+    other = "right" if side == "left" else "left"
+    if placement == "opposed":
+        before = _opposed_trial(trainer, world, learner, motion, side)
+    else:
+        before = _approach_trial(trainer, world, learner, birth_l, birth_r, motion, False)
     now = 0.0
-    for side in ("left", "right"):
-        now = _train_side(trainer, world, learner, side, now, motion)
+    for train_side in ("left", "right"):
+        now = _train_side(trainer, world, learner, train_side, now, motion)
     raw_left, gain_left = _isolated_turn(trainer, world, learner, birth_l, birth_r, "conspecific", "left")
     raw_right, gain_right = _isolated_turn(trainer, world, learner, birth_l, birth_r, "conspecific", "right")
-    after = _approach_trial(trainer, world, learner, birth_l, birth_r, motion, False)
-    swapped = _approach_trial(trainer, world, learner, birth_l, birth_r, motion, True)
+    if placement == "opposed":
+        after = _opposed_trial(trainer, world, learner, motion, side)
+        swapped = _opposed_trial(trainer, world, learner, motion, other)
+    else:
+        after = _approach_trial(trainer, world, learner, birth_l, birth_r, motion, False)
+        swapped = _approach_trial(trainer, world, learner, birth_l, birth_r, motion, True)
     return {
         "seed": int(seed),
         "motion": motion,
+        "placement": placement,
+        "side": side if placement == "opposed" else "",
         "seconds": APPROACH_S,
         "before": before,
         "after": after,
