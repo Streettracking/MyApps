@@ -91,6 +91,17 @@ class OperatorMarks:
     def __init__(self, window_s: float = LABEL_WINDOW_S) -> None:
         self.window_s = float(window_s)
         self.events: list[tuple[float, str]] = []
+        # D or N pressed once locks that label; the same key again unlocks it.
+        # The lock only labels recorded frames. It never reaches the brain.
+        self.latched: str | None = None
+
+    def toggle_latch(self, key: str) -> str | None:
+        """D -> "dog", N -> "no_dog". A second press of the same key clears it."""
+        label = "dog" if key == "D" else "no_dog" if key == "N" else None
+        if label is None:
+            return self.latched
+        self.latched = None if self.latched == label else label
+        return self.latched
 
     def note(self, key: str, t: float) -> None:
         if key not in _DOG and key not in _NONE:
@@ -113,6 +124,10 @@ class OperatorMarks:
                 continue
             if key not in best or age < best[key]:
                 best[key] = age
+        if self.latched is not None:
+            events = [{"key": key, "age_s": round(age, 3)} for key, age in sorted(best.items(), key=lambda item: item[1])]
+            events.append({"key": "latch", "label": self.latched})
+            return events, self.latched
         if not best:
             return [], None
         latest_key = None
@@ -138,8 +153,10 @@ def note_operator(marks: OperatorMarks, t: float, inp) -> None:
         marks.note("T", t)
     if inp.label == "dog":
         marks.note("D", t)
+        marks.toggle_latch("D")
     elif inp.label == "none":
         marks.note("N", t)
+        marks.toggle_latch("N")
 
 
 def weak_label_now(marks: OperatorMarks, t: float) -> str | None:

@@ -246,6 +246,7 @@ class MonitorView:
     record_bytes: int = 0
     record_idle: bool = False
     record_folder: str = ""
+    record_latch: str = ""  # "dog" / "no_dog" while D or N is locked
     hemi_l: float | None = None
     hemi_r: float | None = None
     hemi_z: float | None = None
@@ -3562,10 +3563,11 @@ class TrainMonitor:
             self._button(screen, rect, "", RED, hot)
             if getattr(self, "_header_short", False):
                 self._mixed(screen, str(int(view.record_saved)).rjust(5), rect.x + 32, rect.centery - 8, "{5}", RED, RED)
-            elif waiting:
+            elif waiting and not view.record_latch:
                 glyph = self.font_sm.render("запись ждёт метку: держи D или N", True, AMBER)
                 self._blit_clipped(screen, glyph, (rect.x + 32, rect.centery - glyph.get_height() // 2), rect)
             else:
+                latch = {"dog": " · собака · D", "no_dog": " · нет собаки · N"}.get(view.record_latch, "")
                 end = self._mixed(
                     screen,
                     "● ЗАПИСЬ · %s кадров" % str(int(view.record_saved)).rjust(5),
@@ -3575,6 +3577,10 @@ class TrainMonitor:
                     RED,
                     RED,
                 )
+                if latch:
+                    glyph = self.font_sm.render(latch.strip(), True, RED)
+                    self._blit_clipped(screen, glyph, (int(end) + 8, rect.centery - glyph.get_height() // 2), rect)
+                    end = int(end) + 8 + glyph.get_width()
                 folder = Path(view.record_folder).name if view.record_folder else ""
                 if folder and self.font_tiny is not None:
                     tiny = self.font_tiny.render(folder, True, INK_DIM)

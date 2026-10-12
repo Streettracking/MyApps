@@ -822,6 +822,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
             if hidden:
                 session._log(hidden)
         note_operator(marks, float(session.world.t), inp)
+        if inp.label in ("dog", "none"):
+            locked = {"dog": "собака (D)", "no_dog": "нет собаки (N)"}.get(marks.latched or "")
+            session._log(("метка закреплена: %s, только для записи кадров, не DAN" % locked) if locked else "метка снята")
         _apply_pilot_keys(session, inp, float(session.world.t))
         if inp.reset:
             session.reset()
@@ -893,6 +896,7 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         view.record_bytes = rec_bytes
         view.record_idle = rec_on and not labelled
         view.record_folder = _rec_path or ""
+        view.record_latch = marks.latched or ""
         if rec_on and labelled and view.camera is not None and rec.due():
             _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z)
         from .go2_control import drive_go2

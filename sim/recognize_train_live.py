@@ -1158,6 +1158,9 @@ def run_live_gui(
                 session.operator = "none"
                 session._log("метка N — только для панели, в обучение не входит")
             note_operator(marks, session.now(), inp)
+            if inp.label in ("dog", "none"):
+                locked = {"dog": "собака (D)", "no_dog": "нет собаки (N)"}.get(marks.latched or "")
+                session._log(("метка закреплена: %s, только для записи кадров, не DAN" % locked) if locked else "метка снята")
             if inp.beep_toggle:
                 session._log("звук включён" if mon.beep_on else "звук выключен")
             if inp.fullscreen_toggle:
@@ -1306,6 +1309,7 @@ def run_live_gui(
             view.record_bytes = rec_bytes
             view.record_idle = rec_on and not labelled
             view.record_folder = _rec_path or ""
+            view.record_latch = marks.latched or ""
             if rec_on and labelled and camera is not None and camera_jpeg and rec.due():
                 _offer_live_frame(session, rec, marks, camera, camera_jpeg, onboard)
             from .go2_control import drive_go2
