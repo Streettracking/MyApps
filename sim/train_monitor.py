@@ -81,7 +81,6 @@ from .tabnum import (
     SOUND_STATUS,
     format_box_tag,
     format_command,
-    format_drift,
     format_drift_axis,
     format_drive_line,
     format_familiar,
@@ -204,6 +203,7 @@ class MonitorView:
     kc_n: int = 0
     kc_bins: np.ndarray | None = None
     drift: float = 0.0
+    session_drift: float | None = None
     drift_curve: list[tuple[float, float]] = field(default_factory=list)
     dan_events: list[tuple[float, str]] = field(default_factory=list)
     treat_flash: bool = False
@@ -3921,15 +3921,28 @@ class TrainMonitor:
                     self._note_brain_row(graph_rect, "plot")
             y += plot_h + 6
         series = [(float(t), float(v)) for t, v in view.drift_curve]
-        if series:
-            series[-1] = (series[-1][0], float(view.drift))
-        elif view.drift:
-            series = [(float(view.t), float(view.drift))]
+        if view.session_drift is not None:
+            base = float(view.drift) - float(view.session_drift)
+            series = [(t, v - base) for t, v in series]
+            if series:
+                series[-1] = (series[-1][0], float(view.session_drift))
+            elif view.drift or view.session_drift:
+                series = [(float(view.t), float(view.session_drift))]
+        else:
+            if series:
+                series[-1] = (series[-1][0], float(view.drift))
+            elif view.drift:
+                series = [(float(view.t), float(view.drift))]
         from .brain_panel import drift_axis
+        from .tabnum import NUM_W, signed
 
         drift_lo, drift_hi = drift_axis(series)
-        drift_line = "%s  %s" % (format_drift(view.drift), format_drift_axis(drift_lo, drift_hi))
-        drift_pattern = "дрейф KC→MBON  {7}  min {7}  max {7}"
+        drift_line = "дрейф KC→MBON  всё %s  сессия %s  %s" % (
+            signed(view.drift, NUM_W, 1),
+            signed(view.session_drift, NUM_W, 1),
+            format_drift_axis(drift_lo, drift_hi),
+        )
+        drift_pattern = "дрейф KC→MBON  всё {7}  сессия {7}  min {7}  max {7}"
 
         def drift_row() -> None:
             self._mixed(screen, drift_line, rx, y, drift_pattern, VALUE, limit=limit)

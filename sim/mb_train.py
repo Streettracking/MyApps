@@ -99,6 +99,7 @@ class MbTrainer:
         self.drift_curve: list[tuple[float, float]] = []
         self.dan_events: list[tuple[float, str]] = []
         self.last_drift = 0.0
+        self.drift_session0 = 0.0
         self.last_readout = 0.0
         self.last_kc_on = 0
         self.last_kc_bins = np.zeros(48, dtype=np.float32)
@@ -429,6 +430,8 @@ class MbTrainer:
         self.r_l = 0.0
         self.r_r = 0.0
         self.last_drift = 0.0
+        self.drift_session0 = 0.0
+        self.drift_curve.clear()
         self.n_pam = self.n_ppl1 = self.n_novelty = 0
         self.teacher_pam_l = self.teacher_pam_r = 0
         self.teacher_ppl1_l = self.teacher_ppl1_r = 0
@@ -520,3 +523,5 @@ class MbTrainer:
         self.teacher_ppl1_l = self.teacher_ppl1_r = 0
         self.reinforce = ""
         self.probe_init = self.probe()
+        self.drift_session0 = float(self.last_drift)
+        self.drift_curve.clear()

@@ -96,6 +96,16 @@ class PanelTrace:
             del mb.dan_events[:-EVENT_KEEP]
 
 
+def session_drift(mb) -> float:
+    """How far the live L2 sum has moved since this process loaded the weights.
+
+    ``drift_session0`` is the lifetime sum at load (0 at birth). The panel's
+    lifetime number is the saved file; this one is only the current run.
+    """
+    base = float(getattr(mb, "drift_session0", 0.0) or 0.0)
+    return float(live_drift(mb) - base)
+
+
 def live_drift(mb) -> float:
     """Sum of the two eyes' KC→MBON L2 norms, read from the weights now.
 
@@ -196,6 +206,7 @@ def panel_readout(mb, watch=None) -> dict:
         "kc_gd_frac": gd,
         "kc_abp_frac": ab,
         "drift": live_drift(mb),
+        "session_drift": session_drift(mb),
         "pam_l": int(getattr(mb, "teacher_pam_l", 0)),
         "pam_r": int(getattr(mb, "teacher_pam_r", 0)),
         "ppl1_l": int(getattr(mb, "teacher_ppl1_l", 0)),
@@ -212,6 +223,7 @@ def widget_status(mb, trace: PanelTrace) -> dict:
         "no_dog_series": _rows_json(trace.none_series, CURVE_KEEP),
         "kc_mbon_drift": live_drift(mb),
         "kc_mbon_drift_series": _rows_json(mb.drift_curve, DRIFT_KEEP),
+        "session_drift": session_drift(mb),
         "treats_session": int(mb.n_pam),
         "treats_total": int(mb.progress.base_pam + mb.n_pam),
         "kc_bins": _plain_floats(mb.last_kc_bins),
@@ -312,6 +324,7 @@ def brain_panel_from_status(status, age_s) -> tuple:
     _copy_optional_number(fields, status, "drive_l", "drive_l")
     _copy_optional_number(fields, status, "drive_r", "drive_r")
     _copy_optional_number(fields, status, "turn", "turn")
+    _copy_optional_number(fields, status, "session_drift", "session_drift")
     dog, cube = latest_object_drives(status.get("object_drives"))
     if dog is not None:
         fields["stim_dog"] = dog
