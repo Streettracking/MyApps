@@ -1290,6 +1290,7 @@ def run_live_gui(
             view.record_saved = rec_n
             view.record_bytes = rec_bytes
             view.record_idle = rec_on and not labelled
+            view.record_folder = _rec_path or ""
             if rec_on and labelled and camera is not None and camera_jpeg and rec.due():
                 _offer_live_frame(session, rec, marks, camera, camera_jpeg, onboard)
             from .go2_control import drive_go2

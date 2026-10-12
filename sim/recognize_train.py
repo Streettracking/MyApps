@@ -889,6 +889,7 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         view.record_saved = rec_n
         view.record_bytes = rec_bytes
         view.record_idle = rec_on and not labelled
+        view.record_folder = _rec_path or ""
         if rec_on and labelled and view.camera is not None and rec.due():
             _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z)
         from .go2_control import drive_go2

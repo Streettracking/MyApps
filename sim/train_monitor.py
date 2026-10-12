@@ -8,6 +8,7 @@ module does not send UDP itself.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -110,6 +111,7 @@ MIN_CONTENT_W = int(round(WIN_W * MIN_SCALE))  # 1440
 MIN_FONT_PX = 13
 SCROLL_BAR = 8
 MENU_H = 32
+REC_WAIT_S = 3.0  # recording on, no new frame: ask for a label key
 FOOTER_H = 56
 
 # Light warm chrome is the default. Status colours stay semantic in both themes.
@@ -242,6 +244,7 @@ class MonitorView:
     record_saved: int = 0
     record_bytes: int = 0
     record_idle: bool = False
+    record_folder: str = ""
     hemi_l: float | None = None
     hemi_r: float | None = None
     hemi_z: float | None = None
@@ -2275,7 +2278,7 @@ class TrainMonitor:
                 ("go2", self._go2_button_width(False)),
                 ("brain", 168),
                 ("teacher", 280),
-                ("record", 250),
+                ("record", 380),
             ]
         return [
             ("go2", self._go2_button_width(True)),
@@ -3530,19 +3533,40 @@ class TrainMonitor:
     def _record_button(self, screen, view: MonitorView) -> None:
         import pygame
 
+        import time as _time
+
         hot = self.record_rect.collidepoint(self._mouse())
+        now = _time.monotonic()
+        # Frames are kept only while a label key is held, so watch the counter.
+        seen = getattr(self, "_rec_seen", None)
+        key = (bool(view.record_on), int(view.record_saved), str(view.record_folder))
+        if seen is None or seen[0] != key:
+            self._rec_seen = (key, now)
+            seen = self._rec_seen
+        waiting = bool(view.record_on) and now - seen[1] >= REC_WAIT_S
         if view.record_on:
-            text = format_record(view.record_saved, view.record_bytes, view.record_idle)
-            lamp = PEACH
-            self._button(screen, self.record_rect, "", lamp, hot)
-            self._mixed(
-                screen,
-                text,
-                self.record_rect.x + 32,
-                self.record_rect.centery - 8,
-                "ЗАПИСЬ {5} {10}",
-                VALUE,
-            )
+            rect = self.record_rect
+            self._button(screen, rect, "", RED, hot)
+            if getattr(self, "_header_short", False):
+                self._mixed(screen, str(int(view.record_saved)).rjust(5), rect.x + 32, rect.centery - 8, "{5}", RED, RED)
+            elif waiting:
+                glyph = self.font_sm.render("запись ждёт метку: держи D или N", True, AMBER)
+                self._blit_clipped(screen, glyph, (rect.x + 32, rect.centery - glyph.get_height() // 2), rect)
+            else:
+                end = self._mixed(
+                    screen,
+                    "● ЗАПИСЬ · %s кадров" % str(int(view.record_saved)).rjust(5),
+                    rect.x + 32,
+                    rect.centery - 8,
+                    "● ЗАПИСЬ · {5} кадров",
+                    RED,
+                    RED,
+                )
+                folder = Path(view.record_folder).name if view.record_folder else ""
+                if folder and self.font_tiny is not None:
+                    tiny = self.font_tiny.render(folder, True, INK_DIM)
+                    x = int(end) + 8
+                    self._blit_clipped(screen, tiny, (x, rect.centery - tiny.get_height() // 2), pygame.Rect(rect.x, rect.y, max(1, rect.w - 34), rect.h))
             self._draw_key_badge(screen, self.record_rect, "U")
         else:
             word = "ЗАП" if getattr(self, "_header_short", False) else "ЗАПИСЬ КАДРОВ"
