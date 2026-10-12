@@ -2290,7 +2290,8 @@ class TrainMonitor:
             help_rect = pygame.Rect(buttons["go2"].x - 36, 4, 28, 24)
             stop = bar.x - 4 if bar.w >= 8 else pin.x - 4
             fits = (
-                switch.right <= limit - 4
+                total <= header_limit - header_x  # buttons at full width, not squeezed
+                and switch.right <= limit - 4
                 and pin.x >= help_rect.right + 4
                 and buttons["kin"].right <= stop
                 and (bar.w < 8 or bar.x >= buttons["kin"].right + 4)
