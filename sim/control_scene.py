@@ -4,6 +4,13 @@ The cube matches the conspecific's angular size and uses a different colour.
 YOLO boxes are built only for conspecifics. The cube is written on the ground
 row, so its Kenyon pattern is not that body.
 
+``arrange`` can leave both still (``static``) or give them one shared velocity
+(``moving-matched``). The matched vector is the conspecific walk speed, across
+the learner's heading, so the paths stay parallel and the speed is the same.
+Replacing the conspecific with the cube then traces the same trajectory.
+The memory probe uses the matched motion: fly vision is motion-sensitive, and
+a still cube would let the learner pick "whatever moves".
+
 The probe yaw is the usual left-minus-right law applied to each side's change
 from its own pre-training drive. The right mushroom body is born with a
 negative approach-minus-avoidance for every pattern, so the raw difference
@@ -26,6 +33,7 @@ from .raw_sense import (
     bearing_bin,
     render_view,
 )
+from .recognize_train import WALK
 from .teacher_lead import PAM_GAP_S, attach_recognition_stimuli, mix_velocity
 from .world import AgentState, ArenaConfig, ArenaWorld, ControlCube
 from .yolo_teacher import DetBox, hemisphere_hits
@@ -37,6 +45,10 @@ PROBE_DIST_M = 1.4
 PROBE_BEARING = 0.55
 TRAIN_PULSES = 16
 BOX_HALF = 0.5 / float(N_AZ)
+MOTION_STATIC = "static"
+MOTION_MATCHED = "moving-matched"
+# Same speed the conspecific walks in the trainer. One constant, two names.
+MATCHED_SPEED = WALK
 
 
 def _rgb_u8(color) -> tuple:
@@ -74,14 +86,50 @@ def _spot(learner, side: str | None, park: float) -> tuple:
     )
 
 
-def arrange(world, learner, conspecific: str | None = None, control: str | None = None):
-    """Put each object on ``left``, ``right``, or behind the learner when None."""
+def _matched_velocity(learner) -> tuple:
+    """Walk speed, perpendicular to the learner's heading. Same vector for both."""
+    yaw = float(learner.yaw)
+    return (-MATCHED_SPEED * float(np.sin(yaw)), MATCHED_SPEED * float(np.cos(yaw)))
+
+
+def arrange(
+    world,
+    learner,
+    conspecific: str | None = None,
+    control: str | None = None,
+    motion: str = MOTION_STATIC,
+):
+    """Put each object on ``left``, ``right``, or behind the learner when None.
+
+    ``static`` leaves both still. ``moving-matched`` gives both the same
+    velocity, so a later step is the same displacement and the same path
+    when one object stands in for the other.
+    """
+    if motion not in (MOTION_STATIC, MOTION_MATCHED):
+        raise ValueError("motion must be static or moving-matched")
     peer = next(agent for agent in world.agents if agent.agent_id != learner.agent_id)
     cube = world.controls[0]
     peer.x, peer.y = _spot(learner, conspecific, 0.0)
-    peer.vx = peer.vy = 0.0
     cube.x, cube.y = _spot(learner, control, 0.35)
-    cube.vx = cube.vy = 0.0
+    vx, vy = _matched_velocity(learner) if motion == MOTION_MATCHED else (0.0, 0.0)
+    peer.vx, peer.vy = float(vx), float(vy)
+    cube.vx, cube.vy = float(vx), float(vy)
+    return peer, cube
+
+
+def advance_scene(world, learner, dt: float):
+    """Step the conspecific and the cube by the velocity ``arrange`` set.
+
+    Both carry one vector, so the displacement matches. This is not the arena
+    bounce: that integrator reflects each object on its own and would split
+    a shared trajectory at the wall.
+    """
+    peer = next(agent for agent in world.agents if agent.agent_id != learner.agent_id)
+    cube = world.controls[0]
+    step = float(dt)
+    for obj in (peer, cube):
+        obj.x = float(obj.x + float(obj.vx) * step)
+        obj.y = float(obj.y + float(obj.vy) * step)
     return peer, cube
 
 
@@ -113,12 +161,13 @@ def _hemidrives(trainer, feat) -> tuple:
     return left, right
 
 
-def _isolated(trainer, world, learner, kind: str, side: str):
+def _isolated(trainer, world, learner, kind: str, side: str, motion: str):
     arrange(
         world,
         learner,
         conspecific=side if kind == "conspecific" else None,
         control=side if kind == "control" else None,
+        motion=motion,
     )
     feat, hit = _view(learner, world)
     drive = float(trainer.score_feature(feat))
@@ -126,8 +175,8 @@ def _isolated(trainer, world, learner, kind: str, side: str):
     return drive, left, right, hit
 
 
-def _train_side(trainer, world, learner, side: str, t0: float) -> float:
-    arrange(world, learner, conspecific=side, control=None)
+def _train_side(trainer, world, learner, side: str, t0: float, motion: str) -> float:
+    arrange(world, learner, conspecific=side, control=None, motion=motion)
     feat, _hit = _view(learner, world)
     boxes = conspecific_boxes(learner, world)
     stim = trainer.stimuli.get("conspecific")
@@ -174,11 +223,15 @@ def object_drive_rows(when: str, conspecific: float, control: float) -> list:
     ]
 
 
-def run_memory_probe(seed: int = 1, npz=None) -> dict:
+def run_memory_probe(seed: int = 1, npz=None, motion: str = MOTION_MATCHED) -> dict:
     """Train on the conspecific only, then probe with reinforcement off.
 
-    Returns the status fields and the log lines. ``z`` is the fly's yaw.
+    The default motion matches the conspecific, so the control is not the
+    only still object in view. Returns the status fields and the log lines.
+    ``z`` is the fly's yaw.
     """
+    if motion not in (MOTION_STATIC, MOTION_MATCHED):
+        raise ValueError("motion must be static or moving-matched")
     world, learner = make_scene(seed)
     trainer = MbTrainer(npz or default_npz(), seed=int(seed), camera_only=True, overlap=DEFAULT_OVERLAP)
     trainer.learn = True
@@ -189,7 +242,7 @@ def run_memory_probe(seed: int = 1, npz=None) -> dict:
     before_hemi = {}
     for kind in ("conspecific", "control"):
         for side in ("left", "right"):
-            drive, left, right, _hit = _isolated(trainer, world, learner, kind, side)
+            drive, left, right, _hit = _isolated(trainer, world, learner, kind, side, motion)
             before_hemi[(kind, side)] = (left, right)
             if side == "left":
                 before[kind] = drive
@@ -201,11 +254,11 @@ def run_memory_probe(seed: int = 1, npz=None) -> dict:
 
     now = 0.0
     for side in ("left", "right"):
-        now = _train_side(trainer, world, learner, side, now)
+        now = _train_side(trainer, world, learner, side, now, motion)
 
     after = {}
     for kind in ("conspecific", "control"):
-        drive, _left, _right, _hit = _isolated(trainer, world, learner, kind, "left")
+        drive, _left, _right, _hit = _isolated(trainer, world, learner, kind, "left", motion)
         after[kind] = drive
     rows.extend(object_drive_rows("after", after["conspecific"], after["control"]))
     trainer.object_drives = list(rows)
@@ -223,7 +276,7 @@ def run_memory_probe(seed: int = 1, npz=None) -> dict:
         ("conspecific_left", "left", "right"),
         ("conspecific_right", "right", "left"),
     ):
-        arrange(world, learner, conspecific=conspecific_side, control=control_side)
+        arrange(world, learner, conspecific=conspecific_side, control=control_side, motion=motion)
         feat, _hit = _view(learner, world)
         boxes = conspecific_boxes(learner, world)
         hit_l, hit_r = hemisphere_hits(boxes, float(trainer.overlap), center_only=True)
@@ -260,9 +313,14 @@ def run_memory_probe(seed: int = 1, npz=None) -> dict:
 
     frozen = bool(np.array_equal(trainer.brain.kc_mbon_w, held_l) and np.array_equal(trainer.brain_r.kc_mbon_w, held_r))
     log.append("подкрепление выключено  вес учителя 0")
+    if motion == MOTION_MATCHED:
+        log.append("движение как у сородича  скорость %.2f м/с" % MATCHED_SPEED)
+    else:
+        log.append("движение статично")
     return {
         "reinforcement_off": bool(trainer.reinforcement_off),
         "teacher_weight": 0.0,
+        "motion": motion,
         "train_pulses": TRAIN_PULSES,
         "before": before,
         "after": after,
