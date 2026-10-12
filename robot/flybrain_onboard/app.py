@@ -27,7 +27,7 @@ from sim.frame_sense import features_from_frames
 from sim.learn_flash import flash_payload
 from sim.map_marks import MarkLayer
 from sim.mb_train import PAUSE_GRACE_S, MbTrainer, default_npz
-from sim.hemifield import DEFAULT_OVERLAP, fly_turn
+from sim.hemifield import DEFAULT_OVERLAP, live_turn
 from sim.raw_sense import recog_label
 from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, eyes_state_label, phase_label
 from sim.pilot import forward_clearance, scrub_range
@@ -477,14 +477,14 @@ class BrainLoop:
             recognized_l = self.recognized_l
             recognized_r = self.recognized_r
         if self.paused or self.external_stop or self.pilot.mode == "estop" or self.pilot.held_stop:
-            self.pilot.track.note_sides(r_l, r_r)
+            self.pilot.track.note_sides(r_l, r_r, self.mb.base_l, self.mb.base_r)
             self._refresh_hold(now, False)
             self._stop_once()
             return DriveCommand(0.0, 0.0, True, "stop", "никто", "")
         if not self.driving():
             # Watch-only: no Move and no StopMove.
             # The fly's two readouts still update so the laptop can see them.
-            self.pilot.track.note_sides(r_l, r_r)
+            self.pilot.track.note_sides(r_l, r_r, self.mb.base_l, self.mb.base_r)
             self._refresh_hold(now, False)
             return DriveCommand(0.0, 0.0, True, "stop", "никто", "")
         if self.pilot.mode != "auto":
@@ -496,7 +496,7 @@ class BrainLoop:
         if not link_ok or not frames_ok:
             # The sport service would keep our last Move for about a second.
             # One StopMove covers that. Further ticks stay silent.
-            self.pilot.track.note_sides(r_l, r_r)
+            self.pilot.track.note_sides(r_l, r_r, self.mb.base_l, self.mb.base_r)
             self._refresh_hold(now, False)
             self._stop_once()
             self.pilot.phase = "stop"
@@ -517,12 +517,16 @@ class BrainLoop:
             r_r=r_r,
             recognized_l=recognized_l,
             recognized_r=recognized_r,
+            base_l=float(self.mb.base_l),
+            base_r=float(self.mb.base_r),
         )
         from sim.search_reflex import cover_command
 
         seen = (now - self._yolo_t) <= AIM_HOLD_S and bool(self._dog_in_frame)
         if self.pilot.mode == "auto" and cmd.phase != "stop":
-            cmd, self.searching = cover_command(cmd, seen, r_l, r_r, dist_m, forward_m)
+            cmd, self.searching = cover_command(
+                cmd, seen, r_l, r_r, dist_m, forward_m, self.mb.base_l, self.mb.base_r
+            )
             self.pilot.phase = cmd.phase
         elif self.pilot.mode != "auto":
             self.searching = False
@@ -697,7 +701,7 @@ class BrainLoop:
                 "kc_active_frac_abp": self._kc_active_frac_group("abp"),
                 "drive_l": drive_l,
                 "drive_r": drive_r,
-                "turn": float(fly_turn(drive_l, drive_r)),
+                "turn": float(live_turn(drive_l, drive_r, self.mb.base_l, self.mb.base_r)),
                 "pam_event": bool(self._pam_event),
                 "ppl1_event": bool(self._ppl1_event),
                 "pam_count": int(self.mb.n_pam),

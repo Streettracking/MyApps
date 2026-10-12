@@ -713,6 +713,8 @@ def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, floa
         r_r=r_r,
         recognized_l=eye_l,
         recognized_r=eye_r,
+        base_l=None if session.mb is None else float(session.mb.base_l),
+        base_r=None if session.mb is None else float(session.mb.base_r),
     )
     from .search_reflex import cover_command
 
@@ -725,6 +727,8 @@ def _drive_sim(session: RecognizeTrainSim, inp, now: float) -> tuple[float, floa
             r_r,
             session.aim_dist,
             session.forward_m,
+            None if session.mb is None else float(session.mb.base_l),
+            None if session.mb is None else float(session.mb.base_r),
         )
         session.pilot.phase = cmd.phase
     else:
@@ -1123,6 +1127,8 @@ def seek_trial(seed: int, teach_s: float = 25.0, seek_s: float = 20.0, state: Pa
             r_r=r_r,
             recognized_l=eye_l,
             recognized_r=eye_r,
+            base_l=None if session.mb is None else float(session.mb.base_l),
+            base_r=None if session.mb is None else float(session.mb.base_r),
         )
         learner = session.learner
         dogs = []
@@ -1275,7 +1281,7 @@ def compare_steer(seeds: tuple[int, ...] = (1, 2, 3), teach_s: float = 8.0, seek
     ``fly_acc`` is the sign of R_L−R_R during the teacher, before either
     controller moves the dog.
     """
-    from .hemifield import bilateral_yaw
+    from .hemifield import live_turn
 
     rows = []
     for seed in seeds:
@@ -1302,7 +1308,15 @@ def compare_steer(seeds: tuple[int, ...] = (1, 2, 3), teach_s: float = 8.0, seek
                 nearest, _bodies = _fov_bodies(session)
                 if nearest is None:
                     continue
-                matched = _side_hit(bilateral_yaw(float(session.mb.r_l), float(session.mb.r_r)), nearest[1])
+                matched = _side_hit(
+                    live_turn(
+                        float(session.mb.r_l),
+                        float(session.mb.r_r),
+                        float(session.mb.base_l),
+                        float(session.mb.base_r),
+                    ),
+                    nearest[1],
+                )
                 if matched is None:
                     continue
                 fly_n += 1
@@ -1342,6 +1356,8 @@ def compare_steer(seeds: tuple[int, ...] = (1, 2, 3), teach_s: float = 8.0, seek
                     r_r=r_r,
                     recognized_l=eye_l,
                     recognized_r=eye_r,
+                    base_l=None if session.mb is None else float(session.mb.base_l),
+                    base_r=None if session.mb is None else float(session.mb.base_r),
                 )
                 nearest, bodies = _fov_bodies(session)
                 bearing = None if nearest is None else nearest[1]

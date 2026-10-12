@@ -433,14 +433,100 @@ class SimRoundTests(unittest.TestCase):
             self.assertLess(row["search_steps"], row["steps"], row)
         left = report["after"]
         right = report["swap"]
-        self.assertGreater(left["approach_steps"], 0, report)
-        self.assertGreater(left["search_steps"], left["approach_steps"], report)
-        self.assertGreater(left["rate_conspecific"], left["rate_control"], report)
-        self.assertGreater(right["rate_control"], right["rate_conspecific"], report)
-        self.assertAlmostEqual(left["rate_conspecific"], right["rate_control"], places=2)
+        self.assertGreater(left["z"], 0.2, report)
+        self.assertLess(right["z"], -0.2, report)
+        self.assertLess(abs(left["z"]), 0.999, report)
+        self.assertLess(abs(right["z"]), 0.999, report)
+        self.assertLess(abs(report["before"]["z"]), 0.08, report)
+        self.assertGreater(left["index"], 0.0, report)
+        self.assertGreater(right["index"], 0.0, report)
         self.assertGreater(left["seen_conspecific"], 0, report)
-        self.assertGreater(right["seen_control"], 0, report)
+        self.assertGreater(right["seen_conspecific"], 0, report)
         self.assertLess(half, 1.0)
+
+    def test_live_turn_follows_the_side(self):
+        from sim.control_scene import _hemidrives, _place_opposed, _train_side, _view, arrange, make_scene
+        from sim.hemifield import live_turn
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.raw_sense import probe_features
+        from sim.teacher_lead import attach_recognition_stimuli
+
+        world, learner = make_scene(1)
+        trainer = MbTrainer(default_npz(), seed=1, camera_only=True)
+        trainer.learn = True
+        attach_recognition_stimuli(trainer.stimuli)
+
+        def yaw(feat):
+            _hemidrives(trainer, feat)
+            return float(live_turn(trainer.r_l, trainer.r_r, trainer.base_l, trainer.base_r))
+
+        self.assertEqual(yaw(probe_features("empty")), 0.0)
+        self.assertLess(abs(yaw(probe_features("dog"))), 0.05)
+        arrange(world, learner, conspecific="left", control=None, motion="static")
+        left_before = yaw(_view(learner, world)[0])
+        arrange(world, learner, conspecific="right", control=None, motion="static")
+        right_before = yaw(_view(learner, world)[0])
+        _place_opposed(world, learner, "left", "static")
+        pair_before = yaw(_view(learner, world)[0])
+        self.assertGreater(left_before, 0.2)
+        self.assertLess(right_before, -0.2)
+        self.assertLess(abs(pair_before), 0.08)
+        self.assertLess(abs(left_before), 0.999)
+        self.assertLess(abs(right_before), 0.999)
+        now = 0.0
+        for side in ("left", "right"):
+            now = _train_side(trainer, world, learner, side, now, "static")
+        arrange(world, learner, conspecific="left", control=None, motion="static")
+        left_after = yaw(_view(learner, world)[0])
+        arrange(world, learner, conspecific="right", control=None, motion="static")
+        right_after = yaw(_view(learner, world)[0])
+        _place_opposed(world, learner, "left", "static")
+        pair_left = yaw(_view(learner, world)[0])
+        _place_opposed(world, learner, "right", "static")
+        pair_right = yaw(_view(learner, world)[0])
+        self.assertGreater(left_after, 0.2)
+        self.assertLess(right_after, -0.2)
+        self.assertGreater(pair_left, 0.2)
+        self.assertLess(pair_right, -0.2)
+        self.assertLess(abs(left_after), 1.0)
+        self.assertLess(abs(right_after), 1.0)
+        self.assertNotAlmostEqual(abs(left_after), 1.0, places=3)
+        self.assertNotAlmostEqual(abs(pair_right), 1.0, places=3)
+
+    def test_live_memory_trial_prefers_both_sides(self):
+        from sim.control_scene import run_live_memory_trial
+
+        report = run_live_memory_trial(seeds=(1, 2, 3), runs=4)
+        self.assertEqual(report["teacher_weight"], 0.0)
+        self.assertTrue(report["reinforcement_off"])
+        self.assertEqual(report["motion"], "static")
+        self.assertLess(abs(report["untrained"]), 0.05, report)
+        self.assertGreater(report["trained"], 0.5, report)
+        self.assertGreater(report["trained_left"], 0.5, report)
+        self.assertGreater(report["trained_right"], 0.5, report)
+        bearings = {}
+        trained_left_z = set()
+        for row in report["rows"]:
+            self.assertEqual(row["teacher_weight"], 0.0)
+            self.assertTrue(row["reinforcement_off"])
+            self.assertTrue(row["in_view_conspecific"], row)
+            self.assertTrue(row["in_view_control"], row)
+            self.assertLess(abs(row["z"]), 0.999, row)
+            if row["trained"]:
+                self.assertGreater(row["index"], 0.0, row)
+                self.assertTrue(row["weights_frozen"], row)
+                if row["side"] == "left":
+                    self.assertGreater(row["z"], 0.2, row)
+                    trained_left_z.add(round(row["z"], 3))
+                else:
+                    self.assertLess(row["z"], -0.2, row)
+            else:
+                self.assertLess(abs(row["z"]), 0.08, row)
+            bearings.setdefault(int(row["seed"]), set()).add(round(float(row["bearing"]), 3))
+        self.assertGreater(len(bearings[1]), 1)
+        self.assertNotEqual(bearings[1], bearings[2])
+        self.assertNotEqual(bearings[1], bearings[3])
+        self.assertGreater(len(trained_left_z), 1)
 
     def test_search_lamp_and_drift_span(self):
         import pygame

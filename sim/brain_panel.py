@@ -180,10 +180,12 @@ def latest_object_drives(rows) -> tuple:
 
 def panel_readout(mb, watch=None) -> dict:
     """Fields the trainer panel paints from a live mushroom body. No learning."""
-    from .hemifield import fly_turn
+    from .hemifield import live_turn
 
     drive_l = float(getattr(mb, "r_l", 0.0) or 0.0)
     drive_r = float(getattr(mb, "r_r", 0.0) or 0.0)
+    base_l = float(getattr(mb, "base_l", drive_l))
+    base_r = float(getattr(mb, "base_r", drive_r))
     gd, ab = kc_group_fracs(mb)
     dog, cube = latest_object_drives(getattr(mb, "object_drives", None))
     index = None
@@ -198,7 +200,7 @@ def panel_readout(mb, watch=None) -> dict:
     return {
         "drive_l": drive_l,
         "drive_r": drive_r,
-        "turn": float(fly_turn(drive_l, drive_r)),
+        "turn": float(live_turn(drive_l, drive_r, base_l, base_r)),
         "stim_dog": dog,
         "stim_cube": cube,
         "pref_index": index,

@@ -12,16 +12,18 @@ The memory probe uses the matched motion: fly vision is motion-sensitive, and
 a still cube would let the learner pick "whatever moves".
 
 The probe yaw is the usual left-minus-right law applied to each side's change
-from its own pre-training drive. The right mushroom body is born with a
-negative approach-minus-avoidance for every pattern, so the raw difference
-points left even after that side has learned.
+from its own pre-training drive. The live command is ``live_turn``: each
+hemisphere is divided by its birth scale, and the learned rise is added
+before a tanh, so a symmetric view sits near zero and the command does not
+pin at ±1.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from .hemifield import DEFAULT_OVERLAP, fly_turn
+from .approach_watch import ApproachWatch
+from .hemifield import DEFAULT_OVERLAP, fly_turn, live_turn
 from .mb_train import MbTrainer, default_npz
 from .pilot import STOP_M, X_MAX, Pilot
 from .search_reflex import SEARCH_REFLEX_YAW
@@ -525,18 +527,40 @@ def conspecific_side(seed: int) -> str:
     return "left" if int(seed) % 2 == 1 else "right"
 
 
-def _place_opposed(world, learner, side: str, motion: str) -> tuple:
-    """Conspecific and cube ahead, one in each hemifield, both inside the view."""
+def _run_shift(seed: int, run: int) -> tuple:
+    """Extra bearing and distance for a repeat. Run 0 adds nothing.
+
+    The seed's own offset already lives on the world. A later run of that
+    seed moves the pair again, so the repeats are not one copied trace.
+    """
+    if int(run) <= 0:
+        return 0.0, 0.0
+    rng = np.random.default_rng(10007 * int(seed) + 17 * int(run))
+    return float(rng.uniform(-0.05, 0.05)), float(rng.uniform(-0.08, 0.08))
+
+
+def _place_opposed(world, learner, side: str, motion: str, run: int = 0) -> tuple:
+    """Conspecific and cube ahead, one in each hemifield, both inside the view.
+
+    Seed 1, run 0 is the published pose. Any other seed uses ``scene_offsets``.
+    A later run of the same seed adds a small shift.
+    """
     learner.x, learner.y, learner.yaw = 3.0, 2.5, 0.0
     learner.vx = learner.vy = 0.0
     peer = next(agent for agent in world.agents if agent.agent_id != learner.agent_id)
     cube = world.controls[0]
-    bearing = OPPOSED_BEARING if side == "left" else -OPPOSED_BEARING
-    dist = PROBE_DIST_M
+    extra_b, extra_d = _run_shift(int(getattr(world, "probe_seed", 1)), int(run))
+    magnitude = OPPOSED_BEARING + float(getattr(world, "probe_bearing", 0.0)) + extra_b
+    magnitude = float(min(max(magnitude, 0.22), 0.80))
+    bearing = magnitude if side == "left" else -magnitude
+    dist = PROBE_DIST_M + float(getattr(world, "probe_dist", 0.0)) + extra_d
+    dist = float(min(max(dist, 1.15), 2.2))
     peer.x = float(learner.x + dist * np.cos(bearing))
     peer.y = float(learner.y + dist * np.sin(bearing))
     cube.x = float(learner.x + dist * np.cos(-bearing))
     cube.y = float(learner.y + dist * np.sin(-bearing))
+    world.opposed_bearing = float(magnitude)
+    world.opposed_dist = float(dist)
     speed = MATCHED_SPEED if motion == MOTION_MATCHED else 0.0
     peer.vx, cube.vx = 0.0, 0.0
     peer.vy, cube.vy = speed, speed
@@ -547,13 +571,15 @@ def _bearing(obj, learner) -> float:
     return _wrap(float(np.arctan2(obj.y - learner.y, obj.x - learner.x)) - learner.yaw)
 
 
-def _opposed_trial(trainer, world, learner, motion: str, side: str) -> dict:
-    """Start with both targets in view. Empty frames scan. A target uses fly_turn.
+def _opposed_trial(trainer, world, learner, motion: str, side: str, run: int = 0) -> dict:
+    """Start with both targets in view. Empty frames scan. A target uses live_turn.
 
-    The yaw is the mushroom body's own left-minus-right law on the live drives.
+    The yaw is the normalised live command, not the saturating ratio.
     Alternating ``side`` across runs puts the conspecific on the other hemifield.
+    The preference index is time nearer the conspecific minus time nearer the
+    cube, over the run. Nearer means in view and closer to the nose.
     """
-    peer, cube = _place_opposed(world, learner, side, motion)
+    peer, cube = _place_opposed(world, learner, side, motion, run)
     dt = float(world.cfg.dt)
     steps = int(round(APPROACH_S / dt))
     half = float(FOV) / 2.0
@@ -563,6 +589,10 @@ def _opposed_trial(trainer, world, learner, motion: str, side: str) -> dict:
     seen = {"conspecific": 0, "control": 0}
     phases = {"search": 0, "approach": 0, "hold": 0}
     min_d = {"conspecific": 99.0, "control": 99.0}
+    watch = ApproachWatch()
+    feat0, _hit0 = _view(learner, world)
+    live0_l, live0_r = _hemidrives(trainer, feat0)
+    z0 = float(live_turn(live0_l, live0_r, trainer.base_l, trainer.base_r))
     for _ in range(steps):
         if motion == MOTION_MATCHED:
             advance_scene(world, learner, dt)
@@ -570,6 +600,8 @@ def _opposed_trial(trainer, world, learner, motion: str, side: str) -> dict:
             _hold_inside(cube, world.cfg)
         feat, hit = _view(learner, world)
         live_l, live_r = _hemidrives(trainer, feat)
+        base_l = float(trainer.base_l)
+        base_r = float(trainer.base_r)
         dist_dog = float(np.hypot(peer.x - learner.x, peer.y - learner.y))
         dist_cube = float(np.hypot(cube.x - learner.x, cube.y - learner.y))
         min_d["conspecific"] = min(min_d["conspecific"], dist_dog)
@@ -585,7 +617,7 @@ def _opposed_trial(trainer, world, learner, motion: str, side: str) -> dict:
         if not dog_on and not cube_on:
             yaw, speed, phase = SEARCH_REFLEX_YAW, 0.0, "search"
         else:
-            yaw = float(fly_turn(live_l, live_r))
+            yaw = float(live_turn(live_l, live_r, base_l, base_r))
             near = 99.0
             if dog_on:
                 near = min(near, dist_dog)
@@ -602,6 +634,20 @@ def _opposed_trial(trainer, world, learner, motion: str, side: str) -> dict:
             else:
                 chosen = "conspecific" if dist_dog <= dist_cube else "control"
             aimed[chosen] += 1
+        # Near means in view and clearly closer to the nose. A tie counts as
+        # neither, so an untrained straight walk does not invent a side.
+        margin = 0.08
+        if dog_on and not cube_on:
+            dog_near, cube_near = True, False
+        elif cube_on and not dog_on:
+            dog_near, cube_near = False, True
+        elif dog_on and cube_on and abs(ang_dog) + margin < abs(ang_cube):
+            dog_near, cube_near = True, False
+        elif dog_on and cube_on and abs(ang_cube) + margin < abs(ang_dog):
+            dog_near, cube_near = False, True
+        else:
+            dog_near, cube_near = False, False
+        watch.note(dt, dog_near, cube_near, 0.5 * (float(live_l) + float(live_r)))
         phases[phase] += 1
         learner.yaw = _wrap(float(learner.yaw) + yaw * dt)
         learner.x = float(learner.x + speed * np.cos(learner.yaw) * dt)
@@ -629,6 +675,11 @@ def _opposed_trial(trainer, world, learner, motion: str, side: str) -> dict:
         "hold_steps": int(phases["hold"]),
         "score_conspecific": None,
         "score_control": None,
+        "index": None if watch.index() is None else float(watch.index()),
+        "z": float(z0),
+        "bearing": float(getattr(world, "opposed_bearing", OPPOSED_BEARING)),
+        "dist": float(getattr(world, "opposed_dist", PROBE_DIST_M)),
+        "seed": int(getattr(world, "probe_seed", 1)),
     }
 
 
@@ -682,4 +733,83 @@ def run_approach_probe(seed: int = 1, npz=None, motion: str = MOTION_MATCHED, pl
             "gain_left": gain_left,
             "gain_right": gain_right,
         },
+    }
+
+
+def _mean(values) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / float(len(values)))
+
+
+def run_live_memory_trial(seeds=(1, 2, 3), runs: int = 4, motion: str = MOTION_STATIC, npz=None) -> dict:
+    """Both targets in view. Sides alternate. Teacher weight is 0. Reinforcement is off.
+
+    Each seed places the pair on its own bearing and distance. Each run swaps
+    which hemifield holds the conspecific. The preference index is time with
+    the conspecific in view minus time with the cube in view, averaged across
+    the two sides.
+    """
+    if motion not in (MOTION_STATIC, MOTION_MATCHED):
+        raise ValueError("motion must be static or moving-matched")
+    if int(runs) < 1:
+        raise ValueError("runs must be at least 1")
+    rows = []
+    for seed in seeds:
+        world, learner = make_scene(int(seed))
+        trainer = MbTrainer(npz or default_npz(), seed=int(seed), camera_only=True, overlap=DEFAULT_OVERLAP)
+        trainer.learn = True
+        attach_recognition_stimuli(trainer.stimuli)
+        trainer.set_reinforcement_off(True)
+        for run in range(int(runs)):
+            side = "left" if int(run) % 2 == 0 else "right"
+            row = _opposed_trial(trainer, world, learner, motion, side, run)
+            row["trained"] = False
+            row["run"] = int(run)
+            row["teacher_weight"] = 0.0
+            row["reinforcement_off"] = True
+            rows.append(row)
+        trainer.set_reinforcement_off(False)
+        now = 0.0
+        for train_side in ("left", "right"):
+            now = _train_side(trainer, world, learner, train_side, now, motion)
+        trainer.set_reinforcement_off(True)
+        held_l = np.array(trainer.brain.kc_mbon_w, copy=True)
+        held_r = np.array(trainer.brain_r.kc_mbon_w, copy=True)
+        for run in range(int(runs)):
+            side = "left" if int(run) % 2 == 0 else "right"
+            row = _opposed_trial(trainer, world, learner, motion, side, run)
+            row["trained"] = True
+            row["run"] = int(run)
+            row["teacher_weight"] = 0.0
+            row["reinforcement_off"] = True
+            rows.append(row)
+        frozen = bool(
+            np.array_equal(trainer.brain.kc_mbon_w, held_l)
+            and np.array_equal(trainer.brain_r.kc_mbon_w, held_r)
+        )
+        for row in rows:
+            if int(row["seed"]) == int(seed) and row["trained"]:
+                row["weights_frozen"] = frozen
+
+    def _pick(trained: bool, side: str) -> float:
+        return _mean([float(row["index"]) for row in rows if row["trained"] is trained and row["side"] == side])
+
+    left_untrained = _pick(False, "left")
+    right_untrained = _pick(False, "right")
+    left_trained = _pick(True, "left")
+    right_trained = _pick(True, "right")
+    return {
+        "seeds": [int(seed) for seed in seeds],
+        "runs": int(runs),
+        "motion": motion,
+        "teacher_weight": 0.0,
+        "reinforcement_off": True,
+        "rows": rows,
+        "untrained_left": left_untrained,
+        "untrained_right": right_untrained,
+        "trained_left": left_trained,
+        "trained_right": right_trained,
+        "untrained": 0.5 * (left_untrained + right_untrained),
+        "trained": 0.5 * (left_trained + right_trained),
     }

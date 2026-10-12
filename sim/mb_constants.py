@@ -26,11 +26,25 @@ IDLE_GROWTH = 0.002
 W_FLOOR_FRAC = 0.20
 W_CEIL_FRAC = 1.50
 
-# Turn = k (drive_L - drive_R) / (|drive_L| + |drive_R| + eps), then a deadband.
+# Ratio law kept for the gain probe: k (drive_L - drive_R) / (|drive_L| + |drive_R| + eps).
 # Each drive is approach minus avoidance on that side. Left is positive.
 YAW_K = 1.0
 YAW_EPS = 1e-3
 YAW_DEAD = 0.08
+
+# Live yaw. The left hemisphere is born near +492 for a pattern in one hemifield,
+# the right near −508, so the raw difference points left for every view.
+# Dividing by those scales cancels a blank frame and a symmetric view.
+# The learned term is the same view's drive minus its birth drive, in those units.
+# tanh stops a few hundred counts from pinning the command at ±1.
+TURN_SCALE_L = 492.0
+TURN_SCALE_R = -508.0
+# Presence saturates, so a brighter and a dimmer hemifield both read near one
+# and a symmetric pair does not grow a turn as the bearings widen.
+TURN_PRESENCE = 0.35
+TURN_MEMORY = 4.0
+TURN_TANH = 1.05
+LIVE_DEAD = 0.05
 
 
 def kc_winner_count(n_kc: int) -> int:

@@ -6,7 +6,7 @@ is in the frame, yaw comes from the two approach-minus-avoidance drives.
 
 from __future__ import annotations
 
-from .hemifield import fly_turn
+from .hemifield import live_turn
 from .pilot import STOP_M, X_MAX, DriveCommand
 
 # Slower than the old burst (SEARCH_TURN is 0.35, then a pause). One
@@ -19,19 +19,20 @@ def yolo_boxes_seen(boxes) -> bool:
     return bool(boxes)
 
 
-def cover_command(cmd, seen: bool, r_l: float, r_r: float, dist_m, forward_m):
+def cover_command(cmd, seen: bool, r_l: float, r_r: float, dist_m, forward_m, base_l=None, base_r=None):
     """Autonomy gate. Returns ``(command, searching)``.
 
     A stop is left alone. An empty frame is the slow scan and ``searching``
     is true, which is the caller's cue to skip plasticity. A target in view
-    hands the yaw to ``fly_turn`` and walks until the stop distance.
+    hands the yaw to ``live_turn`` and walks until the stop distance.
+    ``base_*`` is each hemisphere's birth drive for this view.
     """
     hint = getattr(cmd, "hint", "") or ""
     if getattr(cmd, "phase", "") == "stop":
         return cmd, False
     if not seen:
         return DriveCommand(0.0, SEARCH_REFLEX_YAW, False, "search", "мозг", hint), True
-    yaw = float(fly_turn(float(r_l), float(r_r)))
+    yaw = float(live_turn(float(r_l), float(r_r), base_l, base_r))
     dist = None if dist_m is None else float(dist_m)
     ahead = None if forward_m is None else float(forward_m)
     close = dist is not None and dist <= float(STOP_M)

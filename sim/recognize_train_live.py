@@ -853,6 +853,8 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         r_r=0.0 if session.mb is None else float(session.mb.r_r),
         recognized_l=eye_l,
         recognized_r=eye_r,
+        base_l=None if session.mb is None else float(session.mb.base_l),
+        base_r=None if session.mb is None else float(session.mb.base_r),
     )
     from .search_reflex import cover_command, yolo_boxes_seen
 
@@ -865,6 +867,8 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
             0.0 if session.mb is None else float(session.mb.r_r),
             session.aim_dist,
             session.forward_m,
+            None if session.mb is None else float(session.mb.base_l),
+            None if session.mb is None else float(session.mb.base_r),
         )
         session.pilot.phase = cmd.phase
         session.target_in_view = bool(seen)

@@ -253,7 +253,7 @@ class StateAndStatusTests(unittest.TestCase):
     def test_status_adds_the_ui_brain_fields(self):
         from robot.flybrain_onboard.app import BrainLoop
         from robot.flybrain_onboard.drive import SportDrive
-        from sim.hemifield import fly_turn
+        from sim.hemifield import live_turn
         from sim.mb_train import MbTrainer, default_npz
 
         brain = MbTrainer(default_npz(), seed=1, overlap=0.4)
@@ -294,7 +294,9 @@ class StateAndStatusTests(unittest.TestCase):
         self.assertEqual(quiet["ppl1_count"], 0)
         self.assertGreaterEqual(quiet["kc_active_frac"], 0.0)
         self.assertLessEqual(quiet["kc_active_frac"], 1.0)
-        self.assertAlmostEqual(quiet["turn"], fly_turn(quiet["drive_l"], quiet["drive_r"]))
+        self.assertAlmostEqual(
+            quiet["turn"], live_turn(quiet["drive_l"], quiet["drive_r"], loop.mb.base_l, loop.mb.base_r)
+        )
 
         loop.learn = True
         camera = np.zeros((16, 32, 3), dtype=np.uint8)
@@ -314,7 +316,9 @@ class StateAndStatusTests(unittest.TestCase):
         self.assertLessEqual(seen["kc_active_frac_abp"], 1.0)
         self.assertAlmostEqual(seen["drive_l"], loop.mb.brain.appetitive_drive(loop.mb.last_fwd.action_scores))
         self.assertAlmostEqual(seen["drive_r"], loop.mb.brain_r.appetitive_drive(loop.mb.last_fwd_r.action_scores))
-        self.assertAlmostEqual(seen["turn"], fly_turn(seen["drive_l"], seen["drive_r"]))
+        self.assertAlmostEqual(
+            seen["turn"], live_turn(seen["drive_l"], seen["drive_r"], loop.mb.base_l, loop.mb.base_r)
+        )
         self.assertFalse(seen["pam_event"])
         self.assertFalse(seen["ppl1_event"])
         self.assertEqual(seen["n_pam"], seen["pam_count"])
@@ -390,8 +394,10 @@ class OnboardEyeDriveTests(unittest.TestCase):
         loop.recognized = True
         loop.recognized_l = True
         loop.recognized_r = True
-        loop.mb.r_l = 8.0
-        loop.mb.r_r = 1.0
+        loop.mb.r_l = 480.0
+        loop.mb.r_r = -40.0
+        loop.mb.base_l = 480.0
+        loop.mb.base_r = -40.0
         cmd = loop.tick(0.0)
         self.assertEqual(cmd.phase, "approach")
         self.assertAlmostEqual(cmd.x, 0.4)
@@ -406,8 +412,10 @@ class OnboardEyeDriveTests(unittest.TestCase):
         other.recognized = True
         other.recognized_l = True
         other.recognized_r = True
-        other.mb.r_l = 1.0
-        other.mb.r_r = 8.0
+        other.mb.r_l = 40.0
+        other.mb.r_r = -480.0
+        other.mb.base_l = 40.0
+        other.mb.base_r = -480.0
         cmd = other.tick(0.0)
         self.assertAlmostEqual(cmd.x, 0.4)
         self.assertLess(cmd.z, -0.2)
@@ -422,7 +430,9 @@ class OnboardEyeDriveTests(unittest.TestCase):
         loop.recognized_l = False
         loop.recognized_r = True
         loop.mb.r_l = 0.0
-        loop.mb.r_r = 6.0
+        loop.mb.r_r = -480.0
+        loop.mb.base_l = 0.0
+        loop.mb.base_r = -480.0
         cmd = loop.tick(0.0)
         self.assertEqual(cmd.phase, "approach")
         self.assertAlmostEqual(cmd.x, 0.4)
@@ -443,8 +453,10 @@ class OnboardEyeDriveTests(unittest.TestCase):
         self._see(left, 1.0)
         left.recognized_l = True
         left.recognized_r = False
-        left.mb.r_l = 6.0
+        left.mb.r_l = 480.0
         left.mb.r_r = 0.0
+        left.mb.base_l = 480.0
+        left.mb.base_r = 0.0
         turn = left.tick(1.0)
         self.assertEqual(turn.phase, "approach")
         self.assertGreater(turn.z, 0.2)

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield
+from .hemifield import DEFAULT_OVERLAP, clamp_overlap, hemifield, live_turn
 from .kc_pathways import VisualPathway, lobula_channels, medulla_channels
 from .raw_sense import drop_lidar
 from .learn_flash import LearnFlash, MbLayout, build_layout, record_teacher_step
@@ -107,6 +107,10 @@ class MbTrainer:
         self.last_fwd_r: MBForward | None = None
         self.r_l = 0.0
         self.r_r = 0.0
+        # Birth drive of the current view. The live yaw subtracts it.
+        self.base_l = 0.0
+        self.base_r = 0.0
+        self.yaw = 0.0
         self.overlap = clamp_overlap(overlap)
         # Set before probe(): the canonical views must use the same input as training.
         self.camera_only = bool(camera_only)
@@ -168,6 +172,32 @@ class MbTrainer:
         )
         return fwd, self._value(brain, fwd)
 
+    def _birth_value(self, brain: MushroomBodyRuntime, fwd: MBForward) -> float:
+        """Approach minus avoidance of this KC vector at the birth weights.
+
+        The live weights are put back. An empty half is zero, same as ``_drive``.
+        """
+        if fwd is None or float(np.max(fwd.kc)) <= 0.0 or len(brain.kc_mbon_w0) == 0:
+            return 0.0
+        saved = brain.kc_mbon_w
+        brain.kc_mbon_w = brain.kc_mbon_w0
+        try:
+            mbon, scores = brain.scores_of_kc(fwd.kc)
+        finally:
+            brain.kc_mbon_w = saved
+        ghost = MBForward(
+            pn=fwd.pn,
+            kc=fwd.kc,
+            mbon=mbon,
+            action=fwd.action,
+            action_scores=scores,
+        )
+        return float(self._value(brain, ghost))
+
+    def _note_yaw(self) -> None:
+        """Live command from the current drives and the birth drives of this view."""
+        self.yaw = float(live_turn(self.r_l, self.r_r, self.base_l, self.base_r))
+
     def _value(self, brain: MushroomBodyRuntime, fwd: MBForward) -> float:
         if self.dan == "familiarity":
             return -brain.novelty_drive(fwd.mbon)
@@ -198,6 +228,9 @@ class MbTrainer:
             fwd_r = self._silent(self.brain_r)
         self.last_fwd = fwd_l
         self.last_fwd_r = fwd_r
+        self.base_l = self._birth_value(self.brain, fwd_l)
+        self.base_r = self._birth_value(self.brain_r, fwd_r)
+        self._note_yaw()
         self.last_kc_on = int(np.count_nonzero(fwd_l.kc) + np.count_nonzero(fwd_r.kc))
         self.last_kc_bins = bin_kc(fwd_l.kc)
         self.last_readout = float(self.r_l + self.r_r)
@@ -300,6 +333,7 @@ class MbTrainer:
         if self.last_fwd is not None and self.last_fwd_r is not None:
             self.r_l = self._value(self.brain, self.last_fwd)
             self.r_r = self._value(self.brain_r, self.last_fwd_r)
+            self._note_yaw()
             self.last_readout = float(self.r_l + self.r_r)
 
     def settle(self, dopamine_l: bool = False, dopamine_r: bool = False) -> None:
@@ -362,6 +396,7 @@ class MbTrainer:
         if self.last_fwd is not None and self.last_fwd_r is not None:
             self.r_l = self._value(self.brain, self.last_fwd)
             self.r_r = self._value(self.brain_r, self.last_fwd_r)
+            self._note_yaw()
             self.last_readout = float(self.r_l + self.r_r)
         return True
 
@@ -429,6 +464,9 @@ class MbTrainer:
         self.flash_r = None
         self.r_l = 0.0
         self.r_r = 0.0
+        self.base_l = 0.0
+        self.base_r = 0.0
+        self.yaw = 0.0
         self.last_drift = 0.0
         self.drift_session0 = 0.0
         self.drift_curve.clear()
