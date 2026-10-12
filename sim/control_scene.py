@@ -23,11 +23,12 @@ import numpy as np
 
 from .hemifield import DEFAULT_OVERLAP, fly_turn
 from .mb_train import MbTrainer, default_npz
-from .pilot import Pilot
+from .pilot import Pilot, STOP_M
 from .raw_sense import (
     BODY_RADIUS,
     CONSPECIFIC_COLOR,
     CONTROL_COLOR,
+    FOV,
     N_AZ,
     SEE_M,
     bearing_bin,
@@ -49,14 +50,34 @@ MOTION_STATIC = "static"
 MOTION_MATCHED = "moving-matched"
 # Same speed the conspecific walks in the trainer. One constant, two names.
 MATCHED_SPEED = WALK
+# Closed-loop memory probe. One revolution of search, then a walk that can
+# catch the matched speed before the arena wall stops the target.
+APPROACH_S = 20.0
+SWEEP_YAW = 1.05
+APPROACH_WALK = 0.55
+GAIN_MARGIN = 40.0
+ARENA_INSET = 0.45
 
 
 def _rgb_u8(color) -> tuple:
     return tuple(int(round(float(channel) * 255.0)) for channel in color)
 
 
+def scene_offsets(seed: int) -> tuple:
+    """Extra bearing and distance. Seed 1 is the published pose.
+
+    Any other seed moves the objects, so two calls of the probe are not
+    the same feature vector. The shift stays inside the field of view.
+    """
+    if int(seed) == 1:
+        return 0.0, 0.0
+    rng = np.random.default_rng(int(seed) + 10007)
+    return float(rng.uniform(0.12, 0.28)), float(rng.uniform(0.20, 0.55))
+
+
 def make_scene(seed: int = 1):
     """One learner, one conspecific, one cube. Nothing else is in the arena."""
+    bearing, dist = scene_offsets(seed)
     learner = AgentState(agent_id="go2_1", x=3.0, y=2.5, yaw=0.0, color=(80, 160, 255))
     peer = AgentState(
         agent_id="go2_2",
@@ -67,19 +88,21 @@ def make_scene(seed: int = 1):
     )
     world = ArenaWorld(ArenaConfig(move_zones=False), [], [learner, peer])
     world.controls.append(ControlCube(x=1.6, y=2.2, radius=CONTROL_RADIUS, color=CONTROL_COLOR))
+    world.probe_seed = int(seed)
+    world.probe_bearing = float(bearing)
+    world.probe_dist = float(dist)
     return world, learner
 
 
-def _spot(learner, side: str | None, park: float) -> tuple:
+def _spot(world, learner, side: str | None, park: float) -> tuple:
+    bearing = PROBE_BEARING + float(getattr(world, "probe_bearing", 0.0))
+    dist = PROBE_DIST_M + float(getattr(world, "probe_dist", 0.0))
     if side == "left":
-        ang = float(learner.yaw) + PROBE_BEARING
-        dist = PROBE_DIST_M
+        ang = float(learner.yaw) + bearing
     elif side == "right":
-        ang = float(learner.yaw) - PROBE_BEARING
-        dist = PROBE_DIST_M
+        ang = float(learner.yaw) - bearing
     else:
         ang = float(learner.yaw) + np.pi + float(park)
-        dist = PROBE_DIST_M
     return (
         float(learner.x + dist * np.cos(ang)),
         float(learner.y + dist * np.sin(ang)),
@@ -109,8 +132,8 @@ def arrange(
         raise ValueError("motion must be static or moving-matched")
     peer = next(agent for agent in world.agents if agent.agent_id != learner.agent_id)
     cube = world.controls[0]
-    peer.x, peer.y = _spot(learner, conspecific, 0.0)
-    cube.x, cube.y = _spot(learner, control, 0.35)
+    peer.x, peer.y = _spot(world, learner, conspecific, 0.0)
+    cube.x, cube.y = _spot(world, learner, control, 0.35)
     vx, vy = _matched_velocity(learner) if motion == MOTION_MATCHED else (0.0, 0.0)
     peer.vx, peer.vy = float(vx), float(vy)
     cube.vx, cube.vy = float(vx), float(vy)
@@ -327,5 +350,207 @@ def run_memory_probe(seed: int = 1, npz=None, motion: str = MOTION_MATCHED) -> d
         "object_drives": rows,
         "probe": probes,
         "weights_frozen": frozen,
+        "seed": int(seed),
         "log": log,
+    }
+
+
+def _wrap(angle: float) -> float:
+    return float((float(angle) + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def _birth_drives(trainer, birth_l, birth_r, feat) -> tuple:
+    """Hemisphere drives of the birth weights. The live weights are put back."""
+    cur_l = trainer.brain.kc_mbon_w
+    cur_r = trainer.brain_r.kc_mbon_w
+    trainer.brain.kc_mbon_w = birth_l
+    trainer.brain_r.kc_mbon_w = birth_r
+    try:
+        return _hemidrives(trainer, feat)
+    finally:
+        trainer.brain.kc_mbon_w = cur_l
+        trainer.brain_r.kc_mbon_w = cur_r
+
+
+def _hold_inside(obj, cfg) -> None:
+    """Stop an object on the arena wall. A 20 s walk cannot chase it out of the map."""
+    x0, x1 = ARENA_INSET, float(cfg.width) - ARENA_INSET
+    y0, y1 = ARENA_INSET, float(cfg.height) - ARENA_INSET
+    x = float(min(max(float(obj.x), x0), x1))
+    y = float(min(max(float(obj.y), y0), y1))
+    if x != float(obj.x) or y != float(obj.y):
+        obj.vx = 0.0
+        obj.vy = 0.0
+    obj.x, obj.y = x, y
+
+
+def _place_pair(world, learner, swap: bool, motion: str) -> tuple:
+    """Conspecific and cube behind the learner, symmetric, out of the forward view."""
+    learner.x, learner.y, learner.yaw = 3.0, 2.5, 0.0
+    learner.vx = learner.vy = 0.0
+    peer = next(agent for agent in world.agents if agent.agent_id != learner.agent_id)
+    cube = world.controls[0]
+    sign = -1.0 if swap else 1.0
+    bearing = float(getattr(world, "probe_bearing", 0.0))
+    peer.x, peer.y = learner.x - 1.5, learner.y + sign * 0.9 + bearing
+    cube.x, cube.y = learner.x - 1.5, learner.y - sign * 0.9 - bearing
+    speed = MATCHED_SPEED if motion == MOTION_MATCHED else 0.0
+    peer.vx, cube.vx = 0.0, 0.0
+    peer.vy, cube.vy = speed, speed
+    return peer, cube
+
+
+def _approach_trial(trainer, world, learner, birth_l, birth_r, motion: str, swap: bool) -> dict:
+    """Spin until each object has been seen alone, then walk to the higher gain.
+
+    The yaw that chooses a side is the change from that side's own birth drive.
+    The raw left-minus-right law is left for every visible pattern, so it is
+    recorded and not used to steer. Search keeps turning until the view has
+    held each object by itself. A tie (no learned margin) walks to the nearer.
+    """
+    peer, cube = _place_pair(world, learner, swap, motion)
+    dt = float(world.cfg.dt)
+    steps = int(round(APPROACH_S / dt))
+    half = float(FOV) / 2.0
+    best = {"conspecific": None, "control": None}
+    aimed = {"conspecific": 0, "control": 0}
+    seen = {"conspecific": 0, "control": 0}
+    phases = {"search": 0, "approach": 0, "hold": 0}
+    min_d = {"conspecific": 99.0, "control": 99.0}
+    turned = 0.0
+    for _ in range(steps):
+        if motion == MOTION_MATCHED:
+            advance_scene(world, learner, dt)
+            _hold_inside(peer, world.cfg)
+            _hold_inside(cube, world.cfg)
+        feat, hit = _view(learner, world)
+        live_l, live_r = _hemidrives(trainer, feat)
+        base_l, base_r = _birth_drives(trainer, birth_l, birth_r, feat)
+        gain_l = float(live_l - base_l)
+        gain_r = float(live_r - base_r)
+        dist_dog = float(np.hypot(peer.x - learner.x, peer.y - learner.y))
+        dist_cube = float(np.hypot(cube.x - learner.x, cube.y - learner.y))
+        min_d["conspecific"] = min(min_d["conspecific"], dist_dog)
+        min_d["control"] = min(min_d["control"], dist_cube)
+        ang_dog = _wrap(float(np.arctan2(peer.y - learner.y, peer.x - learner.x)) - learner.yaw)
+        ang_cube = _wrap(float(np.arctan2(cube.y - learner.y, cube.x - learner.x)) - learner.yaw)
+        dog_on = bool(hit.dog) and abs(ang_dog) <= half
+        cube_on = bool(hit.control) and abs(ang_cube) <= half
+        if dog_on:
+            seen["conspecific"] += 1
+        if cube_on:
+            seen["control"] += 1
+        if dog_on and not cube_on:
+            val = gain_l if ang_dog >= 0.0 else gain_r
+            cur = best["conspecific"]
+            best["conspecific"] = val if cur is None else max(cur, val)
+        if cube_on and not dog_on:
+            val = gain_l if ang_cube >= 0.0 else gain_r
+            cur = best["control"]
+            best["control"] = val if cur is None else max(cur, val)
+        full = turned >= 2.0 * np.pi - 0.25
+        both = best["conspecific"] is not None and best["control"] is not None
+        chosen = None
+        if both or (full and (best["conspecific"] is not None or best["control"] is not None)):
+            score_dog = -1e9 if best["conspecific"] is None else float(best["conspecific"])
+            score_cube = -1e9 if best["control"] is None else float(best["control"])
+            if score_dog > score_cube + GAIN_MARGIN:
+                chosen = "conspecific"
+            elif score_cube > score_dog + GAIN_MARGIN:
+                chosen = "control"
+            else:
+                chosen = "conspecific" if dist_dog <= dist_cube else "control"
+        if chosen is None:
+            yaw, speed, phase = SWEEP_YAW, 0.0, "search"
+        else:
+            ang = ang_dog if chosen == "conspecific" else ang_cube
+            dist = dist_dog if chosen == "conspecific" else dist_cube
+            if abs(ang) > half:
+                yaw = SWEEP_YAW if ang > 0.0 else -SWEEP_YAW
+                speed, phase = 0.0, "search"
+            else:
+                yaw = float(np.clip(ang / 0.35, -1.0, 1.0))
+                if dist <= STOP_M:
+                    speed, phase = 0.0, "hold"
+                else:
+                    speed, phase = APPROACH_WALK, "approach"
+            aimed[chosen] += 1
+        phases[phase] += 1
+        prev = float(learner.yaw)
+        learner.yaw = _wrap(prev + yaw * dt)
+        turned += abs(_wrap(learner.yaw - prev))
+        learner.x = float(learner.x + speed * np.cos(learner.yaw) * dt)
+        learner.y = float(learner.y + speed * np.sin(learner.yaw) * dt)
+        _hold_inside(learner, world.cfg)
+    def _rate(name: str) -> float:
+        return float(aimed[name]) / float(steps)
+
+    return {
+        "steps": steps,
+        "rate_conspecific": _rate("conspecific"),
+        "rate_control": _rate("control"),
+        "reached_conspecific": bool(min_d["conspecific"] <= STOP_M + 0.05),
+        "reached_control": bool(min_d["control"] <= STOP_M + 0.05),
+        "min_conspecific": float(min_d["conspecific"]),
+        "min_control": float(min_d["control"]),
+        "seen_conspecific": int(seen["conspecific"]),
+        "seen_control": int(seen["control"]),
+        "search_steps": int(phases["search"]),
+        "approach_steps": int(phases["approach"]),
+        "hold_steps": int(phases["hold"]),
+        "score_conspecific": best["conspecific"],
+        "score_control": best["control"],
+    }
+
+
+def _isolated_turn(trainer, world, learner, birth_l, birth_r, kind: str, side: str) -> tuple:
+    arrange(
+        world,
+        learner,
+        conspecific=side if kind == "conspecific" else None,
+        control=side if kind == "control" else None,
+        motion=MOTION_STATIC,
+    )
+    feat, _hit = _view(learner, world)
+    live_l, live_r = _hemidrives(trainer, feat)
+    base_l, base_r = _birth_drives(trainer, birth_l, birth_r, feat)
+    return float(fly_turn(live_l, live_r)), float(fly_turn(live_l - base_l, live_r - base_r))
+
+
+def run_approach_probe(seed: int = 1, npz=None, motion: str = MOTION_MATCHED) -> dict:
+    """20 s with no teacher, before training, after it, and after swapping places.
+
+    Search turns until the conspecific and the cube have each been alone in
+    view. The walk then follows the hemisphere whose drive rose. Raw yaw is
+    left on both sides; the probe does not steer with it.
+    """
+    if motion not in (MOTION_STATIC, MOTION_MATCHED):
+        raise ValueError("motion must be static or moving-matched")
+    world, learner = make_scene(seed)
+    trainer = MbTrainer(npz or default_npz(), seed=int(seed), camera_only=True, overlap=DEFAULT_OVERLAP)
+    trainer.learn = True
+    attach_recognition_stimuli(trainer.stimuli)
+    birth_l = np.array(trainer.brain.kc_mbon_w, copy=True)
+    birth_r = np.array(trainer.brain_r.kc_mbon_w, copy=True)
+    before = _approach_trial(trainer, world, learner, birth_l, birth_r, motion, False)
+    now = 0.0
+    for side in ("left", "right"):
+        now = _train_side(trainer, world, learner, side, now, motion)
+    raw_left, gain_left = _isolated_turn(trainer, world, learner, birth_l, birth_r, "conspecific", "left")
+    raw_right, gain_right = _isolated_turn(trainer, world, learner, birth_l, birth_r, "conspecific", "right")
+    after = _approach_trial(trainer, world, learner, birth_l, birth_r, motion, False)
+    swapped = _approach_trial(trainer, world, learner, birth_l, birth_r, motion, True)
+    return {
+        "seed": int(seed),
+        "motion": motion,
+        "seconds": APPROACH_S,
+        "before": before,
+        "after": after,
+        "swap": swapped,
+        "turn": {
+            "raw_left": raw_left,
+            "raw_right": raw_right,
+            "gain_left": gain_left,
+            "gain_right": gain_right,
+        },
     }

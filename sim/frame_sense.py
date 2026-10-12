@@ -19,7 +19,6 @@ from .raw_sense import (
     OFF_LIDAR,
     OFF_MOTION,
     SEE_M,
-    bearing_bin,
 )
 
 PREVIEW_CAM = (320, 180)  # w, h
@@ -210,25 +209,27 @@ def sim_previews(agent, world, trail=None) -> tuple[np.ndarray, np.ndarray]:
     def paint(obj_x, obj_y, radius, color, body: bool, cube: bool = False) -> None:
         dx, dy = obj_x - agent.x, obj_y - agent.y
         dist = float(np.hypot(dx, dy))
-        bx = bearing_bin(dx, dy, float(agent.yaw))
-        if bx is None or dist > SEE_M or dist < 1e-3:
+        ang = float(np.arctan2(dy, dx) - float(agent.yaw))
+        ang = float((ang + np.pi) % (2.0 * np.pi) - np.pi)
+        if abs(ang) > float(FOV) / 2.0 or dist > SEE_M or dist < 1e-3:
             return
-        col_w = cw / N_AZ
-        # Sector 0 is ego-right. Paint it on the right of an unmirrored frame.
-        cx = int((N_AZ - 1 - bx + 0.5) * col_w)
-        half = max(6, int(col_w * (0.55 + radius / max(dist, 0.4))))
-        if cube:
-            side = max(2 * half, 12)
-            top = max(0, horizon - side // 2)
-            bot = min(ch, top + side)
-        elif body:
-            top = int(horizon * 0.25)
-            bot = horizon - 4
+        # Continuous bearing. A bin centre leaves a conspecific still inside
+        # one sector while a cube's size still changes with distance.
+        u = (ang + float(FOV) / 2.0) / float(FOV)
+        cx = int(round((1.0 - u) * float(cw - 1)))
+        angular = 2.0 * float(radius) / max(dist, 1e-3)
+        half = max(2, int(round(angular / float(FOV) * float(cw) / 2.0)))
+        if body or cube:
+            side = max(2 * half, 2)
+            top = max(0, horizon - side)
+            bot = min(ch, horizon + max(2, side // 2))
         else:
             top = horizon + 8
             bot = min(ch - 4, horizon + 28 + int(40 * (1.0 - dist / SEE_M)))
         x0 = max(0, cx - half)
         x1 = min(cw, cx + half)
+        if x1 <= x0 or bot <= top:
+            return
         cam[top:bot, x0:x1] = color
 
     for other in world.agents:
