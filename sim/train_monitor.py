@@ -160,6 +160,7 @@ class MonitorInput:
     lidar_reset: bool = False
     recalibrate: bool = False
     brain_restart: bool = False
+    reset_weights: bool = False
     lidar_toggle: bool = False
     flash_toggle: bool = False
     autonomy_toggle: bool = False
@@ -259,6 +260,7 @@ class MonitorView:
     # Onboard build answers recalibrate / restart (status "caps"). Sim is always True.
     recal_ok: bool = True
     restart_ok: bool = True
+    reset_ok: bool = True
     record_on: bool = False
     yolo_errors: int = -1
     record_saved: int = 0
@@ -1789,6 +1791,9 @@ class TrainMonitor:
         elif getattr(self, "brain_restart_rect", None) is not None and self.brain_restart_rect.w >= 8 and self.brain_restart_rect.collidepoint(pos):
             if _view_flag(self, "restart_ok"):
                 self._press_restart(inp)
+        elif getattr(self, "reset_weights_rect", None) is not None and self.reset_weights_rect.w >= 8 and self.reset_weights_rect.collidepoint(pos):
+            if _view_flag(self, "reset_ok"):
+                self._press_reset_weights(inp)
         elif getattr(self, "recal_rect", None) is not None and self.recal_rect.w >= 4 and self.recal_rect.collidepoint(pos):
             if _view_flag(self, "recal_ok"):
                 inp.recalibrate = True
@@ -2852,6 +2857,8 @@ class TrainMonitor:
             ("recovery", ("ПОДЪЁМ",), "", False),
             ("lidar_reset", ("СБРОС ЛИДАРА",), "C", False),
             ("brain_restart", ("ПЕРЕЗАПУСК МОЗГА", "точно? ещё раз"), "", False),
+            # TODO(UIRoboBot): placement/style of «СБРОС ВЕСОВ».
+            ("reset_weights", ("СБРОС ВЕСОВ", "точно?"), "", False),
         )
         gap = 8
         widths = [self._keyed_button_width(labels, key, lamp) for _name, labels, key, lamp in specs]
@@ -2873,6 +2880,7 @@ class TrainMonitor:
         self.recovery_rect = rects["recovery"]
         self.lidar_reset_rect = rects["lidar_reset"]
         self.brain_restart_rect = rects["brain_restart"]
+        self.reset_weights_rect = rects["reset_weights"]
 
     def _draw_lidar_block(self, screen, view: MonitorView, content) -> None:
         import pygame
@@ -3662,6 +3670,35 @@ class TrainMonitor:
         self._button(screen, self.recovery_rect, "ПОДЪЁМ", None, self.recovery_rect.collidepoint(mouse))
         self._lidar_reset_button(screen)
         self._brain_restart_button(screen)
+        self._reset_weights_button(screen)
+
+    def _press_reset_weights(self, inp) -> None:
+        """«СБРОС ВЕСОВ»: first click asks «точно?», a second within RESTART_CONFIRM_S fires."""
+        import time as _time
+
+        now = _time.monotonic()
+        if now - float(getattr(self, "_reset_armed_at", -10.0)) <= RESTART_CONFIRM_S:
+            self._reset_armed_at = -10.0
+            inp.reset_weights = True
+        else:
+            self._reset_armed_at = now
+
+    def reset_armed(self) -> bool:
+        import time as _time
+
+        return _time.monotonic() - float(getattr(self, "_reset_armed_at", -10.0)) <= RESTART_CONFIRM_S
+
+    def _reset_weights_button(self, screen) -> None:
+        rect = getattr(self, "reset_weights_rect", None)
+        if rect is None or rect.w < 8:
+            return
+        if not _view_flag(self, "reset_ok"):
+            self._button(screen, rect, "борт не поддерживает", None, False, label_color=INK_DIM)
+            return
+        if self.reset_armed():
+            self._button(screen, rect, "точно?", None, False, label_color=ESTOP_LABEL, fill=AMBER)
+            return
+        self._button(screen, rect, "СБРОС ВЕСОВ", None, rect.collidepoint(self._mouse()))
 
     def _press_restart(self, inp) -> None:
         """First click arms «точно?». A second within RESTART_CONFIRM_S fires once."""

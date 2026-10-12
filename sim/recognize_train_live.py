@@ -607,6 +607,20 @@ class LiveSession:
             self._restarting = False
         return True
 
+    def reset_weights(self) -> bool:
+        """«СБРОС ВЕСОВ»: learning off, the saved state moves to old_reset_<ts>/, fresh weights."""
+        if self.mb is None:
+            self._log("сброс весов только у грибовидного тела")
+            return False
+        self.learn = False
+        self.mb.learn = False
+        moved = move_state_aside(Path(self.state_path))
+        a = self._mb_args
+        self.mb = MbTrainer(a["npz"], seed=a["seed"], eta=a["eta"], dan=a["dan"], overlap=a["overlap"], camera_only=self.camera_only)
+        self.mb.learn = False
+        self._log("веса сброшены, обучение выключено%s" % (", старое в " + moved.parent.name if moved else ""))
+        return True
+
     def label_text(self) -> str:
         if self.operator == "dog":
             return "метка D держится — только панель точности, не DAN"
@@ -1519,6 +1533,19 @@ def run_live_gui(
                         session._log("перезапуск мозга на борту: systemd поднимет заново, обучение и автономия выключены")
                 else:
                     session.restart_brain()
+            if inp.reset_weights:
+                from .trainer_journal import journal_of
+
+                if onboard is not None and not onboard_supports(session, "reset_weights"):
+                    session._log("сброс весов: борт не поддерживает")
+                elif onboard is not None:
+                    onboard.post("reset_weights")
+                    session.learn = False
+                    session._log("сброс весов на борту: обучение выключено, старое состояние в state/old_reset_*")
+                    journal_of(session).write("сброс весов (борт)")
+                else:
+                    session.reset_weights()
+                    journal_of(session).write("сброс весов")
             if inp.lidar_toggle and not session.onboard:
                 session.toggle_lidar_fresh(time.monotonic())
             if inp.flash_toggle:
@@ -1649,6 +1676,7 @@ def run_live_gui(
             view.yolo_errors = yolo_err.count if session.learner_kind == "mb" else -1
             view.recal_ok = onboard_supports(session, "recalibrate")
             view.restart_ok = onboard_supports(session, "restart")
+            view.reset_ok = onboard_supports(session, "reset_weights")
             rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
             labelled = weak_label_now(marks, session.now()) is not None
             view.record_on = rec_on
@@ -1778,6 +1806,23 @@ def _scaled(session: LiveSession, rows: list[tuple[float, float]]) -> list[tuple
     if rows is session.peer_curve:
         return dog
     return none
+
+
+def move_state_aside(path: Path, stamp: str | None = None) -> Path | None:
+    """Move ``path`` into ``<dir>/old_reset_<ts>/``. Never deletes. None when absent."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
+    folder = path.parent / ("old_reset_" + stamp)
+    n = 1
+    while folder.exists():
+        n += 1
+        folder = path.parent / ("old_reset_%s_%d" % (stamp, n))
+    folder.mkdir(parents=True)
+    target = folder / path.name
+    path.replace(target)
+    return target
 
 
 def onboard_supports(session, op: str) -> bool:
