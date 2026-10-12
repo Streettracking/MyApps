@@ -248,6 +248,77 @@ class StateAndStatusTests(unittest.TestCase):
         self.assertTrue(loop.status()["recognized_L"])
         self.assertTrue(loop.status()["recognized_R"])
 
+    def test_status_adds_the_ui_brain_fields(self):
+        from robot.flybrain_onboard.app import BrainLoop
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.hemifield import fly_turn
+        from sim.mb_train import MbTrainer, default_npz
+
+        brain = MbTrainer(default_npz(), seed=1, overlap=0.4)
+        loop = BrainLoop(SportDrive(None), brain, "/tmp/mb_ui_status.npz")
+        quiet = loop.status()
+        for key in (
+            "kc_active_frac",
+            "drive_l",
+            "drive_r",
+            "turn",
+            "pam_event",
+            "ppl1_event",
+            "pam_count",
+            "ppl1_count",
+        ):
+            self.assertIn(key, quiet)
+        self.assertIn("n_pam", quiet)
+        self.assertIn("n_ppl1", quiet)
+        self.assertIn("r_l", quiet)
+        self.assertIn("z_fly", quiet)
+        self.assertIn("kc_on", quiet)
+        self.assertIsInstance(quiet["pam_event"], bool)
+        self.assertIsInstance(quiet["ppl1_event"], bool)
+        self.assertIsInstance(quiet["pam_count"], int)
+        self.assertIsInstance(quiet["ppl1_count"], int)
+        self.assertFalse(quiet["pam_event"])
+        self.assertFalse(quiet["ppl1_event"])
+        self.assertEqual(quiet["pam_count"], 0)
+        self.assertEqual(quiet["ppl1_count"], 0)
+        self.assertGreaterEqual(quiet["kc_active_frac"], 0.0)
+        self.assertLessEqual(quiet["kc_active_frac"], 1.0)
+        self.assertAlmostEqual(quiet["turn"], fly_turn(quiet["drive_l"], quiet["drive_r"]))
+
+        loop.learn = True
+        camera = np.zeros((16, 32, 3), dtype=np.uint8)
+        camera[:, :8, 1] = 220
+        loop.ingest(camera, None, 1.0)
+        seen = loop.status()
+        total = loop.mb.brain.n_kc + loop.mb.brain_r.n_kc
+        self.assertAlmostEqual(seen["kc_active_frac"], loop.mb.last_kc_on / float(total))
+        self.assertAlmostEqual(seen["drive_l"], loop.mb.brain.appetitive_drive(loop.mb.last_fwd.action_scores))
+        self.assertAlmostEqual(seen["drive_r"], loop.mb.brain_r.appetitive_drive(loop.mb.last_fwd_r.action_scores))
+        self.assertAlmostEqual(seen["turn"], fly_turn(seen["drive_l"], seen["drive_r"]))
+        self.assertFalse(seen["pam_event"])
+        self.assertFalse(seen["ppl1_event"])
+        self.assertEqual(seen["n_pam"], seen["pam_count"])
+        self.assertEqual(seen["n_ppl1"], seen["ppl1_count"])
+
+        loop.handle({"op": "teach_sides", "left": "pam", "right": "ppl1"}, 2.0)
+        loop.ingest(camera, None, 2.0)
+        taught = loop.status()
+        self.assertTrue(taught["pam_event"])
+        self.assertTrue(taught["ppl1_event"])
+        self.assertEqual(taught["pam_count"], loop.mb.n_pam)
+        self.assertEqual(taught["ppl1_count"], loop.mb.n_ppl1)
+        self.assertEqual(taught["pam_count"], 1)
+        self.assertEqual(taught["ppl1_count"], 1)
+        self.assertEqual(taught["n_pam"], 1)
+        self.assertEqual(taught["n_ppl1"], 1)
+
+        loop.ingest(camera, None, 3.0)
+        later = loop.status()
+        self.assertFalse(later["pam_event"])
+        self.assertFalse(later["ppl1_event"])
+        self.assertEqual(later["pam_count"], 1)
+        self.assertEqual(later["ppl1_count"], 1)
+
 
 class EyesLineTests(unittest.TestCase):
     def test_labels(self):

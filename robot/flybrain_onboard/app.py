@@ -26,7 +26,7 @@ from sim.frame_sense import features_from_frames
 from sim.learn_flash import flash_payload
 from sim.map_marks import MarkLayer
 from sim.mb_train import MbTrainer, default_npz
-from sim.hemifield import DEFAULT_OVERLAP
+from sim.hemifield import DEFAULT_OVERLAP, fly_turn
 from sim.raw_sense import recog_label
 from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, eyes_state_label, phase_label
 from sim.pilot import forward_clearance, scrub_range
@@ -99,6 +99,8 @@ class BrainLoop:
         self.lead = TeacherLead()
         self._taught_l: str | None = None
         self._taught_r: str | None = None
+        self._pam_event = False
+        self._ppl1_event = False
         self._lock = threading.Lock()
         self._log("наблюдение: SportClient не трогаем, пока нет автономии или перехвата")
 
@@ -116,6 +118,21 @@ class BrainLoop:
     def set_cloud(self, ranges, now: float) -> None:
         self.cloud_ranges = ranges
         self.cloud_t = float(now)
+
+    def _note_dan(self, *kinds: str | None) -> None:
+        """Remember which dopamine arrived on the current frame."""
+        for kind in kinds:
+            if kind == "pam":
+                self._pam_event = True
+            elif kind == "ppl1":
+                self._ppl1_event = True
+
+    def _kc_active_frac(self) -> float:
+        """Active Kenyon cells over both mushroom bodies on the last frame."""
+        total = int(self.mb.brain.n_kc) + int(self.mb.brain_r.n_kc)
+        if total <= 0:
+            return 0.0
+        return float(self.mb.last_kc_on) / float(total)
 
     def driving(self) -> bool:
         """Autonomy, or manual after an explicit takeover. Watch-only is neither."""
@@ -251,6 +268,8 @@ class BrainLoop:
         self._prev_near = near
         self.frames_ok = True
         self.last_frame_t = float(now)
+        self._pam_event = False
+        self._ppl1_event = False
         self.mb.learn = self.learn
         fwd = self.mb.forward(feat)
         value = self.mb.last_readout
@@ -293,12 +312,14 @@ class BrainLoop:
             self._taught_r = kind
             pulsed_l = kind in ("pam", "ppl1")
             pulsed_r = pulsed_l
+            self._note_dan(kind)
         elif side_l or side_r:
             self.mb.teach_sides(side_l, side_r, float(now))
             self._taught_l = side_l
             self._taught_r = side_r
             pulsed_l = side_l in ("pam", "ppl1")
             pulsed_r = side_r in ("pam", "ppl1")
+            self._note_dan(side_l, side_r)
         self.mb.settle(pulsed_l, pulsed_r)
         with self._lock:
             self.recognized = seen
@@ -398,6 +419,7 @@ class BrainLoop:
             )
             if kind_l or kind_r:
                 self.mb.teach_sides(kind_l, kind_r, float(now))
+                self._note_dan(kind_l, kind_r)
         self.lead_match = self.lead.fraction(now)
         if self.pilot.mode != "auto" or self.teacher_weight <= 0.005:
             return cmd
@@ -461,6 +483,8 @@ class BrainLoop:
     def status(self) -> dict:
         flash = flash_payload(self.mb.flash)
         link_ok = (time.monotonic() - self.last_hb) <= LINK_HOLD_S
+        drive_l = _hemisphere_drive(self.mb.brain, self.mb.last_fwd)
+        drive_r = _hemisphere_drive(self.mb.brain_r, self.mb.last_fwd_r)
         with self._lock:
             return {
                 "mode": self.pilot.mode,
@@ -520,6 +544,14 @@ class BrainLoop:
                 "lead_match_s": 8.0,
                 "kc_on": int(self.mb.last_kc_on),
                 "kc_n": int(self.mb.brain.n_kc),
+                "kc_active_frac": self._kc_active_frac(),
+                "drive_l": drive_l,
+                "drive_r": drive_r,
+                "turn": float(fly_turn(drive_l, drive_r)),
+                "pam_event": bool(self._pam_event),
+                "ppl1_event": bool(self._ppl1_event),
+                "pam_count": int(self.mb.n_pam),
+                "ppl1_count": int(self.mb.n_ppl1),
                 "kc_l": _compact_kc(None if self.mb.last_fwd is None else self.mb.last_fwd.kc),
                 "kc_r": _compact_kc(None if self.mb.last_fwd_r is None else self.mb.last_fwd_r.kc),
                 "drift": float(self.mb.last_drift),
@@ -527,6 +559,13 @@ class BrainLoop:
                 "flash_r": flash_payload(self.mb.flash_r),
                 "log": list(self.log),
             }
+
+
+def _hemisphere_drive(brain, fwd) -> float:
+    """Approach minus avoidance for one mushroom body. A silent half is zero."""
+    if fwd is None:
+        return 0.0
+    return float(brain.appetitive_drive(fwd.action_scores))
 
 
 def _compact_kc(vec, cap: int = 400) -> list:
