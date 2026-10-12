@@ -27,25 +27,81 @@ PREVIEW_LIDAR = (240, 240)
 
 
 def decode_image_bytes(data: bytes) -> np.ndarray:
-    """Decode JPEG or PNG bytes to HxWx3 uint8 RGB. Raises ValueError on failure."""
+    """Decode JPEG or PNG bytes to HxWx3 uint8 RGB. Raises ValueError on failure.
+
+    OpenCV or PIL stay off SDL. The pygame fallback runs only on the main
+    thread and never calls ``display.set_mode`` (that would replace the
+    trainer window, or create one from a worker).
+    """
+    soft = _decode_without_sdl(data)
+    if soft is not None:
+        return soft
+    return _decode_with_pygame(data)
+
+
+def _decode_without_sdl(data: bytes):
+    """RGB array from a library that is not pygame. None when none is installed."""
+    if not data:
+        raise ValueError("empty image")
+    try:
+        import cv2
+    except Exception:
+        cv2 = None
+    if cv2 is not None:
+        buf = np.frombuffer(data, dtype=np.uint8)
+        bgr = cv2.imdecode(np.array(buf, copy=True), cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise ValueError("could not decode image (%d bytes)" % len(data))
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        return np.array(rgb, dtype=np.uint8, copy=True)
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    import io
+
+    image = Image.open(io.BytesIO(data)).convert("RGB")
+    return np.array(image, dtype=np.uint8, copy=True)
+
+
+def _decode_with_pygame(data: bytes) -> np.ndarray:
     import io
 
     import pygame
 
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
+    if not data:
+        raise ValueError("empty image")
     if not pygame.get_init():
         pygame.init()
     try:
         surf = pygame.image.load(io.BytesIO(data))
     except pygame.error as exc:
-        raise ValueError(f"could not decode image ({len(data)} bytes): {exc}") from exc
+        raise ValueError("could not decode image (%d bytes): %s" % (len(data), exc)) from exc
     try:
         raw = pygame.image.tobytes(surf, "RGB")
     except pygame.error:
-        if pygame.display.get_surface() is None:
-            pygame.display.set_mode((1, 1))
-        raw = pygame.image.tobytes(surf.convert(24), "RGB")
+        converted = pygame.Surface(surf.get_size(), depth=24)
+        converted.blit(surf, (0, 0))
+        raw = pygame.image.tobytes(converted, "RGB")
+        surf = converted
     w, h = surf.get_size()
-    return np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3).copy()
+    owned = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3).copy()
+    return owned
+
+
+def _sector_span(index: int, width: int) -> tuple[int, int]:
+    """Columns of one azimuth bin.
+
+    Sector 0 is the right edge of the field. An unmirrored frame puts that
+    edge on the right, so the strip is read from the right.
+    """
+    src = N_AZ - 1 - int(index)
+    x0 = int(src * width / N_AZ)
+    x1 = max(x0 + 1, int((src + 1) * width / N_AZ))
+    return x0, x1
 
 
 def _sector_means(image: np.ndarray, y0: int, y1: int) -> np.ndarray:
@@ -55,8 +111,7 @@ def _sector_means(image: np.ndarray, y0: int, y1: int) -> np.ndarray:
     band = image[y0:y1].astype(np.float32) / 255.0
     out = np.zeros((N_AZ, 3), dtype=np.float32)
     for i in range(N_AZ):
-        x0 = int(i * w / N_AZ)
-        x1 = max(x0 + 1, int((i + 1) * w / N_AZ))
+        x0, x1 = _sector_span(i, w)
         out[i] = band[:, x0:x1].mean(axis=(0, 1))
     return out
 
@@ -128,8 +183,7 @@ def features_from_frames(
         w = upper.shape[1]
         mot = np.zeros(N_AZ, dtype=np.float32)
         for i in range(N_AZ):
-            x0 = int(i * w / N_AZ)
-            x1 = max(x0 + 1, int((i + 1) * w / N_AZ))
+            x0, x1 = _sector_span(i, w)
             mot[i] = float(upper[:, x0:x1].mean())
         mot = np.clip((mot - np.median(mot)) * 4.0, 0.0, 1.0)
         feat[OFF_MOTION : OFF_MOTION + N_AZ] = mot
@@ -160,7 +214,8 @@ def sim_previews(agent, world, trail=None) -> tuple[np.ndarray, np.ndarray]:
         if bx is None or dist > SEE_M or dist < 1e-3:
             return
         col_w = cw / N_AZ
-        cx = int((bx + 0.5) * col_w)
+        # Sector 0 is ego-right. Paint it on the right of an unmirrored frame.
+        cx = int((N_AZ - 1 - bx + 0.5) * col_w)
         half = max(6, int(col_w * (0.55 + radius / max(dist, 0.4))))
         if body:
             top = int(horizon * 0.25)

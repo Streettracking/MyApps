@@ -127,6 +127,7 @@ class Simulator:
             if abs(r) > 0:
                 brain.plasticity(fwd, r)
                 ag.plastic_updates += 1
+            brain.recover(fwd.kc, dopamine=abs(r) > 0)
             self._tally_context(ag, cues, hit, r, fwd.action)
             snap["agents"][ag.agent_id] = {
                 "x": ag.x,

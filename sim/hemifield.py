@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .mb_constants import YAW_DEAD, YAW_EPS, YAW_K
 from .raw_sense import N_AZ, N_RAW, OFF_BODY, OFF_CLOSE, OFF_FLOOR, OFF_LIDAR, OFF_MOTION
 
 # Ego-left slots. A right-hemifield sector s is written to slot (N_AZ - 1 - s):
@@ -24,11 +25,7 @@ from .raw_sense import N_AZ, N_RAW, OFF_BODY, OFF_CLOSE, OFF_FLOOR, OFF_LIDAR, O
 _LEFT = (4, 5, 6, 7)
 _RIGHT_SRC = (3, 2, 1, 0)
 # Default shared fraction of the field. 0 is the hard midline above.
-DEFAULT_OVERLAP = 0.20
-
-YAW_K = 1.0
-YAW_EPS = 1e-3
-YAW_DEAD = 0.08
+DEFAULT_OVERLAP = 0.40
 
 
 def _paint(src: np.ndarray, dst: np.ndarray, src_i: int, dst_i: int) -> None:
@@ -50,10 +47,10 @@ def clamp_overlap(overlap: float) -> float:
 
 
 def overlap_bands(overlap: float) -> tuple[float, float]:
-    """Image fractions of the shared zone. Image left is the robot's right eye.
+    """Image fractions of the shared zone. Image left is the robot's left eye.
 
-    Returns ``(lo, hi)``. ``[0, lo)`` is П only, ``[lo, hi)`` is Л+П, ``[hi, 1]`` is Л.
-    ``overlap`` 0.2 is ``(0.4, 0.6)``. Zero overlap is the midline, ``(0.5, 0.5)``.
+    Returns ``(lo, hi)``. ``[0, lo)`` is Л only, ``[lo, hi)`` is Л+П, ``[hi, 1]`` is П.
+    ``overlap`` 0.4 is ``(0.3, 0.7)``. Zero overlap is the midline, ``(0.5, 0.5)``.
     """
     half = 0.5 * clamp_overlap(overlap)
     return 0.5 - half, 0.5 + half
@@ -151,9 +148,11 @@ def hemifield(feat: np.ndarray, side: str, overlap: float = 0.0) -> np.ndarray:
 
 
 def bilateral_yaw(r_l: float, r_r: float) -> float:
-    """Yaw from the two readouts. Left is positive. A small imbalance is zero.
+    """Yaw from the two hemisphere drives. Left is positive.
 
-    ``z = k (R_L - R_R) / (|R_L| + |R_R| + ε)``, then clamped to [-1, 1].
+    Each drive is approach minus avoidance. The turn is the left drive minus
+    the right drive, then gain, scale, and a deadband:
+    ``z = k (drive_L - drive_R) / (|drive_L| + |drive_R| + ε)``.
     """
     left = float(r_l)
     right = float(r_r)
@@ -169,18 +168,21 @@ def bilateral_yaw(r_l: float, r_r: float) -> float:
     return float(z)
 
 
+def fly_turn(drive_l: float, drive_r: float) -> float:
+    """Yaw command. Left is positive.
+
+    ``drive_l`` and ``drive_r`` are approach minus avoidance on that side.
+    The command is that difference, with the gain and deadband in ``mb_constants``.
+    """
+    return bilateral_yaw(drive_l, drive_r)
+
+
 def format_fly_line(r_l, r_r, diff, z, steer: str) -> str:
-    """One monitor line: the two readouts, their difference, and the fly's yaw."""
+    """One monitor line: the two readouts, their difference, and the fly's yaw.
 
-    def num(value) -> str:
-        if value is None:
-            return "—"
-        return "%+.0f" % float(value)
-
-    def yaw(value) -> str:
-        if value is None:
-            return "—"
-        return "%+.2f" % float(value)
+    Every number is a fixed-width signed field, so the labels stay put.
+    """
+    from .tabnum import format_fly_line as _line
 
     name = "билатерально" if steer == "bilateral" else "секторы"
-    return "муха L %s   R %s   Δ %s   z %s   %s" % (num(r_l), num(r_r), num(diff), yaw(z), name)
+    return _line(r_l, r_r, diff, z, name)

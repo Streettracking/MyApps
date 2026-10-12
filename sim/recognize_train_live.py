@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from .frame_sense import decode_image_bytes, features_from_frames
+from .raw_sense import add_recog_camera_only_arg, recog_label
 from .go2_udp import Go2CommandLink
 from .learn_flash import flash_from_payload
 from .lidar_fresh import DEFAULT_LIDAR_REFRESH, FreshWindow, mismatch_warning
@@ -32,7 +33,7 @@ from .map_marks import MarkLayer
 from .mb_train import MbTrainer, default_npz
 from .onboard_link import OnboardLink
 from .hemifield import DEFAULT_OVERLAP, format_fly_line
-from .pilot import phase_label
+from .pilot import format_eyes_line, phase_label
 from .pilot import Pilot, TeachRepeater, clamp_velocity, format_range_line, forward_clearance, scrub_range
 from .recognize import ConspecificRecognizer
 
@@ -44,7 +45,8 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "A авто  M перехват  Y руль  U запись  стрелки после M  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
+    "A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  "
+    "U запись  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
 )
 
 
@@ -76,11 +78,14 @@ class PreviewPull:
     def __init__(self, base: str):
         self.base = base
         self.error = ""
-        self.camera = None
         self.camera_jpeg = b""
-        self.lidar = None
         self.scan = None
         self.frame_id = 0
+        self._cam_jpeg = b""
+        self._lid_jpeg = b""
+        self._decoded_id = -1
+        self._decoded_cam = None
+        self._decoded_lid = None
         self._lock = threading.Lock()
         self._stop = False
         self._thread = threading.Thread(target=self._loop, name="preview", daemon=True)
@@ -93,12 +98,11 @@ class PreviewPull:
         self._thread.join(timeout=2.0)
 
     def _loop(self) -> None:
+        """Fetch JPEG bytes only. pygame stays on the thread that owns the window."""
         while not self._stop:
             try:
                 cam_b = fetch_bytes(f"{self.base}/camera.jpg", timeout=2.0)
                 lid_b = fetch_bytes(f"{self.base}/lidar.jpg", timeout=2.0)
-                cam = decode_image_bytes(cam_b)
-                lid = decode_image_bytes(lid_b)
             except Exception as exc:
                 with self._lock:
                     self.error = offline_message(self.base, exc)
@@ -106,17 +110,43 @@ class PreviewPull:
                 continue
             scan = _fetch_scan(self.base)
             with self._lock:
-                self.camera = cam
+                self._cam_jpeg = bytes(cam_b)
+                self._lid_jpeg = bytes(lid_b)
                 self.camera_jpeg = bytes(cam_b)
-                self.lidar = lid
                 self.scan = scan
                 self.error = ""
                 self.frame_id += 1
             time.sleep(0.05)
 
     def latest(self):
+        from .sdl_thread import require_main_thread
+
+        require_main_thread()
         with self._lock:
-            return self.frame_id, self.camera, self.lidar, self.scan, self.error, self.camera_jpeg
+            frame_id = self.frame_id
+            cam_b = bytes(self._cam_jpeg)
+            lid_b = bytes(self._lid_jpeg)
+            scan = None if self.scan is None else dict(self.scan)
+            error = self.error
+            jpeg = bytes(self.camera_jpeg)
+        if error or not cam_b or not lid_b:
+            return frame_id, None, None, scan, error, jpeg
+        if frame_id != self._decoded_id:
+            try:
+                cam = decode_image_bytes(cam_b)
+                lid = decode_image_bytes(lid_b)
+            except Exception as exc:
+                message = offline_message(self.base, exc)
+                with self._lock:
+                    if self.frame_id == frame_id:
+                        self.error = message
+                return frame_id, None, None, scan, message, jpeg
+            self._decoded_id = frame_id
+            self._decoded_cam = cam
+            self._decoded_lid = lid
+        camera = np.array(self._decoded_cam, copy=True)
+        lidar = np.array(self._decoded_lid, copy=True)
+        return frame_id, camera, lidar, scan, error, jpeg
 
 
 def _fetch_scan(base: str):
@@ -222,6 +252,7 @@ class LiveSession:
         onboard: bool = False,
         steer: str = "bilateral",
         overlap: float = DEFAULT_OVERLAP,
+        camera_only: bool = True,
     ):
         if learner not in ("mb", "hebb"):
             raise ValueError(learner)
@@ -233,7 +264,7 @@ class LiveSession:
         self.peer_curve: list[tuple[float, float]] = []
         self.other_curve: list[tuple[float, float]] = []
         self.metric_curve: list[dict] = []
-        self.log: deque[str] = deque(maxlen=24)
+        self.log: deque[str] = deque(maxlen=200)
         self.t0 = time.monotonic()
         self.last_like = 0.0
         self.last_match = 0.0
@@ -261,6 +292,7 @@ class LiveSession:
         self.pilot = Pilot(return_auto_s)
         self.pilot.set_steer(steer if steer in ("bilateral", "sectors") else "bilateral")
         self.overlap = float(overlap)
+        self.camera_only = bool(camera_only)
         self.teach_pulse = TeachRepeater()
         self.aim_sector: int | None = None
         self.aim_dist: float | None = None
@@ -278,6 +310,7 @@ class LiveSession:
         self.onboard = bool(onboard)
         self.bridge_open = False
         self._bridge_warned = False
+        self._server_down_logged = False
         self.remote: dict = {}
         self.remote_flash = None
         self.remote_flash_r = None
@@ -291,8 +324,16 @@ class LiveSession:
             self._log("автономия и обучение на борту выключены, пока не нажаты A и P")
             return
         if learner == "mb":
-            self.mb = MbTrainer(npz or default_npz(), seed=seed, eta=eta, dan=dan, overlap=overlap)
+            self.mb = MbTrainer(
+                npz or default_npz(),
+                seed=seed,
+                eta=eta,
+                dan=dan,
+                overlap=overlap,
+                camera_only=self.camera_only,
+            )
             self._log("грибовидное тело  T учит  A включает поиск сородича")
+            self._log(recog_label(self.camera_only))
             self._log(self._lidar_intro())
         else:
             self.recognizer = ConspecificRecognizer()
@@ -359,7 +400,15 @@ class LiveSession:
         # Operator D/N is intentionally not an argument of teaching or confidence.
         if self.mb is not None:
             self.mb.learn = self.learn
-            fwd = self.mb.forward(feat)
+            from .kc_pathways import yolo_vector
+
+            boxes = getattr(self, "teacher_boxes", None) or ()
+            overlap = float(getattr(self, "overlap", 0.4) or 0.4)
+            fwd = self.mb.forward(
+                feat,
+                yolo_l=yolo_vector(boxes, "L", overlap),
+                yolo_r=yolo_vector(boxes, "R", overlap),
+            )
             value = self.mb.last_readout
             conf = self.mb.observe(feat, value)
             now_m = time.monotonic()
@@ -370,6 +419,8 @@ class LiveSession:
             if kind == "pam":
                 self.treat_flash = True
             self.mb.teach(fwd, kind, self.now())
+            pulsed = kind in ("pam", "ppl1")
+            self.mb.settle(pulsed, pulsed)
             self._log_teach(kind)
             if (
                 conf.ready
@@ -439,9 +490,9 @@ class LiveSession:
         return "лидар копится на карте сервера"
 
     def _lidar_caption(self) -> str:
-        if self.lidar_fresh_on:
-            return f"свежий лидар {self.lidar_interval:.1f} с"
-        return "лидар копится"
+        from .tabnum import format_lidar_caption
+
+        return format_lidar_caption(self.lidar_fresh_on, self.lidar_interval)
 
     def _sync_lidar_warning(self) -> None:
         if not self._weights_from_disk:
@@ -477,7 +528,10 @@ class LiveSession:
         if not Path(self.state_path).is_file():
             raise FileNotFoundError(self.state_path)
         if self.mb is not None:
-            self.mb.load(self.state_path)
+            if not self.mb.load(self.state_path):
+                self._weights_from_disk = False
+                self._log(self.mb.load_note)
+                return
             self.dan = self.mb.dan
             self._was_rec = bool(self.mb.conf.recognized)
             self._weights_from_disk = True
@@ -579,6 +633,13 @@ def _mirror_remote(session: LiveSession, status: dict) -> None:
         session.pilot.steer = str(status["steer"])
     if status.get("overlap") is not None:
         session.overlap = float(status["overlap"])
+    side = status.get("last_seen_side") or ""
+    if side in ("L", "R"):
+        session.pilot.last_seen_side = str(side)
+    elif status.get("last_seen_side") is None and "last_seen_side" in status:
+        session.pilot.last_seen_side = ""
+    if status.get("search_sign") is not None:
+        session.pilot.search_sign = 1.0 if float(status["search_sign"]) >= 0 else -1.0
     session.eye_l_recognized = bool(status.get("recognized_L", False))
     session.eye_r_recognized = bool(status.get("recognized_R", False))
     session.eye_l_confidence = float(status.get("confidence_L") or 0.0)
@@ -589,6 +650,132 @@ def _mirror_remote(session: LiveSession, status: dict) -> None:
     for line in status.get("log") or []:
         if line not in session.log:
             session.log.append(str(line))
+
+
+def take_teacher_weight(session, inp) -> None:
+    """Slider motion. None means the pointer is not on the track."""
+    value = getattr(inp, "teacher_weight", None)
+    if value is None:
+        return
+    from .teacher_lead import clamp_weight
+
+    session.teacher_weight = clamp_weight(value)
+
+
+def _lead_of(session):
+    from .teacher_lead import TeacherLead
+
+    lead = getattr(session, "lead", None)
+    if lead is None:
+        lead = TeacherLead()
+        session.lead = lead
+    from .teacher_lead import clamp_weight
+
+    lead.weight = clamp_weight(getattr(session, "teacher_weight", 0.0))
+    return lead
+
+
+def _yolo_list(boxes, side: str, overlap: float) -> list:
+    from .kc_pathways import yolo_vector
+
+    return [float(v) for v in yolo_vector(boxes, side, overlap)]
+
+
+def _lead_boxes(session):
+    teacher = getattr(session, "teacher", None)
+    if teacher is not None:
+        boxes = getattr(teacher, "boxes", None)
+        if boxes:
+            return list(boxes)
+    return list(getattr(session, "teacher_boxes", ()) or ())
+
+
+def refresh_teacher_wish(session, now: float, dist_m, forward_m):
+    """Teacher command from the latest boxes. Does not move the dog."""
+    lead = _lead_of(session)
+    boxes = _lead_boxes(session)
+    lead.update_from_boxes(now, boxes, dist_m, forward_m)
+    teacher = getattr(session, "teacher", None)
+    overlap = float(getattr(session, "overlap", 0.4) or 0.4)
+    if teacher is not None and boxes:
+        from .yolo_teacher import hemisphere_hits
+
+        hit_l, hit_r = hemisphere_hits(boxes, overlap, conf_min=float(getattr(teacher, "conf", 0.5)), center_only=True)
+    else:
+        hit_l, hit_r = False, False
+    lead.set_hits(hit_l, hit_r)
+    return lead
+
+
+def publish_teacher_aim(session, onboard, now: float, dist_m, forward_m) -> None:
+    """Send the teacher's wish to the dog. The dog mixes it with the fly."""
+    if onboard is None:
+        return
+    if float(now) - float(getattr(session, "_aim_post_t", -1.0)) < 0.10:
+        return
+    lead = refresh_teacher_wish(session, now, dist_m, forward_m)
+    teacher = getattr(session, "teacher", None)
+    learning = bool(getattr(session, "learn", False))
+    if getattr(session, "onboard", False):
+        learning = bool((getattr(session, "remote", {}) or {}).get("learning", False))
+    teacher_on = bool(teacher is not None and teacher.on and learning)
+    session._aim_post_t = float(now)
+    boxes = _lead_boxes(session)
+    overlap = float(getattr(session, "overlap", 0.4) or 0.4)
+    onboard.post(
+        "teacher_aim",
+        x=float(lead.teacher_x),
+        z=float(lead.teacher_z),
+        weight=float(lead.weight),
+        hit_l=bool(lead.hit_l) and teacher_on,
+        hit_r=bool(lead.hit_r) and teacher_on,
+        centered=bool(lead.centered) and teacher_on,
+        approaching=bool(lead.approaching) and teacher_on,
+        lost=bool(lead.lost) and teacher_on,
+        too_close=bool(lead.too_close) and teacher_on,
+        last_l=bool(lead.last_hit_l) and teacher_on,
+        last_r=bool(lead.last_hit_r) and teacher_on,
+        yolo_l=_yolo_list(boxes if teacher_on else (), "L", overlap),
+        yolo_r=_yolo_list(boxes if teacher_on else (), "R", overlap),
+    )
+
+
+def blend_local_command(session, cmd, now: float, estop: bool, autonomy: bool, dist_m, forward_m):
+    """Replace an autonomy command when the teacher weight is above zero.
+
+    Weight 0 returns the fly command unchanged. Outcome pulses are applied
+    here for a local brain. The onboard brain does that itself. A command
+    match is recorded for status and does not teach.
+    """
+    from .pilot import DriveCommand
+    from .teacher_lead import apply_guards, attach_recognition_stimuli, commands_match, mix_velocity, observe_recognition
+
+    lead = refresh_teacher_wish(session, now, dist_m, forward_m)
+    lead.fly_x = float(cmd.x)
+    lead.fly_z = float(cmd.z)
+    matched = commands_match(cmd.x, cmd.z, lead.teacher_x, lead.teacher_z)
+    teacher = getattr(session, "teacher", None)
+    teacher_on = bool(teacher is not None and getattr(teacher, "on", False))
+    learning = bool(getattr(session, "learn", False))
+    session._outcome_l = None
+    session._outcome_r = None
+    if autonomy and not estop:
+        lead.note(now, matched)
+        mb = getattr(session, "mb", None)
+        if mb is not None:
+            attach_recognition_stimuli(mb.stimuli)
+            observe_recognition(mb.stimuli, lead, teacher_on)
+            kind_l, kind_r = mb.reinforce_stimuli(float(now), learning=learning)
+            if kind_l or kind_r:
+                session._outcome_l = kind_l
+                session._outcome_r = kind_r
+    session.lead_match = lead.fraction(now)
+    if not autonomy or lead.weight <= 0.005:
+        return cmd
+    mixed_x, mixed_z = mix_velocity(cmd.x, cmd.z, lead.teacher_x, lead.teacher_z, lead.weight)
+    out_x, out_z, stopped = apply_guards(mixed_x, mixed_z, bool(estop), forward_m)
+    who = "учитель" if lead.weight >= 0.995 else "смешанно"
+    return DriveCommand(out_x, out_z, stopped, cmd.phase, who, cmd.hint)
 
 
 def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now: float, frames_ok: bool) -> str:
@@ -610,6 +797,15 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         r_r=0.0 if session.mb is None else float(session.mb.r_r),
         recognized_l=eye_l,
         recognized_r=eye_r,
+    )
+    cmd = blend_local_command(
+        session,
+        cmd,
+        session.now(),
+        bool(inp.estop or session.pilot.mode == "estop"),
+        bool(session.pilot.autonomy),
+        session.aim_dist,
+        session.forward_m,
     )
     if cmd.hint and cmd.hint != session._hint_logged:
         session._log(cmd.hint)
@@ -636,7 +832,31 @@ def _drive_udp(session: LiveSession, link: Go2CommandLink, inp, state: dict, now
         if inp.stand_down:
             link.stand_down()
             session._log("StandDown")
-    return link.last_command or _phase_name(cmd.phase, session.pilot.steer)
+    return link.last_command or _phase_name(cmd.phase, session.pilot.steer, session.pilot.search_sign)
+
+
+def _note_robot_server(session: LiveSession, link: Go2CommandLink, state: dict, now: float) -> None:
+    """Say once when the robot window's UDP port has nobody listening.
+
+    Onboard mode uses port 8090 and does not call this. Sim does not either.
+    """
+    if now - state.get("server_note", 0.0) < 1.0:
+        return
+    state["server_note"] = now
+    from .go2_control import robot_server_message
+    from .onboard_link import udp_bridge_listening
+
+    listening = bool(udp_bridge_listening(link.host, int(link.port)))
+    text, told = robot_server_message(
+        listening,
+        bool(getattr(session, "_server_down_logged", False)),
+        link.host,
+        int(link.port),
+    )
+    session.bridge_open = listening
+    session._server_down_logged = told
+    if text:
+        session._log(text)
 
 
 def _note_bridge(session: LiveSession, now: float, state: dict) -> None:
@@ -659,10 +879,18 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
         onboard.poll()
         state["poll"] = now
     # post() already wrote onboard.status. Mirror it on this frame, including
-    # when the poll interval has not elapsed, so M and a held arrow send
-    # op=manual from took_over and mode=manual without waiting for the next GET.
+    # when the poll interval has not elapsed, so M sends op=manual from
+    # took_over and mode=manual without waiting for the next GET.
     _mirror_remote(session, onboard.status)
     _note_bridge(session, now, state)
+    remote = session.remote or {}
+    publish_teacher_aim(
+        session,
+        onboard,
+        now,
+        remote.get("distance_m"),
+        remote.get("forward_m"),
+    )
     if inp.stand_up:
         onboard.post("stand_up")
         session._log("StandUp")
@@ -703,8 +931,8 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
         session._hint_logged = ""
 
 
-def _phase_name(phase: str, steer: str = "bilateral") -> str:
-    return phase_label(phase, steer)
+def _phase_name(phase: str, steer: str = "bilateral", search_sign: float = 1.0) -> str:
+    return phase_label(phase, steer, search_sign)
 
 
 def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: bytes, onboard: OnboardLink | None) -> None:
@@ -759,6 +987,92 @@ def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: byt
     )
 
 
+def _learning_now(session) -> bool:
+    if getattr(session, "onboard", False):
+        return bool(getattr(session, "remote", {}).get("learning", False))
+    return bool(getattr(session, "learn", False))
+
+
+def _teacher_counts(session: LiveSession, teacher) -> str:
+    """Local teacher tallies, unless this window is the onboard brain.
+
+    The simulator and the robot window do not carry ``onboard``. Only a
+    session that actually has the flag set reads the dog's counters.
+    """
+    from .yolo_teacher import counts_line
+
+    remote = {}
+    if getattr(session, "onboard", False):
+        remote = getattr(session, "remote", {}) or {}
+    if isinstance(remote, dict) and "teacher_pam_l" in remote:
+        return counts_line(
+            int(remote.get("teacher_pam_l") or 0),
+            int(remote.get("teacher_pam_r") or 0),
+            int(remote.get("teacher_ppl1_l") or 0),
+            int(remote.get("teacher_ppl1_r") or 0),
+        )
+    return counts_line(teacher.pam_l, teacher.pam_r, teacher.ppl1_l, teacher.ppl1_r)
+
+
+def _flash_show(session, side: str, now: float) -> str:
+    kind = getattr(session, "teacher_flash_" + side, "")
+    until = float(getattr(session, "teacher_flash_%s_until" % side, -1.0) or -1.0)
+    if kind in ("pam", "ppl1") and float(now) <= until + 1e-9:
+        return str(kind)
+    return ""
+
+
+def _drive_teacher(session: LiveSession, jpeg: bytes | None, frame_id, state: dict, operator_busy: bool, onboard: OnboardLink | None) -> None:
+    """Look when learning is on. Teach only while Y is on. Never sends Move.
+
+    ``recognized`` is read here, on this tick, from the same bits the plaques
+    paint. It is not the bit that was true when the JPEG left for YOLO.
+    """
+    teacher = getattr(session, "teacher", None)
+    if teacher is None or session.learner_kind != "mb":
+        return
+    from .yolo_teacher import FLASH_S, plaque_recognized, send_teach, teach_phrase
+
+    learning = _learning_now(session)
+    teacher.note_learning(learning)
+    if learning and jpeg and teacher.wants_frame(learning) and state.get("frame") != frame_id:
+        teacher.offer_frame(jpeg)
+        state["frame"] = frame_id
+    rec_l, rec_r, overlap = plaque_recognized(
+        getattr(session, "mb", None),
+        getattr(session, "eye_l_recognized", False),
+        getattr(session, "eye_r_recognized", False),
+        getattr(session, "overlap", 0.4),
+    )
+    now = session.now() if hasattr(session, "now") else float(session.world.t)
+    kind_l, kind_r = teacher.collect(now, overlap, rec_l, rec_r, learning, operator_busy)
+    sent_l, sent_r = kind_l, kind_r
+    if sent_l and sent_l == getattr(session, "_outcome_l", None):
+        sent_l = None
+    if sent_r and sent_r == getattr(session, "_outcome_r", None):
+        sent_r = None
+    session.teacher_boxes = teacher.visible_boxes(learning)
+    session.yolo_state = teacher.status_text(learning)
+    session.teacher_counts = _teacher_counts(session, teacher)
+    session.teacher_skips = teacher.skips_line()
+    if sent_l in ("pam", "ppl1") or sent_r in ("pam", "ppl1"):
+        if onboard is not None:
+            send_teach(onboard, sent_l, sent_r)
+        elif session.mb is not None:
+            session.mb.teach_sides(sent_l, sent_r, now)
+    if kind_l in ("pam", "ppl1") or kind_r in ("pam", "ppl1"):
+        for side, kind in (("L", kind_l), ("R", kind_r)):
+            phrase = teach_phrase(side, kind)
+            if not phrase:
+                continue
+            session._log(phrase)
+            attr = "l" if side == "L" else "r"
+            setattr(session, "teacher_flash_" + attr, kind)
+            setattr(session, "teacher_flash_%s_until" % attr, now + FLASH_S)
+    session.teacher_flash_l_show = _flash_show(session, "l", now)
+    session.teacher_flash_r_show = _flash_show(session, "r", now)
+
+
 def run_live_gui(
     session: LiveSession,
     pull: PreviewPull,
@@ -770,7 +1084,24 @@ def run_live_gui(
 
     from .frame_record import FrameRecorder, OperatorMarks, note_operator, weak_label_now
 
-    mon = TrainMonitor("Go2 recognition trainer")
+    from .yolo_teacher import TeacherRuntime
+
+    mon = TrainMonitor("Go2 recognition trainer", fullscreen=bool(getattr(session, "start_fullscreen", False)))
+    if session.learner_kind == "mb":
+        session.teacher = TeacherRuntime(
+            getattr(session, "teacher_url", "http://127.0.0.1:8091"),
+            conf=float(getattr(session, "teacher_conf", 0.5)),
+            rate=float(getattr(session, "teacher_rate", 2.0)),
+        )
+    else:
+        session.teacher = None
+    from .yolo_teacher import OwnedTeacher
+
+    session._owned_teacher = OwnedTeacher()
+    if session.teacher is not None:
+        note = session._owned_teacher.start(getattr(session, "teacher_url", "http://127.0.0.1:8091"))
+        if note:
+            session._log(note)
     rec = FrameRecorder(ROOT / "logs" / "yolo_frames", fps=float(getattr(session, "rec_fps", 2.0)))
     marks = OperatorMarks()
     tele = {
@@ -783,6 +1114,7 @@ def run_live_gui(
         "bridge": 0.0,
     }
     seen_frame = 0
+    teacher_state = {"frame": None, "log": "", "log_t": -10.0}
     announced = False
     command_name = "—"
     try:
@@ -803,6 +1135,14 @@ def run_live_gui(
             note_operator(marks, session.now(), inp)
             if inp.beep_toggle:
                 session._log("звук включён" if mon.beep_on else "звук выключен")
+            if inp.fullscreen_toggle:
+                session._log("полный экран" if mon.fullscreen else "окно")
+            if inp.teacher_toggle and session.teacher is not None:
+                session._log(session.teacher.toggle_teacher())
+            if inp.boxes_toggle and session.teacher is not None:
+                hidden = session.teacher.toggle_boxes(_learning_now(session))
+                if hidden:
+                    session._log(hidden)
             if inp.reset and not session.onboard:
                 session.reset()
             if inp.lidar_reset and not session.onboard:
@@ -838,6 +1178,7 @@ def run_live_gui(
                 except FileNotFoundError:
                     session._log(f"нет файла {session.state_path.name}, продолжаем с текущими весами")
             now = time.monotonic()
+            take_teacher_weight(session, inp)
             frame_id, camera, lidar, scan, error, camera_jpeg = pull.latest()
             if session.onboard:
                 disp_lidar = lidar
@@ -858,8 +1199,9 @@ def run_live_gui(
             _apply_live_keys(session, inp, onboard)
             if onboard is not None:
                 _drive_onboard(session, onboard, inp, tele, now)
-                command_name = str(session.remote.get("phase_ru") or _phase_name(str(session.remote.get("phase") or "—"), session.pilot.steer))
+                command_name = str(session.remote.get("phase_ru") or _phase_name(str(session.remote.get("phase") or "—"), session.pilot.steer, session.pilot.search_sign))
             elif link is not None:
+                _note_robot_server(session, link, tele, now)
                 command_name = _drive_udp(session, link, inp, tele, now, frames_ok)
             teach = session.teach_pulse.poll(
                 session.now(),
@@ -868,6 +1210,7 @@ def run_live_gui(
                 inp.treat_down,
                 inp.punish_down,
             )
+            operator_busy = bool(teach)
             if teach and onboard is not None:
                 onboard.post("treat" if teach == "pam" else "punish")
                 teach = None
@@ -898,6 +1241,14 @@ def run_live_gui(
                 session.teach_current(teach)
             elif teach_now and waiting:
                 session.pending_teach = teach
+            _drive_teacher(session, camera_jpeg, frame_id, teacher_state, operator_busy, onboard)
+            snap = None
+            if inp.doggibot:
+                from .doggibot_snap import reserve_folder
+
+                snap = reserve_folder()
+                session._log(snap.line)
+                mon.show_toast("снимок DoggiBOT")
             view = _live_view(session, camera, disp_lidar, error, link, inp.focused, command_name, onboard)
             rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
             labelled = weak_label_now(marks, session.now()) is not None
@@ -907,7 +1258,30 @@ def run_live_gui(
             view.record_idle = rec_on and not labelled
             if rec_on and labelled and camera is not None and camera_jpeg and rec.due():
                 _offer_live_frame(session, rec, marks, camera, camera_jpeg, onboard)
+            from .go2_control import drive_go2
+            from .mb_view3d import drive_brain
+
+            drive_brain(session, inp, session.now(), mon)
+            drive_go2(session, inp, mon)
             mon.draw(view)
+            if snap is not None:
+                from .doggibot_snap import commit
+
+                if onboard is not None:
+                    mode, link_ok = "onboard", bool(onboard.ok)
+                elif link is not None:
+                    mode, link_ok = "robot", bool(link.ok)
+                else:
+                    mode, link_ok = "robot", False
+                commit(
+                    mon,
+                    view,
+                    snap,
+                    mode=mode,
+                    link_ok=link_ok,
+                    teacher=getattr(session, "teacher", None),
+                    learning=bool(session.learn),
+                )
             if inp.screenshot:
                 dest = ROOT / "logs" / "monitor_shot.png"
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -916,6 +1290,15 @@ def run_live_gui(
             if seconds > 0 and session.now() >= seconds:
                 break
     finally:
+        from .mb_view3d import close_brain
+
+        close_brain(session)
+        teacher = getattr(session, "teacher", None)
+        if teacher is not None:
+            teacher.close()
+        owned = getattr(session, "_owned_teacher", None)
+        if owned is not None:
+            owned.close()
         rec.close()
         try:
             if link is not None:
@@ -924,6 +1307,12 @@ def run_live_gui(
             if link is not None:
                 link.close()
             pull.stop()
+
+
+def _live_lead_plaque(session) -> str:
+    from .teacher_lead import lead_plaque
+
+    return lead_plaque(float(getattr(session, "teacher_weight", 0.0) or 0.0))
 
 
 def _opt_float(payload: dict, key: str) -> float | None:
@@ -939,11 +1328,19 @@ def _opt_float(payload: dict, key: str) -> float | None:
 def _scaled(session: LiveSession, rows: list[tuple[float, float]]) -> list[tuple[float, float]]:
     if not rows:
         return []
-    vals = [v for _, v in session.peer_curve[-400:]] + [v for _, v in session.other_curve[-400:]]
-    lo = min(vals) if vals else 0.0
-    hi = max(vals) if vals else 1.0
-    span = hi - lo if hi > lo else 1.0
-    return [(t, (v - lo) / span) for t, v in rows[-400:]]
+    from .brain_panel import scale_readout_curves
+
+    dog, none = scale_readout_curves(session.peer_curve, session.other_curve)
+    if rows is session.peer_curve:
+        return dog
+    return none
+
+
+def _recog_line(session: LiveSession, remote: dict) -> str:
+    """What the onboard brain actually feeds PN. Missing key means an old build."""
+    if "recog_camera_only" not in remote:
+        return "узнавание: борт без опции"
+    return recog_label(bool(remote.get("recog_camera_only")))
 
 
 def _fly_line(session: LiveSession, onboard: OnboardLink | None) -> str:
@@ -1035,6 +1432,15 @@ def _live_view(
         range_line=_range_line(session, onboard),
         fly_line=_fly_line(session, onboard),
         steer=str(session.remote.get("steer") or session.pilot.steer) if session.onboard else session.pilot.steer,
+        last_seen_side=str(session.pilot.last_seen_side or ""),
+        yolo_state=str(getattr(session, "yolo_state", "") or ""),
+        teacher_counts=str(getattr(session, "teacher_counts", "") or ""),
+        teacher_skips=str(getattr(session, "teacher_skips", "") or ""),
+        teacher_flash_l=str(getattr(session, "teacher_flash_l_show", "") or ""),
+        teacher_flash_r=str(getattr(session, "teacher_flash_r_show", "") or ""),
+        teacher_boxes=list(getattr(session, "teacher_boxes", ()) or ()),
+        teacher_weight=float(getattr(session, "teacher_weight", 0.0) or 0.0),
+        lead_plaque=_live_lead_plaque(session),
     )
     if session.mb is not None:
         caption = "сырой выход: подход − избегание" if session.dan == "teacher" else "сырой выход: минус новизна"
@@ -1077,7 +1483,14 @@ def _live_view(
             eye_r_confidence=float(conf_r.percent),
             eye_l_ready=bool(conf_l.ready),
             eye_r_ready=bool(conf_r.ready),
-            phase_ru=phase_label(session.pilot.phase, session.pilot.steer),
+            phase_ru=phase_label(session.pilot.phase, session.pilot.steer, session.pilot.search_sign),
+            recog_line=recog_label(bool(getattr(session, "camera_only", True))),
+            eyes_line=format_eyes_line(
+                session.pilot.track.r_l,
+                session.pilot.track.r_r,
+                bool(conf_l.ready and conf_l.recognized),
+                bool(conf_r.ready and conf_r.recognized),
+            ),
             session_sep=prog.session_sep(),
             total_sep=prog.total_sep(),
             session_acc=prog.session_acc(),
@@ -1090,21 +1503,17 @@ def _live_view(
             **common,
         )
     if session.onboard:
-        remote = session.remote
-        return MonitorView(
+        from .brain_panel import brain_panel_from_status
+
+        remote = session.remote if isinstance(session.remote, dict) else {}
+        age = onboard.status_age() if onboard is not None else None
+        panel_ok, panel_fields = brain_panel_from_status(remote, age)
+        view_kw = dict(
             title="тренировка узнавания   мозг на роботе",
             mode_label=f"борт · {session.pilot.label()}",
             learner="mb",
             dan_mode="teacher",
-            kc_on=int(remote.get("kc_on") or 0),
-            kc_n=int(remote.get("kc_n") or 0),
-            drift=float(remote.get("drift") or 0.0),
             readout_caption="сырой выход с борта",
-            n_pam=int(remote.get("n_pam") or 0),
-            n_ppl1=int(remote.get("n_ppl1") or 0),
-            total_pam=int(remote.get("n_pam_total") or 0),
-            total_ppl1=int(remote.get("n_ppl1_total") or 0),
-            lifetime_known=("n_pam_total" in remote and "n_ppl1_total" in remote),
             hemi_l=_opt_float(remote, "r_l"),
             hemi_r=_opt_float(remote, "r_r"),
             hemi_z=_opt_float(remote, "z_fly"),
@@ -1118,10 +1527,25 @@ def _live_view(
             eye_r_confidence=float(session.eye_r_confidence),
             eye_l_ready=bool(session.eye_l_ready),
             eye_r_ready=bool(session.eye_r_ready),
-            phase_ru=session.phase_ru or phase_label(session.pilot.phase, session.pilot.steer),
+            phase_ru=session.phase_ru or phase_label(session.pilot.phase, session.pilot.steer, session.pilot.search_sign),
+            recog_line=_recog_line(session, remote),
+            eyes_line=format_eyes_line(
+                remote.get("r_l") if "r_l" in remote else None,
+                remote.get("r_r") if "r_r" in remote else None,
+                bool(session.eye_l_recognized),
+                bool(session.eye_r_recognized),
+                str(remote.get("eyes_ru") or "") or None,
+            ),
             onboard=True,
-            **common,
+            brain_offline=not panel_ok,
         )
+        view_kw.update(common)
+        if panel_ok:
+            view_kw.update(panel_fields)
+        else:
+            view_kw["teacher_counts"] = ""
+            view_kw["brain_offline"] = True
+        return MonitorView(**view_kw)
     rec = session.recognizer
     assert rec is not None
     return MonitorView(
@@ -1188,6 +1612,9 @@ def try_load_live(session: LiveSession) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .ui_settings import ensure_stdio
+
+    ensure_stdio()
     p = argparse.ArgumentParser(description="Live Go2 recognition trainer (sensors + manual UDP teleop)")
     p.add_argument("--robot-ip", default=DEFAULT_IP)
     p.add_argument("--preview-port", type=int, default=DEFAULT_PREVIEW)
@@ -1215,7 +1642,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--return-auto", type=float, default=0.0, help="Seconds of idle takeover before autonomy returns. 0 stays manual.")
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
     p.add_argument("--overlap", type=float, default=DEFAULT_OVERLAP, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
+    add_recog_camera_only_arg(p)
     p.add_argument("--rec-fps", type=float, default=2.0, help="Max camera.jpg frames per second saved on this laptop.")
+    p.add_argument("--fullscreen", action="store_true", help="Open the trainer fullscreen. F11 toggles it.")
+    p.add_argument("--teacher-url", default="http://127.0.0.1:8091", help="YOLO service on this laptop.")
+    p.add_argument("--teacher-conf", type=float, default=0.5, help="Box confidence for a hemisphere hit.")
+    p.add_argument("--teacher-rate", type=float, default=2.0, help="Max DAN pulses per second on each hemisphere.")
+    from .go2_control import add_go2_control_arg
+
+    add_go2_control_arg(p)
     args = p.parse_args(argv)
     if args.rec_fps <= 0:
         print("--rec-fps must be positive", file=sys.stderr)
@@ -1244,8 +1679,16 @@ def main(argv: list[str] | None = None) -> int:
         onboard=bool(args.onboard),
         steer=args.steer,
         overlap=args.overlap,
+        camera_only=bool(args.recog_camera_only),
     )
     session.rec_fps = float(args.rec_fps)
+    session.start_fullscreen = bool(args.fullscreen)
+    session.teacher_url = str(args.teacher_url)
+    session.teacher_conf = float(args.teacher_conf)
+    session.teacher_rate = float(args.teacher_rate)
+    from .go2_control import apply_go2_control_arg
+
+    apply_go2_control_arg(session, args)
     if args.load or Path(args.state).is_file():
         try_load_live(session)
     if args.headless:

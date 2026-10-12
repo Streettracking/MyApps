@@ -58,9 +58,16 @@ def too_similar(prev: np.ndarray | None, cur: np.ndarray | None, limit: float = 
 
 
 def encode_camera_jpeg(rgb: np.ndarray) -> bytes:
-    """JPEG of the simulator camera. No window chrome, no lidar marks."""
+    """JPEG of the simulator camera. No window chrome, no lidar marks.
+
+    Called from the GUI thread before the frame is queued. The writer thread
+    only stores the bytes.
+    """
     import pygame
 
+    from .sdl_thread import require_main_thread
+
+    require_main_thread()
     arr = np.ascontiguousarray(np.transpose(np.asarray(rgb), (1, 0, 2)))
     surf = pygame.surfarray.make_surface(arr)
     buf = io.BytesIO()

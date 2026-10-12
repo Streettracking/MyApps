@@ -22,12 +22,26 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
+from sim.brain_panel import PanelTrace, widget_status
 from sim.frame_sense import features_from_frames
 from sim.learn_flash import flash_payload
 from sim.map_marks import MarkLayer
 from sim.mb_train import MbTrainer, default_npz
-from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, phase_label
+from sim.hemifield import DEFAULT_OVERLAP, fly_turn
+from sim.raw_sense import recog_label
+from sim.pilot import LINK_HOLD_S, MANUAL_HOLD_S, DriveCommand, Pilot, eyes_state_label, phase_label
 from sim.pilot import forward_clearance, scrub_range
+from sim.teacher_lead import (
+    AIM_HOLD_S,
+    TeacherLead,
+    apply_guards,
+    attach_recognition_stimuli,
+    clamp_weight,
+    commands_match,
+    lead_label,
+    mix_velocity,
+    observe_recognition,
+)
 
 try:
     from .drive import SportDrive
@@ -71,6 +85,8 @@ class BrainLoop:
         self.cloud_ranges = None
         self.cloud_t = 0.0
         self._teach = None
+        self._teach_l = None
+        self._teach_r = None
         self._moving = False
         self._sent_move = False
         self._last_send = 0.0
@@ -78,6 +94,23 @@ class BrainLoop:
         self._prev_camera = None
         self._prev_near = None
         self._learn_block_log = 0.0
+        self.teacher_weight = 0.0
+        self.fly_x = 0.0
+        self.fly_z = 0.0
+        self.teacher_x = 0.0
+        self.teacher_z = 0.0
+        self.lead_match = 0.0
+        self.lead = TeacherLead()
+        attach_recognition_stimuli(self.mb.stimuli)
+        self._taught_l: str | None = None
+        self._taught_r: str | None = None
+        self._pam_event = False
+        self._ppl1_event = False
+        self._yolo_l = None
+        self._yolo_r = None
+        self._yolo_t = -1e9
+        self._dog_in_frame = False
+        self.panel = PanelTrace()
         self._lock = threading.Lock()
         self._log("наблюдение: SportClient не трогаем, пока нет автономии или перехвата")
 
@@ -95,6 +128,42 @@ class BrainLoop:
     def set_cloud(self, ranges, now: float) -> None:
         self.cloud_ranges = ranges
         self.cloud_t = float(now)
+
+    def _note_dan(self, *kinds: str | None) -> None:
+        """Remember which dopamine arrived on the current frame."""
+        for kind in kinds:
+            if kind == "pam":
+                self._pam_event = True
+            elif kind == "ppl1":
+                self._ppl1_event = True
+
+    def _group_counts(self, kind: str) -> tuple:
+        """Active cells and group size for γ-d or α/β-p, both hemispheres."""
+        on = 0
+        total = 0
+        for vision in (self.mb.brain.vision, self.mb.brain_r.vision):
+            if kind == "gd":
+                on += int(vision.last_gd_on)
+                total += int(vision.n_gd)
+            else:
+                on += int(vision.last_abp_on)
+                total += int(vision.n_abp)
+        return on, total
+
+    def _kc_active_frac(self) -> float:
+        """Active visual Kenyon cells over both groups on the last frame."""
+        gd_on, gd_n = self._group_counts("gd")
+        ab_on, ab_n = self._group_counts("abp")
+        total = gd_n + ab_n
+        if total <= 0:
+            return 0.0
+        return float(gd_on + ab_on) / float(total)
+
+    def _kc_active_frac_group(self, kind: str) -> float:
+        on, total = self._group_counts(kind)
+        if total <= 0:
+            return 0.0
+        return float(on) / float(total)
 
     def driving(self) -> bool:
         """Autonomy, or manual after an explicit takeover. Watch-only is neither."""
@@ -159,8 +228,18 @@ class BrainLoop:
                 self._log("обучение выключено, T/X веса не меняют")
             elif op == "treat":
                 self._teach = "pam"
+                self._teach_l = None
+                self._teach_r = None
             elif op == "punish":
                 self._teach = "ppl1"
+                self._teach_l = None
+                self._teach_r = None
+            elif op == "teach_sides":
+                if self._teach is None:
+                    left = str(data.get("left") or "")
+                    right = str(data.get("right") or "")
+                    self._teach_l = left if left in ("pam", "ppl1") else None
+                    self._teach_r = right if right in ("pam", "ppl1") else None
             elif op == "estop":
                 self.on_estop()
             elif op == "space":
@@ -190,6 +269,35 @@ class BrainLoop:
                 if mode in ("bilateral", "sectors"):
                     self.pilot.set_steer(mode)
                     self._log("руль: %s" % ("билатерально" if mode == "bilateral" else "секторы"))
+            elif op == "teacher_weight":
+                self.teacher_weight = clamp_weight(data.get("weight", 0.0))
+                self.lead.weight = self.teacher_weight
+            elif op == "teacher_aim":
+                self.teacher_weight = clamp_weight(data.get("weight", self.teacher_weight))
+                self.lead.weight = self.teacher_weight
+                self.lead.set_remote(
+                    now,
+                    data.get("x", 0.0),
+                    data.get("z", 0.0),
+                    bool(data.get("hit_l")),
+                    bool(data.get("hit_r")),
+                    self.teacher_weight,
+                    centered=bool(data.get("centered")),
+                    approaching=bool(data.get("approaching")),
+                    lost=bool(data.get("lost")),
+                    too_close=bool(data.get("too_close")),
+                    last_l=bool(data.get("last_l")),
+                    last_r=bool(data.get("last_r")),
+                )
+                self._yolo_l = _yolo_vec(data.get("yolo_l"))
+                self._yolo_r = _yolo_vec(data.get("yolo_r"))
+                self._yolo_t = float(now)
+                self._dog_in_frame = (
+                    self._yolo_l is not None
+                    or self._yolo_r is not None
+                    or bool(data.get("hit_l"))
+                    or bool(data.get("hit_r"))
+                )
             elif op == "heartbeat":
                 pass
 
@@ -200,8 +308,15 @@ class BrainLoop:
         self._prev_near = near
         self.frames_ok = True
         self.last_frame_t = float(now)
+        self._pam_event = False
+        self._ppl1_event = False
         self.mb.learn = self.learn
-        fwd = self.mb.forward(feat)
+        yolo_fresh = float(now) - self._yolo_t <= AIM_HOLD_S
+        fwd = self.mb.forward(
+            feat,
+            yolo_l=self._yolo_l if yolo_fresh else None,
+            yolo_r=self._yolo_r if yolo_fresh else None,
+        )
         value = self.mb.last_readout
         conf = self.mb.observe(feat, value)
         seen = bool(conf.ready and conf.recognized)
@@ -220,14 +335,37 @@ class BrainLoop:
         dist = scrub_range(dist, self.self_radius)
         forward = scrub_range(forward, self.self_radius)
         kind = self._teach
+        side_l = self._teach_l
+        side_r = self._teach_r
         self._teach = None
-        if kind and not self.learn:
+        self._teach_l = None
+        self._teach_r = None
+        self._taught_l = None
+        self._taught_r = None
+        if (kind or side_l or side_r) and not self.learn:
             if float(now) - self._learn_block_log > 1.0:
                 self._log("обучение выключено, T/X веса не меняют")
                 self._learn_block_log = float(now)
             kind = None
+            side_l = None
+            side_r = None
+        pulsed_l = False
+        pulsed_r = False
         if kind:
             self.mb.teach(fwd, kind, float(now))
+            self._taught_l = kind
+            self._taught_r = kind
+            pulsed_l = kind in ("pam", "ppl1")
+            pulsed_r = pulsed_l
+            self._note_dan(kind)
+        elif side_l or side_r:
+            self.mb.teach_sides(side_l, side_r, float(now))
+            self._taught_l = side_l
+            self._taught_r = side_r
+            pulsed_l = side_l in ("pam", "ppl1")
+            pulsed_r = side_r in ("pam", "ppl1")
+            self._note_dan(side_l, side_r)
+        self.mb.settle(pulsed_l, pulsed_r)
         with self._lock:
             self.recognized = seen
             self.sector = self.marks.aim_sector if seen else None
@@ -243,6 +381,8 @@ class BrainLoop:
             self.confidence_r = float(self.mb.conf_r.percent)
             self.confidence_l_ready = bool(self.mb.conf_l.ready)
             self.confidence_r_ready = bool(self.mb.conf_r.ready)
+            dog = (float(now) - self._yolo_t) <= AIM_HOLD_S and bool(self._dog_in_frame)
+            self.panel.note(float(now), float(value), dog, self.mb)
 
     def tick(self, now: float) -> DriveCommand:
         now = float(now)
@@ -300,8 +440,44 @@ class BrainLoop:
             recognized_l=recognized_l,
             recognized_r=recognized_r,
         )
+        cmd = self._blend_teacher(cmd, now, forward_m)
         self._emit(cmd, now)
         return cmd
+
+    def _blend_teacher(self, cmd: DriveCommand, now: float, forward_m) -> DriveCommand:
+        """Keep the fly command at weight 0. Otherwise mix, then apply the stops."""
+        teacher_x, teacher_z, hit_l, hit_r = self.lead.remote(now)
+        self.fly_x = float(cmd.x)
+        self.fly_z = float(cmd.z)
+        self.teacher_x = float(teacher_x)
+        self.teacher_z = float(teacher_z)
+        self.lead.hit_l = bool(hit_l)
+        self.lead.hit_r = bool(hit_r)
+        self.lead.weight = float(self.teacher_weight)
+        matched = commands_match(cmd.x, cmd.z, teacher_x, teacher_z)
+        if self.pilot.mode == "auto":
+            self.lead.note(now, matched)
+            observe_recognition(self.mb.stimuli, self.lead, self.lead.aim_fresh(now))
+            kind_l, kind_r = self.mb.reinforce_stimuli(
+                now,
+                self._taught_l,
+                self._taught_r,
+                learning=bool(self.learn),
+            )
+            if kind_l or kind_r:
+                self._note_dan(kind_l, kind_r)
+        self.lead_match = self.lead.fraction(now)
+        if self.pilot.mode != "auto" or self.teacher_weight <= 0.005:
+            return cmd
+        mixed_x, mixed_z = mix_velocity(cmd.x, cmd.z, teacher_x, teacher_z, self.teacher_weight)
+        out_x, out_z, stopped = apply_guards(
+            mixed_x,
+            mixed_z,
+            self.pilot.mode == "estop",
+            forward_m,
+        )
+        who = "учитель" if self.teacher_weight >= 0.995 else "смешанно"
+        return DriveCommand(out_x, out_z, stopped, cmd.phase, who, cmd.hint)
 
     def _release_stand_lock(self, now: float) -> None:
         if self.pilot.mode == "estop":
@@ -353,12 +529,21 @@ class BrainLoop:
     def status(self) -> dict:
         flash = flash_payload(self.mb.flash)
         link_ok = (time.monotonic() - self.last_hb) <= LINK_HOLD_S
+        drive_l = _hemisphere_drive(self.mb.brain, self.mb.last_fwd)
+        drive_r = _hemisphere_drive(self.mb.brain_r, self.mb.last_fwd_r)
         with self._lock:
-            return {
+            payload = {
                 "mode": self.pilot.mode,
                 "label": self.pilot.label(),
                 "phase": self.pilot.phase,
-                "phase_ru": phase_label(self.pilot.phase, self.pilot.steer),
+                "phase_ru": phase_label(self.pilot.phase, self.pilot.steer, self.pilot.search_sign),
+                "last_seen_side": self.pilot.last_seen_side or None,
+                "search_sign": 1 if self.pilot.search_sign >= 0 else -1,
+                "reinforce": self.mb.reinforce,
+                "teacher_pam_l": int(self.mb.teacher_pam_l),
+                "teacher_pam_r": int(self.mb.teacher_pam_r),
+                "teacher_ppl1_l": int(self.mb.teacher_ppl1_l),
+                "teacher_ppl1_r": int(self.mb.teacher_ppl1_r),
                 "who": self.pilot.who,
                 "took_over": bool(self.pilot.took_over),
                 "learning": bool(self.learn),
@@ -377,11 +562,13 @@ class BrainLoop:
                 "z_fly": self.pilot.track.yaw_z,
                 "recognized_L": bool(self.recognized_l),
                 "recognized_R": bool(self.recognized_r),
+                "eyes_ru": eyes_state_label(bool(self.recognized_l), bool(self.recognized_r)),
                 "confidence_L": float(self.confidence_l),
                 "confidence_R": float(self.confidence_r),
                 "confidence_L_ready": bool(self.confidence_l_ready),
                 "confidence_R_ready": bool(self.confidence_r_ready),
                 "overlap": float(self.mb.overlap),
+                "recog_camera_only": bool(self.mb.camera_only),
                 "distance_m": self.dist_m,
                 "forward_m": self.forward_m,
                 "x": self.drive.moves[-1][0] if self._moving and self.drive.moves else 0.0,
@@ -393,13 +580,64 @@ class BrainLoop:
                 "frames_ok": bool(self.frames_ok),
                 "link_ok": bool(link_ok),
                 "hint": self.pilot.hint,
+                "lead": lead_label(self.teacher_weight),
+                "teacher_weight": float(self.teacher_weight),
+                "teacher_x": float(self.teacher_x),
+                "teacher_z": float(self.teacher_z),
+                "fly_x": float(self.fly_x),
+                "fly_z": float(self.fly_z),
+                "lead_match": float(self.lead_match),
+                "lead_match_s": 8.0,
                 "kc_on": int(self.mb.last_kc_on),
                 "kc_n": int(self.mb.brain.n_kc),
+                "kc_active_frac": self._kc_active_frac(),
+                "kc_active_frac_gd": self._kc_active_frac_group("gd"),
+                "kc_active_frac_abp": self._kc_active_frac_group("abp"),
+                "drive_l": drive_l,
+                "drive_r": drive_r,
+                "turn": float(fly_turn(drive_l, drive_r)),
+                "pam_event": bool(self._pam_event),
+                "ppl1_event": bool(self._ppl1_event),
+                "pam_count": int(self.mb.n_pam),
+                "ppl1_count": int(self.mb.n_ppl1),
+                "stimuli": self.mb.stimuli.status(),
+                "kc_l": _compact_kc(None if self.mb.last_fwd is None else self.mb.last_fwd.kc),
+                "kc_r": _compact_kc(None if self.mb.last_fwd_r is None else self.mb.last_fwd_r.kc),
                 "drift": float(self.mb.last_drift),
                 "flash": flash,
                 "flash_r": flash_payload(self.mb.flash_r),
                 "log": list(self.log),
             }
+            payload.update(widget_status(self.mb, self.panel))
+            return payload
+
+
+def _yolo_vec(value):
+    """Four floats, or nothing when the laptop did not send a box."""
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        return np.asarray([float(item) for item in value], dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
+
+
+def _hemisphere_drive(brain, fwd) -> float:
+    """Approach minus avoidance for one mushroom body. A silent half is zero."""
+    if fwd is None:
+        return 0.0
+    return float(brain.appetitive_drive(fwd.action_scores))
+
+
+def _compact_kc(vec, cap: int = 400) -> list:
+    """Local KC indices for the laptop 3D view. Old clients ignore the key."""
+    if vec is None:
+        return []
+    idx = np.flatnonzero(np.asarray(vec) > 0)
+    if idx.size > int(cap):
+        step = int(np.ceil(idx.size / float(cap)))
+        idx = idx[::step][: int(cap)]
+    return [int(i) for i in idx]
 
 
 def make_brain(
@@ -407,19 +645,30 @@ def make_brain(
     state_path: str,
     npz_path: str | None = None,
     self_radius: float = 0.6,
-    overlap: float = 0.2,
+    overlap: float = DEFAULT_OVERLAP,
+    camera_only: bool = True,
 ) -> BrainLoop:
-    mb = MbTrainer(npz_path or default_npz(), seed=1, eta=0.2, dan="teacher", overlap=overlap)
+    mb = MbTrainer(
+        npz_path or default_npz(),
+        seed=1,
+        eta=0.2,
+        dan="teacher",
+        overlap=overlap,
+        camera_only=bool(camera_only),
+    )
     mb.learn = False
     loop = BrainLoop(drive, mb, state_path, self_radius=self_radius)
+    loop._log(recog_label(mb.camera_only))
     from pathlib import Path
 
     path = Path(state_path)
     if path.is_file():
-        mb.load(path)
+        if mb.load(path):
+            loop._log("загружены веса KC→MBON")
+        else:
+            loop._log(mb.load_note)
         mb.learn = False
         loop.learn = False
-        loop._log("загружены веса KC→MBON")
     return loop
 
 

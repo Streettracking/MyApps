@@ -22,6 +22,43 @@ OFF_MOTION = 48
 OFF_LIDAR = 56
 OFF_CLOSE = 64
 
+RECOG_CAMERA_LABEL = "узнавание: только камера"
+RECOG_LIDAR_LABEL = "узнавание: камера и лидар"
+
+
+def drop_lidar(feat: np.ndarray) -> np.ndarray:
+    """Copy with lidar near and closing cleared. Camera channels stay.
+
+    The caller keeps the original: distance, the 1 m stop, and the map still
+    read those channels. Recognition must not.
+    """
+    raw = np.asarray(feat, dtype=np.float32).ravel()
+    out = np.array(raw, dtype=np.float32, copy=True)
+    out[OFF_LIDAR:N_RAW] = 0.0
+    return out
+
+
+def recog_label(camera_only: bool) -> str:
+    return RECOG_CAMERA_LABEL if camera_only else RECOG_LIDAR_LABEL
+
+
+def add_recog_camera_only_arg(parser) -> None:
+    """Default on. ``--no-recog-camera-only`` puts lidar back into PN→KC."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--recog-camera-only",
+        dest="recog_camera_only",
+        action="store_true",
+        help="Zero lidar channels before PN→KC. Default.",
+    )
+    group.add_argument(
+        "--no-recog-camera-only",
+        dest="recog_camera_only",
+        action="store_false",
+        help="Feed lidar near and closing into recognition as well.",
+    )
+    parser.set_defaults(recog_camera_only=True)
+
 
 @dataclass
 class SenseHit:
