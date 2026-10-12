@@ -207,6 +207,7 @@ class MonitorInput:
     go2_control: bool = False
     fullscreen_toggle: bool = False
     record_toggle: bool = False
+    yolo_error: bool = False
     doggibot: bool = False
     takeover: bool = False
     treat_down: bool = False
@@ -1930,6 +1931,8 @@ class TrainMonitor:
                     pending_full = True
                 elif event.key == pygame.K_u and not getattr(event, "repeat", False):
                     inp.record_toggle = True
+                elif event.key == pygame.K_o and not getattr(event, "repeat", False):
+                    inp.yolo_error = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":

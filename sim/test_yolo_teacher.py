@@ -1514,5 +1514,95 @@ class YoloConfSliderTests(unittest.TestCase):
         return (color.r, color.g, color.b)
 
 
+class YoloErrorFrameTests(unittest.TestCase):
+    def test_o_tags_the_current_frame_with_yolo_boxes(self):
+        import json
+        from pathlib import Path
+
+        import pygame
+
+        from sim.frame_record import YOLO_ERROR_TAG, FrameRecorder, with_yolo_error, yolo_boxes_json
+        from sim.recognize_train import SIM_KEYS
+        from sim.recognize_train_live import LIVE_KEYS, _note_yolo_error_save
+        from sim.train_monitor import TrainMonitor
+        from sim.yolo_teacher import DetBox
+
+        self.assertIn("O ошибка YOLO", SIM_KEYS)
+        self.assertIn("O ошибка YOLO", LIVE_KEYS)
+        box = DetBox(0.12, 0.2, 0.48, 0.9, 0.81234, "Л", "dog")
+        rows = yolo_boxes_json([box])
+        self.assertEqual(rows[0]["conf"], 0.8123)
+        self.assertEqual(rows[0]["zone"], "Л")
+        self.assertEqual(yolo_boxes_json(None), [])
+
+        jpeg = b"\xff\xd8\xff\xd9"
+        plain = {"operator": {"weak_label": None}, "source": "sim"}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            closed = FrameRecorder(root / "off", fps=2.0)
+            try:
+                self.assertFalse(closed.offer_tagged(jpeg, with_yolo_error(plain, [box]), None))
+            finally:
+                closed.close()
+
+            rec = FrameRecorder(root / "on", fps=2.0)
+            try:
+                self.assertTrue(rec.toggle())
+                self.assertFalse(rec.offer(jpeg, plain, None, now=10.0))
+                labelled = {"operator": {"weak_label": "dog", "events": []}}
+                self.assertTrue(rec.offer(jpeg, labelled, None, now=10.0))
+                self.assertFalse(rec.offer(jpeg, labelled, None, now=10.1))
+                tagged = with_yolo_error(dict(plain), [box])
+                self.assertEqual(tagged["tag"], YOLO_ERROR_TAG)
+                self.assertEqual(tagged["operator"]["weak_label"], "no_dog")
+                self.assertTrue(rec.offer_tagged(jpeg, tagged, None))
+                self.assertTrue(rec.offer_tagged(jpeg, with_yolo_error(dict(plain), []), None))
+            finally:
+                rec.close()
+            saved = sorted(rec.session_dir.glob("frame_*.jpg"))
+            notes = sorted(rec.session_dir.glob("frame_*.json"))
+            self.assertEqual(len(saved), 3)
+            self.assertEqual(len(notes), 3)
+            self.assertTrue(saved[1].read_bytes().startswith(b"\xff\xd8"))
+            body = json.loads(notes[1].read_text(encoding="utf-8"))
+            self.assertEqual(body["tag"], YOLO_ERROR_TAG)
+            self.assertEqual(body["operator"]["tag"], YOLO_ERROR_TAG)
+            self.assertEqual(body["operator"]["weak_label"], "no_dog")
+            self.assertEqual(body["yolo_boxes"][0]["x0"], 0.12)
+            self.assertEqual(body["yolo_boxes"][0]["conf"], 0.8123)
+            self.assertEqual(body["yolo_boxes"][0]["kind"], "dog")
+            empty = json.loads(notes[2].read_text(encoding="utf-8"))
+            self.assertEqual(empty["yolo_boxes"], [])
+            self.assertEqual(empty["tag"], YOLO_ERROR_TAG)
+
+        class _Log:
+            def __init__(self):
+                self.lines = []
+
+            def _log(self, text):
+                self.lines.append(text)
+
+        desk = _Log()
+        _note_yolo_error_save(desk, False, False)
+        _note_yolo_error_save(desk, True, True)
+        self.assertEqual(desk.lines[0], "кадр не записан: запись выключена")
+        self.assertEqual(desk.lines[1], "кадр: не собака / ошибка YOLO")
+
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        pygame.init()
+        try:
+            mon = TrainMonitor("yolo-error")
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_o, mod=0, unicode="o", scancode=0, repeat=True))
+            skipped = mon.pump()
+            self.assertFalse(skipped.yolo_error)
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_o, mod=0, unicode="o", scancode=0))
+            hit = mon.pump()
+            self.assertTrue(hit.yolo_error)
+            self.assertFalse(hit.record_toggle)
+        finally:
+            pygame.quit()
+
+
 if __name__ == "__main__":
     unittest.main()

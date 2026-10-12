@@ -49,7 +49,7 @@ DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
     "A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  "
-    "U запись  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
+    "U запись  O ошибка YOLO  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
 )
 
 
@@ -630,6 +630,7 @@ def _apply_live_keys(session: LiveSession, inp, onboard: OnboardLink | None) -> 
     if inp.takeover and not inp.estop:
         session.pilot.takeover()
         if onboard is not None:
+            onboard.pause()
             onboard.post("takeover")
         session._log("перехват: ручное, автономия сама не вернётся")
     if inp.autonomy_toggle and not inp.estop:
@@ -639,6 +640,8 @@ def _apply_live_keys(session: LiveSession, inp, onboard: OnboardLink | None) -> 
             if session.remote.get("autonomy"):
                 onboard.post("autonomy_off")
             else:
+                if session.remote.get("paused"):
+                    onboard.resume()
                 onboard.post("autonomy_on")
         elif session.pilot.autonomy:
             session.pilot.stop_auto()
@@ -1071,7 +1074,17 @@ def _phase_name(phase: str, steer: str = "bilateral", search_sign: float = 1.0) 
     return phase_label(phase, steer, search_sign)
 
 
-def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: bytes, onboard: OnboardLink | None) -> None:
+def _note_yolo_error_save(session, saved: bool, recording: bool) -> None:
+    """Journal line for the «не собака / ошибка YOLO» key."""
+    if saved:
+        session._log("кадр: не собака / ошибка YOLO")
+    elif recording:
+        session._log("кадр не записан")
+    else:
+        session._log("кадр не записан: запись выключена")
+
+
+def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: bytes, onboard: OnboardLink | None, tagged: bool = False) -> bool:
     """Queue the preview JPEG. Onboard still reads :8088 on the laptop."""
     from .frame_record import fingerprint, make_meta
 
@@ -1102,25 +1115,27 @@ def _offer_live_frame(session: LiveSession, rec, marks, camera, camera_jpeg: byt
         sector = session.aim_sector
         r_l = None if mb is None else float(mb.r_l)
         r_r = None if mb is None else float(mb.r_r)
-    rec.offer(
-        camera_jpeg,
-        make_meta(
-            marks,
-            session.now(),
-            source=source,
-            mode=mode,
-            speed_m_s=speed,
-            yaw_rad_s=yaw,
-            readout=None if readout is None else float(readout),
-            confidence=None if confidence is None else float(confidence),
-            confidence_ready=ready,
-            recognized=recognized,
-            sector=None if sector is None else int(sector),
-            r_l=None if r_l is None else float(r_l),
-            r_r=None if r_r is None else float(r_r),
-        ),
-        fingerprint(camera),
+    meta = make_meta(
+        marks,
+        session.now(),
+        source=source,
+        mode=mode,
+        speed_m_s=speed,
+        yaw_rad_s=yaw,
+        readout=None if readout is None else float(readout),
+        confidence=None if confidence is None else float(confidence),
+        confidence_ready=ready,
+        recognized=recognized,
+        sector=None if sector is None else int(sector),
+        r_l=None if r_l is None else float(r_l),
+        r_r=None if r_r is None else float(r_r),
     )
+    sample = fingerprint(camera)
+    if tagged:
+        from .frame_record import with_yolo_error
+
+        return bool(rec.offer_tagged(camera_jpeg, with_yolo_error(meta, getattr(session, "teacher_boxes", ())), sample))
+    return bool(rec.offer(camera_jpeg, meta, sample))
 
 
 def _learning_now(session) -> bool:
@@ -1406,6 +1421,11 @@ def run_live_gui(
             view.record_idle = rec_on and not labelled
             if rec_on and labelled and camera is not None and camera_jpeg and rec.due():
                 _offer_live_frame(session, rec, marks, camera, camera_jpeg, onboard)
+            if inp.yolo_error:
+                saved = False
+                if rec_on and camera is not None and camera_jpeg:
+                    saved = _offer_live_frame(session, rec, marks, camera, camera_jpeg, onboard, tagged=True)
+                _note_yolo_error_save(session, saved, rec_on)
             from .go2_control import drive_go2
             from .mb_view3d import drive_brain
 

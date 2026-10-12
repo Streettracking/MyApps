@@ -208,6 +208,24 @@ class OnboardLink:
             self.status_at = time.monotonic()
         return self.status
 
+    def pause(self) -> dict:
+        """POST /pause. Stops the onboard brain and freezes learning."""
+        self.last_command = "pause"
+        got = self._request("POST", "/pause", {})
+        if got:
+            self.status = got
+            self.status_at = time.monotonic()
+        return self.status
+
+    def resume(self) -> dict:
+        """POST /resume. Motion may return. Learning stays frozen through the grace."""
+        self.last_command = "resume"
+        got = self._request("POST", "/resume", {})
+        if got:
+            self.status = got
+            self.status_at = time.monotonic()
+        return self.status
+
     def status_age(self, now=None):
         """Seconds since the last non-empty status. None when none has arrived."""
         if not self.status or self.status_at <= 0.0:

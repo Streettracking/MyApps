@@ -233,9 +233,14 @@ class BrainLoop:
     def learning_frozen(self) -> bool:
         return bool(self.mb.learning_hold)
 
-    def on_takeover(self) -> None:
+    def on_takeover(self, now: float) -> None:
+        """Stop the brain, freeze learning, and leave the stick with the operator."""
         self._stop_once()
         self.pilot.takeover()
+        if not self.paused:
+            self.paused = True
+            self._log("пауза: ход ноль, пластичность заморожена")
+        self._refresh_hold(float(now), False)
         self._log("перехват: ручное, автономия сама не вернётся")
 
     def handle(self, data: dict, now: float) -> None:
@@ -310,7 +315,7 @@ class BrainLoop:
             elif op == "space":
                 self.on_space(now)
             elif op == "takeover":
-                self.on_takeover()
+                self.on_takeover(now)
             elif op == "stand_up":
                 code = self.drive.stand_up(now)
                 self._log(f"StandUp code={code}")
@@ -482,6 +487,27 @@ class BrainLoop:
             r_r = float(self.mb.r_r)
             recognized_l = self.recognized_l
             recognized_r = self.recognized_r
+        if (
+            self.paused
+            and self.pilot.took_over
+            and self.pilot.mode == "manual"
+            and not self.external_stop
+        ):
+            # The brain stays paused and learning stays frozen. The stick is the operator's.
+            self.pilot.track.note_sides(r_l, r_r, self.mb.base_l, self.mb.base_r)
+            self._refresh_hold(now, False)
+            x = float(manual[0]) if recent_manual else 0.0
+            z = float(manual[1]) if recent_manual else 0.0
+            if abs(x) + abs(z) > 1e-6:
+                self.pilot.phase = "manual"
+                self.pilot.who = "оператор"
+                cmd = DriveCommand(x, z, False, "manual", "оператор", "")
+                self._emit(cmd, now)
+                return cmd
+            self.pilot.phase = "stop"
+            self.pilot.who = "оператор"
+            self._stop_once()
+            return DriveCommand(0.0, 0.0, True, "stop", "оператор", "")
         if self.paused or self.external_stop or self.pilot.mode == "estop" or self.pilot.held_stop:
             self.pilot.track.note_sides(r_l, r_r, self.mb.base_l, self.mb.base_r)
             self._refresh_hold(now, False)

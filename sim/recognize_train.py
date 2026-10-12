@@ -634,7 +634,7 @@ class RecognizeTrainSim:
         return out
 
 
-SIM_KEYS = "T/X учить  A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  U запись  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
+SIM_KEYS = "T/X учить  A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  U запись  O ошибка YOLO  P обучение  G вспышка  V свежий  C сброс  B  D/N  R S L F12 Esc"
 HEBB_KEYS = "U запись   C сброс   V свежий   P пауза   R сброс   S/L   F12   Esc"
 
 
@@ -964,6 +964,13 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         view.record_idle = rec_on and not labelled
         if rec_on and labelled and view.camera is not None and rec.due():
             _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z)
+        if inp.yolo_error:
+            from .recognize_train_live import _note_yolo_error_save
+
+            saved = False
+            if rec_on and view.camera is not None:
+                saved = _offer_sim_frame(session, rec, marks, view.camera, steer_x, steer_z, tagged=True)
+            _note_yolo_error_save(session, saved, rec_on)
         from .go2_control import drive_go2
         from .mb_view3d import drive_brain
 
@@ -996,34 +1003,36 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
     return session.summary()
 
 
-def _offer_sim_frame(session: RecognizeTrainSim, rec, marks, camera, steer_x: float, steer_z: float) -> None:
+def _offer_sim_frame(session: RecognizeTrainSim, rec, marks, camera, steer_x: float, steer_z: float, tagged: bool = False) -> bool:
     from .frame_record import encode_camera_jpeg, fingerprint, make_meta
 
     try:
         jpeg = encode_camera_jpeg(camera)
     except Exception:
-        return
+        return False
     mb = session.mb
     conf = None if mb is None else mb.conf
-    rec.offer(
-        jpeg,
-        make_meta(
-            marks,
-            float(session.world.t),
-            source="sim",
-            mode="auto" if session.pilot.autonomy else "manual",
-            speed_m_s=float(np.hypot(session.learner.vx, session.learner.vy)),
-            yaw_rad_s=float(steer_z),
-            readout=None if mb is None else float(mb.last_readout),
-            confidence=None if conf is None else float(conf.percent),
-            confidence_ready=False if conf is None else bool(conf.ready),
-            recognized=bool(session.recognized_now),
-            sector=session.aim_sector,
-            r_l=None if mb is None else float(mb.r_l),
-            r_r=None if mb is None else float(mb.r_r),
-        ),
-        fingerprint(camera),
+    meta = make_meta(
+        marks,
+        float(session.world.t),
+        source="sim",
+        mode="auto" if session.pilot.autonomy else "manual",
+        speed_m_s=float(np.hypot(session.learner.vx, session.learner.vy)),
+        yaw_rad_s=float(steer_z),
+        readout=None if mb is None else float(mb.last_readout),
+        confidence=None if conf is None else float(conf.percent),
+        confidence_ready=False if conf is None else bool(conf.ready),
+        recognized=bool(session.recognized_now),
+        sector=session.aim_sector,
+        r_l=None if mb is None else float(mb.r_l),
+        r_r=None if mb is None else float(mb.r_r),
     )
+    sample = fingerprint(camera)
+    if tagged:
+        from .frame_record import with_yolo_error
+
+        return bool(rec.offer_tagged(jpeg, with_yolo_error(meta, getattr(session, "teacher_boxes", ())), sample))
+    return bool(rec.offer(jpeg, meta, sample))
 
 
 def try_load(session: RecognizeTrainSim) -> None:

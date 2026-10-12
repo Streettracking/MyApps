@@ -824,5 +824,183 @@ class LinkHoldTests(unittest.TestCase):
             self.assertEqual(link.ops.count("heartbeat"), beats + 1)
 
 
+class OnboardTakeoverTests(unittest.TestCase):
+    def test_takeover_pauses_on_8090_and_the_stick_moves_while_learning_stays_frozen(self):
+        import numpy as np
+
+        from robot.flybrain_onboard.app import BrainLoop, serve
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import PAUSE_GRACE_S, MbTrainer, default_npz
+        from sim.onboard_link import OnboardLink
+        from sim.pilot import Pilot
+        from sim.recognize_train_live import _apply_live_keys
+        from sim.train_monitor import MonitorInput
+
+        loop = BrainLoop(SportDrive(None), MbTrainer(default_npz(), seed=1, overlap=0.4), "/tmp/takeover_pause.npz")
+        loop.learn = True
+        loop.mb.learn = True
+        server = serve(loop, 0)
+        port = int(server.server_address[1])
+        try:
+            link = OnboardLink("127.0.0.1", port)
+            link.post("autonomy_on")
+            camera = np.zeros((32, 32, 3), dtype=np.uint8)
+            loop.ingest(camera, camera, loop.last_hb)
+            loop.frames_ok = True
+            loop.last_frame_t = loop.last_hb
+            loop.dist_m = 3.0
+            loop.forward_m = 3.0
+            loop.mb.r_l = 4.0
+            loop.mb.r_r = 4.0
+            moving = loop.tick(loop.last_hb)
+            self.assertFalse(moving.stop)
+            self.assertGreater(abs(moving.x) + abs(moving.z), 0.05)
+            self.assertFalse(loop.status()["paused"])
+
+            # Pause alone still ignores the stick. Takeover is what hands it over.
+            link.pause()
+            held_at = loop.last_hb
+            loop.handle({"op": "manual", "x": 0.5, "z": 0.6}, held_at)
+            blocked = loop.tick(held_at)
+            self.assertTrue(blocked.stop)
+            self.assertEqual((blocked.x, blocked.z), (0.0, 0.0))
+            self.assertFalse(loop.status()["took_over"])
+            self.assertTrue(loop.status()["paused"])
+            self.assertTrue(loop.status()["learning_frozen"])
+            loop.last_manual_t = 0.0
+            loop.manual_x = 0.0
+            loop.manual_z = 0.0
+
+            calls = []
+            original = link._request
+
+            def _spy(method, path, payload=None, timeout=0.8):
+                calls.append((method, path, None if payload is None else dict(payload)))
+                return original(method, path, payload, timeout)
+
+            link._request = _spy
+
+            class _Desk:
+                def __init__(self):
+                    self.pilot = Pilot()
+                    self.learner_kind = "mb"
+                    self.onboard = True
+                    self.remote = {}
+                    self.lines = []
+
+                def _log(self, text):
+                    self.lines.append(str(text))
+
+            desk = _Desk()
+            pressed = MonitorInput(takeover=True)
+            _apply_live_keys(desk, pressed, link)
+            pause_at = next(i for i, row in enumerate(calls) if row[0] == "POST" and row[1] == "/pause")
+            take_at = next(
+                i
+                for i, row in enumerate(calls)
+                if row[0] == "POST" and row[1] == "/cmd" and row[2].get("op") == "takeover"
+            )
+            self.assertLess(pause_at, take_at)
+            self.assertEqual(calls[pause_at][2], {})
+            self.assertTrue(any("перехват" in line for line in desk.lines))
+
+            body = loop.status()
+            self.assertTrue(body["paused"])
+            self.assertTrue(body["learning_frozen"])
+            self.assertEqual(body["mode"], "manual")
+            self.assertTrue(body["took_over"])
+            self.assertFalse(body["autonomy"])
+
+            now = loop.last_hb
+            loop.frames_ok = True
+            loop.last_frame_t = now
+            quiet = loop.tick(now)
+            self.assertTrue(quiet.stop)
+            self.assertEqual((quiet.x, quiet.z), (0.0, 0.0))
+
+            loop.handle({"op": "manual", "x": 0.45, "z": -0.8}, now)
+            driven = loop.tick(now)
+            self.assertFalse(driven.stop)
+            self.assertGreater(abs(driven.x) + abs(driven.z), 0.05)
+            self.assertEqual(driven.phase, "manual")
+            self.assertEqual(driven.who, "оператор")
+            held = loop.status()
+            self.assertTrue(held["paused"])
+            self.assertTrue(held["learning_frozen"])
+            self.assertEqual(held["mode"], "manual")
+
+            loop.handle({"op": "external_stop", "on": True}, now)
+            loop.handle({"op": "manual", "x": 0.5, "z": 0.5}, now)
+            locked = loop.tick(now)
+            self.assertTrue(locked.stop)
+            self.assertEqual((locked.x, locked.z), (0.0, 0.0))
+            self.assertTrue(loop.status()["learning_frozen"])
+            loop.handle({"op": "external_stop", "on": False}, now)
+            loop.last_manual_t = 0.0
+
+            left = np.array(loop.mb.brain.kc_mbon_w, copy=True)
+            right = np.array(loop.mb.brain_r.kc_mbon_w, copy=True)
+            before = int(loop.mb.n_ppl1)
+            loss = {
+                "op": "teacher_aim",
+                "x": 0.0,
+                "z": 0.35,
+                "weight": 1.0,
+                "lost": True,
+                "last_l": True,
+            }
+            loop.handle(loss, now)
+            loop.handle({"op": "punish"}, now)
+            loop.ingest(np.zeros((8, 8, 3), dtype=np.uint8), np.zeros((8, 8, 3), dtype=np.uint8), now)
+            loop.tick(now)
+            self.assertEqual(loop.mb.n_ppl1, before)
+            self.assertEqual(loop.mb.teacher_ppl1_l, 0)
+            self.assertFalse(loop.status()["ppl1_event"])
+            np.testing.assert_array_equal(loop.mb.brain.kc_mbon_w, left)
+            np.testing.assert_array_equal(loop.mb.brain_r.kc_mbon_w, right)
+            self.assertTrue(loop.status()["paused"])
+            self.assertTrue(loop.status()["learning_frozen"])
+
+            desk.remote = dict(loop.status())
+            calls.clear()
+            _apply_live_keys(desk, MonitorInput(autonomy_toggle=True), link)
+            resume_at = next(i for i, row in enumerate(calls) if row[0] == "POST" and row[1] == "/resume")
+            auto_at = next(
+                i
+                for i, row in enumerate(calls)
+                if row[0] == "POST" and row[1] == "/cmd" and row[2].get("op") == "autonomy_on"
+            )
+            self.assertLess(resume_at, auto_at)
+            returned = loop.status()
+            self.assertFalse(returned["paused"])
+            self.assertTrue(returned["autonomy"])
+            self.assertFalse(returned["took_over"])
+            self.assertEqual(returned["mode"], "auto")
+            self.assertTrue(returned["learning_frozen"])
+
+            back = loop.last_hb
+            loop.frames_ok = True
+            loop.last_frame_t = back
+            loop.dist_m = 3.0
+            loop.forward_m = 3.0
+            loop.teacher_weight = 0.0
+            walking = loop.tick(back)
+            self.assertFalse(walking.stop)
+            self.assertTrue(loop.status()["learning_frozen"])
+            later = back + PAUSE_GRACE_S
+            loop.frames_ok = True
+            loop.last_frame_t = later
+            loop.handle(dict(loss), later)
+            learned = loop.tick(later)
+            self.assertFalse(learned.stop)
+            self.assertFalse(loop.status()["paused"])
+            self.assertFalse(loop.status()["learning_frozen"])
+            self.assertEqual(loop.mb.n_ppl1, before + 1)
+            self.assertTrue(loop.status()["ppl1_event"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()
