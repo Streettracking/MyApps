@@ -2161,7 +2161,7 @@ class TrainMonitor:
 
         text = driver_banner(view)
         font = self.font_ind or self.font
-        width = font.size(text)[0] + 28
+        width = font.size(text)[0] + 20
         lamp_w = 14 + self.font_sm.size("борт")[0]
         after_lamp = title_x + int(title_w) + 18 + lamp_w + 8
         help_x = self.help_bar_rect.x if self.help_bar_rect is not None else after_lamp
@@ -2202,40 +2202,63 @@ class TrainMonitor:
             tone = PEACH
         else:
             tone = GREEN
-        self._lamp(screen, (rect.x + 12, rect.centery), tone, 5)
-        self._blit_clipped(screen, glyph, (rect.x + 22, rect.centery - glyph.get_height() // 2), rect)
+        self._lamp(screen, (rect.x + 10, rect.centery), tone, 5)
+        self._blit_clipped(screen, glyph, (rect.x + 18, rect.centery - glyph.get_height() // 2), rect)
+
+    def _fit_weights_text(self, text: str, room: int):
+        font = self.font_sm
+        if room < font.size("веса: ?")[0]:
+            return ""
+        if font.size(text)[0] <= room:
+            return text
+        stem = text.split(": ", 1)[-1]
+        prefix = "веса: "
+        keep = stem
+        while keep and font.size(prefix + keep + "…")[0] > room:
+            keep = keep[:-1]
+        return (prefix + keep + "…") if keep else "веса: ?"
 
     def _draw_weights_label(self, screen, view: MonitorView) -> None:
-        """File name in the gap after the driver plaque. A long name is shortened, not clipped mid-letter."""
+        """File name after the driver plaque. A long name is shortened, not clipped mid-letter."""
         from .ui_present import weights_caption
 
-        text = weights_caption(getattr(view, "weights_label", ""))
         import pygame
 
+        full = weights_caption(getattr(view, "weights_label", ""))
+        self._weights_full = full
         font = self.font_sm
         driver = getattr(self, "driver_rect", None)
         help_rect = getattr(self, "help_bar_rect", None)
         if driver is None or driver.w < 8 or help_rect is None:
             self.weights_rect = pygame.Rect(0, 0, 0, 0)
+            self._weights_in_menu = False
             return
-
-        x = driver.right + 8
-        limit = help_rect.x - 6
-        room = limit - x
-        full = font.size(text)[0]
-        if room < font.size("веса: ?")[0]:
+        x = driver.right + 6
+        room = (help_rect.x - 4) - x
+        text = self._fit_weights_text(full, room)
+        if not text or text != full:
             self.weights_rect = pygame.Rect(0, 0, 0, 0)
+            self._weights_in_menu = False
             return
-        if full > room:
-            stem = text.split(": ", 1)[-1]
-            prefix = "веса: "
-            keep = stem
-            while keep and font.size(prefix + keep + "…")[0] > room:
-                keep = keep[:-1]
-            text = (prefix + keep + "…") if keep else "веса: ?"
         glyph = font.render(text, True, LABEL)
         self.weights_rect = pygame.Rect(x, 0, glyph.get_width(), MENU_H)
+        self._weights_in_menu = text == full
         screen.blit(glyph, (x, (MENU_H - glyph.get_height()) // 2))
+
+    def _draw_camera_weights(self, screen, rect, info) -> None:
+        """Full file name on the camera title bar when the menu cannot hold it."""
+        text = getattr(self, "_weights_full", "")
+        if not text or info is None:
+            return
+        font = self.font_sm
+        room_right = info.x - 8
+        min_x = rect.x + 12 + font.size("камера")[0] + 10
+        room = room_right - min_x
+        shown = self._fit_weights_text(text, room)
+        if not shown:
+            return
+        glyph = font.render(shown, True, LABEL)
+        screen.blit(glyph, (room_right - glyph.get_width(), rect.y + 4))
 
     def _draw_menu_bar(self, screen, view: MonitorView) -> None:
         import pygame
@@ -2688,6 +2711,8 @@ class TrainMonitor:
             screen.blit(label, (rect.x + 12, rect.y + 4))
         finally:
             screen.set_clip(previous)
+        if name == "camera" and not getattr(self, "_weights_in_menu", False):
+            self._draw_camera_weights(screen, rect, info)
         self._chrome.append((info, "info", name))
         self._mini_glyph(screen, info, "i")
         if pinned:
