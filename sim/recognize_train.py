@@ -823,8 +823,16 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
                 session._log(hidden)
         note_operator(marks, float(session.world.t), inp)
         if inp.label in ("dog", "none"):
-            locked = {"dog": "собака (D)", "no_dog": "нет собаки (N)"}.get(marks.latched or "")
-            session._log(("метка закреплена: %s, только для записи кадров, не DAN" % locked) if locked else "метка снята")
+            # N НЕГАТИВ / D СОРОДИЧ: one press locks the label and starts recording,
+            # the same key again stops both. The label never reaches the brain.
+            locked = {"dog": "СОРОДИЧ (D)", "no_dog": "НЕГАТИВ (N)"}.get(marks.latched or "")
+            if locked and not rec.enabled:
+                rec.toggle()
+            elif not locked and rec.enabled:
+                rec.toggle()
+            session._log(("%s: запись кадров %s" % (locked, rec.stats()[3])) if locked else "негатив/сородич выключен, запись остановлена")
+        if not rec.enabled:
+            marks.latched = None
         _apply_pilot_keys(session, inp, float(session.world.t))
         if inp.reset:
             session.reset()

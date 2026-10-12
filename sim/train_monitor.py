@@ -1726,6 +1726,10 @@ class TrainMonitor:
             inp.steer_toggle = True
         elif self.record_rect.collidepoint(pos):
             inp.record_toggle = True
+        elif getattr(self, "neg_rect", None) is not None and self.neg_rect.collidepoint(pos):
+            inp.label = "none"
+        elif getattr(self, "kin_rect", None) is not None and self.kin_rect.collidepoint(pos):
+            inp.label = "dog"
         elif self.teacher_rect.collidepoint(pos):
             inp.teacher_toggle = True
         elif self.go2_rect.collidepoint(pos):
@@ -2052,6 +2056,8 @@ class TrainMonitor:
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
         self._record_button(screen, view)
+        self._latch_button(screen, view, "neg", "no_dog", "НЕГАТИВ", "НЕГ", "N")
+        self._latch_button(screen, view, "kin", "dog", "СОРОДИЧ", "СОР", "D")
         self._draw_estop_bar(screen)
         self._draw_header_chrome(screen)
 
@@ -2243,8 +2249,8 @@ class TrainMonitor:
             fits = (
                 switch.right <= limit - 4
                 and pin.x >= help_rect.right + 4
-                and buttons["record"].right <= stop
-                and (bar.w < 8 or bar.x >= buttons["record"].right + 4)
+                and buttons["kin"].right <= stop
+                and (bar.w < 8 or bar.x >= buttons["kin"].right + 4)
                 and help_rect.x >= min_help
             )
             placed = (pin, label, switch, buttons, help_rect, bar)
@@ -2259,6 +2265,8 @@ class TrainMonitor:
         self.brain_rect = buttons["brain"]
         self.teacher_rect = buttons["teacher"]
         self.record_rect = buttons["record"]
+        self.neg_rect = buttons["neg"]
+        self.kin_rect = buttons["kin"]
         self.help_bar_rect = help_rect
         self.estop_bar_rect = bar
         self._show_theme_label = bool(chosen[0])
@@ -2292,13 +2300,17 @@ class TrainMonitor:
                 ("go2", self._go2_button_width(False)),
                 ("brain", 168),
                 ("teacher", 280),
-                ("record", 480),
+                ("record", 330),
+                ("neg", 190),
+                ("kin", 170),
             ]
         return [
             ("go2", self._go2_button_width(True)),
             ("brain", self._caption_slot("МОЗГ", lamp=True, key=True)),
             ("teacher", self._caption_slot("УЧ", lamp=True, key=True)),
             ("record", self._caption_slot("ЗАП", lamp=True, key=True)),
+            ("neg", self._caption_slot("НЕГ 0000", lamp=True, key=True)),
+            ("kin", self._caption_slot("СОР 0000", lamp=True, key=True)),
         ]
 
     def _caption_slot(self, text: str, lamp: bool, key: bool) -> int:
@@ -3593,6 +3605,18 @@ class TrainMonitor:
         else:
             word = "ЗАП" if getattr(self, "_header_short", False) else "ЗАПИСЬ КАДРОВ"
             self._button(screen, self.record_rect, word, LAMP_OFF, hot, key="U")
+
+    def _latch_button(self, screen, view: MonitorView, name: str, label: str, word: str, short: str, key: str) -> None:
+        """N НЕГАТИВ / D СОРОДИЧ: one press records with that label locked, again stops."""
+        rect = getattr(self, name + "_rect", None)
+        if rect is None or rect.w < 8:
+            return
+        caption = short if getattr(self, "_header_short", False) else word
+        if view.record_on and view.record_latch == label:
+            text = "%s · %d" % (caption, int(view.record_saved))
+            self._button(screen, rect, text, None, False, label_color=ESTOP_LABEL, fill=RED, key=key)
+            return
+        self._button(screen, rect, caption, LAMP_OFF, rect.collidepoint(self._mouse()), key=key)
 
     def _ensure_audio(self) -> bool:
         if self.audio_ok is not None:
