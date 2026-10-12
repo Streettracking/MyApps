@@ -197,6 +197,188 @@ class ControlSceneTests(unittest.TestCase):
         self.assertGreater(abs(dog_shift[0]) + abs(dog_shift[1]), 0.0)
         self.assertEqual(len(conspecific_boxes(learner, world)), 1)
 
+    def test_seed_changes_the_probe(self):
+        from sim.control_scene import arrange, make_scene, run_memory_probe
+        from sim.raw_sense import render_view
+
+        first = make_scene(1)
+        second = make_scene(2)
+        self.assertEqual(float(first[0].probe_bearing), 0.0)
+        self.assertGreater(float(second[0].probe_bearing), 0.0)
+        self.assertGreater(float(second[0].probe_dist), 0.0)
+        arrange(first[0], first[1], conspecific="left", control="right")
+        arrange(second[0], second[1], conspecific="left", control="right")
+        feat_a, _hit_a = render_view(first[1], first[0])
+        feat_b, _hit_b = render_view(second[1], second[0])
+        self.assertFalse(np.array_equal(feat_a, feat_b))
+        one = run_memory_probe(seed=2)
+        other = run_memory_probe(seed=3)
+        self.assertNotEqual(one["before"], other["before"])
+        self.assertNotEqual(one["seed"], other["seed"])
+
+    def test_conspecific_motion_changes_the_camera(self):
+        from sim.control_scene import make_scene
+        from sim.frame_sense import sim_previews
+        from sim.raw_sense import BODY_RADIUS
+
+        world, learner = make_scene()
+        peer = next(agent for agent in world.agents if agent.agent_id != learner.agent_id)
+        cube = world.controls[0]
+        # Same start, a sub-bin step. The old body sprite stayed put inside a sector.
+        peer.x, peer.y = learner.x + 1.4, learner.y + 0.15
+        cube.x, cube.y = -10.0, -10.0
+        before, _lid = sim_previews(learner, world)
+        peer.x += 0.07
+        peer.y += 0.04
+        after, _lid = sim_previews(learner, world)
+        dog_delta = int(np.abs(before.astype(np.int16) - after.astype(np.int16)).sum())
+        self.assertGreater(dog_delta, 0)
+
+        peer.x, peer.y = -10.0, -10.0
+        cube.x, cube.y = learner.x + 1.4, learner.y + 0.15
+        cube.radius = BODY_RADIUS
+        still, _lid = sim_previews(learner, world)
+        cube.x += 0.07
+        cube.y += 0.04
+        moved, _lid = sim_previews(learner, world)
+        cube_delta = int(np.abs(still.astype(np.int16) - moved.astype(np.int16)).sum())
+        self.assertGreater(cube_delta, 0)
+
+    def test_approach_probe_reaches_the_conspecific(self):
+        from sim.control_scene import run_approach_probe
+
+        report = run_approach_probe()
+        turn = report["turn"]
+        self.assertGreater(turn["raw_left"], 0.0)
+        self.assertGreater(turn["raw_right"], 0.0)
+        self.assertGreater(turn["gain_left"], 0.0)
+        self.assertLess(turn["gain_right"], 0.0)
+        before = report["before"]
+        self.assertGreater(before["rate_conspecific"] + before["rate_control"], 0.5)
+        for name in ("after", "swap"):
+            row = report[name]
+            self.assertGreater(row["rate_conspecific"], 0.5, report)
+            self.assertLess(row["rate_control"], 0.25, report)
+            self.assertTrue(row["reached_conspecific"], report)
+            self.assertLess(row["search_steps"], 100, report)
+            self.assertGreater(row["seen_conspecific"], 35, report)
+
+
+class SimRoundTests(unittest.TestCase):
+    def test_busy_udp_without_main_py_is_silent(self):
+        import socket
+
+        from sim.onboard_link import main_py_listening, udp_bridge_listening
+        from sim.recognize_train_live import _note_bridge
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+        except OSError:
+            sock.close()
+            self.assertFalse(main_py_listening())
+            return
+        port = int(sock.getsockname()[1])
+        try:
+            self.assertTrue(udp_bridge_listening("127.0.0.1", port))
+            self.assertFalse(main_py_listening(port))
+        finally:
+            sock.close()
+
+        class _Session:
+            bridge_open = False
+            _bridge_warned = False
+            log = []
+
+            def _log(self, text):
+                self.log.append(text)
+
+        session = _Session()
+        _note_bridge(session, 0.0, {}, link_ok=False)
+        _note_bridge(session, 2.0, {}, link_ok=True)
+        self.assertFalse(session.bridge_open)
+        self.assertFalse(any("два источника" in line for line in session.log))
+
+    def test_sim_status_pause_on_localhost(self):
+        import json
+        import urllib.request
+
+        from sim.recognize_train import RecognizeTrainSim
+        from sim.sim_status import serve_sim
+
+        session = RecognizeTrainSim(n_agents=1, seed=1, learner="mb", dan="teacher", auto_teach=False)
+        server = serve_sim(session, 0)
+        self.assertIsNotNone(server)
+        self.assertEqual(server.server_address[0], "127.0.0.1")
+        port = int(server.server_address[1])
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:%s/status" % port, timeout=2) as resp:
+                status = json.loads(resp.read().decode("utf-8"))
+            self.assertFalse(status["paused"])
+            self.assertIn("drift", status)
+            self.assertIn("session_drift", status)
+            req = urllib.request.Request(
+                "http://127.0.0.1:%s/pause" % port,
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                paused = json.loads(resp.read().decode("utf-8"))
+            self.assertTrue(paused["paused"])
+            self.assertTrue(paused["learning_frozen"])
+            req = urllib.request.Request(
+                "http://127.0.0.1:%s/cmd" % port,
+                data=json.dumps({"op": "resume"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                resumed = json.loads(resp.read().decode("utf-8"))
+            self.assertFalse(resumed["paused"])
+            self.assertTrue(resumed["learning_frozen"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_session_drift_is_zero_at_load(self):
+        from pathlib import Path
+
+        from sim.brain_panel import live_drift, session_drift
+        from sim.mb_train import MbTrainer, default_npz
+
+        trainer = MbTrainer(default_npz(), seed=1)
+        path = Path("logs/mb_train_state.npz")
+        if path.is_file():
+            self.assertTrue(trainer.load(path))
+            self.assertAlmostEqual(session_drift(trainer), 0.0, places=4)
+            self.assertAlmostEqual(live_drift(trainer), trainer.drift_session0, places=4)
+        trainer.drift_session0 = float(live_drift(trainer))
+        self.assertAlmostEqual(session_drift(trainer), 0.0, places=4)
+        shifted = np.array(trainer.brain.kc_mbon_w, dtype=np.float32, copy=True)
+        shifted.flat[0] = float(shifted.flat[0]) + 3.0
+        trainer.brain.kc_mbon_w = shifted
+        self.assertGreater(abs(session_drift(trainer)), 0.5)
+        self.assertAlmostEqual(
+            live_drift(trainer) - session_drift(trainer),
+            float(trainer.drift_session0),
+            places=3,
+        )
+
+    def test_too_close_fires_ppl1(self):
+        from sim.recognize_train import run_too_close
+        from sim.stimuli import CLOSE_HEIGHT, TOO_CLOSE_M, camera_stimuli
+        from sim.yolo_teacher import DetBox
+
+        close = DetBox(0.4, 0.5 - CLOSE_HEIGHT / 2, 0.6, 0.5 + CLOSE_HEIGHT / 2, 0.9)
+        far = DetBox(0.45, 0.4, 0.55, 0.55, 0.9)
+        self.assertTrue(camera_stimuli([close], None)[0])
+        self.assertFalse(camera_stimuli([far], None)[0])
+        report = run_too_close()
+        self.assertLess(report["distance_m"], TOO_CLOSE_M)
+        self.assertGreater(report["n_ppl1"], report["n_ppl1_before"])
+        self.assertEqual(report["far_added"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
