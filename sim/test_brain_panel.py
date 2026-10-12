@@ -589,7 +589,7 @@ class BrainPanelStatusTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(fields, {})
         self.assertEqual(brain_header(True), BRAIN_OFFLINE_TITLE)
-        self.assertEqual(BRAIN_OFFLINE_TITLE, "нет данных с борта")
+        self.assertEqual(BRAIN_OFFLINE_TITLE, "Мозг на .213 не запущен")
         for broken in (None, {}, {"drift": 1.0}):
             ok, fields = brain_panel_from_status(broken, 0.1)
             self.assertFalse(ok)

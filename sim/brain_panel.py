@@ -15,7 +15,7 @@ import numpy as np
 # panel stops painting numbers.
 BRAIN_STATUS_STALE_S = 2.0
 
-BRAIN_OFFLINE_TITLE = "нет данных с борта"
+BRAIN_OFFLINE_TITLE = "Мозг на .213 не запущен"
 
 # How many samples the panel actually draws. The robot keeps the same caps.
 CURVE_KEEP = 400

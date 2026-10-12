@@ -1698,6 +1698,10 @@ def run_live_gui(
             view.record_on = rec_on
             view.record_saved = rec_n
             view.record_bytes = rec_bytes
+            view.record_dups = int(getattr(rec, "skipped", 0) or 0)
+            from .ui_present import known_weights_name
+
+            view.weights_label = known_weights_name(session.state_path)
             view.record_idle = rec_on and not labelled
             view.record_folder = _rec_path or ""
             view.record_latch = marks.latched or ""
