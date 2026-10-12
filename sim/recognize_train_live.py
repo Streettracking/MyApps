@@ -46,7 +46,7 @@ DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
     "A авто  M перехват  K руль  Y учитель  H рамки  J мозг  F11 экран  "
-    "U запись  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
+    "U запись  O ошибка YOLO  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
 )
 
 
@@ -1123,6 +1123,9 @@ def run_live_gui(
             session._log(note)
     rec = FrameRecorder(ROOT / "logs" / "yolo_frames", fps=float(getattr(session, "rec_fps", 2.0)))
     marks = OperatorMarks()
+    from .yolo_errors import YoloErrorLog
+
+    yolo_err = YoloErrorLog(ROOT / "logs" / "yolo_frames" / "yolo_errors")
     tele = {
         "moving": False,
         "last": 0.0,
@@ -1268,7 +1271,19 @@ def run_live_gui(
                 snap = reserve_folder()
                 session._log(snap.line)
                 mon.show_toast("снимок DoggiBOT")
+            if inp.yolo_error:
+                try:
+                    teacher = getattr(session, "teacher", None)
+                    boxes = list(getattr(teacher, "boxes", None) or ()) or list(getattr(session, "teacher_boxes", ()) or ())
+                    ok, what = yolo_err.mark(camera_jpeg, boxes)
+                    if ok:
+                        session._log("ошибка YOLO отмечена (%d)  %s" % (yolo_err.count, what))
+                    else:
+                        session._log("ошибка YOLO не сохранена: %s" % what)
+                except Exception as exc:  # never let a flag take the trainer down
+                    session._log("ошибка YOLO не сохранена: %s" % exc)
             view = _live_view(session, camera, disp_lidar, error, link, inp.focused, command_name, onboard)
+            view.yolo_errors = yolo_err.count if session.learner_kind == "mb" else -1
             rec_on, rec_n, rec_bytes, _rec_path = rec.stats()
             labelled = weak_label_now(marks, session.now()) is not None
             view.record_on = rec_on

@@ -159,6 +159,7 @@ class MonitorInput:
     go2_control: bool = False
     fullscreen_toggle: bool = False
     record_toggle: bool = False
+    yolo_error: bool = False
     doggibot: bool = False
     takeover: bool = False
     treat_down: bool = False
@@ -237,6 +238,7 @@ class MonitorView:
     autonomy_on: bool = False
     onboard: bool = False
     record_on: bool = False
+    yolo_errors: int = -1
     record_saved: int = 0
     record_bytes: int = 0
     record_idle: bool = False
@@ -923,6 +925,7 @@ class TrainMonitor:
                 ("take", self._keyed_button_width(("ПЕРЕХВАТ",), "M", True)),
                 ("steer", self._keyed_button_width(("БИЛАТЕРАЛЬНО", "СЕКТОРЫ"), "K", False)),
                 ("treat", self._keyed_button_width(("ЛАКОМСТВО",), "T", True)),
+                ("yolo_err", self._keyed_button_width(("ошибка YOLO 000",), "O", False)),
             ]
             gap_b = 8
             total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
@@ -939,12 +942,13 @@ class TrainMonitor:
             placed_row = row(items, inner.x, inner.y, row_h, estop_rect.x - gap_b)
             placed_row["estop"] = estop_rect
         else:
-            placed_row = {name: self._zero() for name in ("learn", "auto", "take", "steer", "treat", "estop")}
+            placed_row = {name: self._zero() for name in ("learn", "auto", "take", "steer", "treat", "yolo_err", "estop")}
         self.learn_rect = placed_row["learn"]
         self.auto_rect = placed_row["auto"]
         self.take_rect = placed_row["take"]
         self.steer_rect = placed_row["steer"]
         self.treat_rect = placed_row["treat"]
+        self.yolo_err_rect = placed_row.get("yolo_err") or self._zero()
         self.estop_rect = placed_row["estop"]
 
         robot = block("robot")
@@ -1695,6 +1699,8 @@ class TrainMonitor:
             inp.estop = True
         elif self.treat_rect.collidepoint(pos):
             inp.treat = True
+        elif getattr(self, "yolo_err_rect", None) is not None and self.yolo_err_rect.w >= 8 and self.yolo_err_rect.collidepoint(pos):
+            inp.yolo_error = True
         elif self.lidar_reset_rect.collidepoint(pos):
             inp.lidar_reset = True
         elif self.lidar_fresh_rect.collidepoint(pos):
@@ -1838,6 +1844,8 @@ class TrainMonitor:
                     pending_full = True
                 elif event.key == pygame.K_u and not getattr(event, "repeat", False):
                     inp.record_toggle = True
+                elif event.key == pygame.K_o and not getattr(event, "repeat", False):
+                    inp.yolo_error = True
                 elif event.key in (pygame.K_KP_PLUS,) or getattr(event, "unicode", "") == "+":
                     inp.stand_up = True
                 elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS) or getattr(event, "unicode", "") == "-":
@@ -2961,6 +2969,8 @@ class TrainMonitor:
         self._mode_buttons(screen, view)
         if view.learner == "mb":
             self._treat_button(screen, view, self._mouse())
+        if view.yolo_errors >= 0:
+            self._yolo_error_button(screen, view)
         self._button(
             screen,
             self.estop_rect,
@@ -3581,6 +3591,13 @@ class TrainMonitor:
         self._button(screen, self.treat_rect, "ЛАКОМСТВО", lamp, self.treat_rect.collidepoint(mouse), key="T")
         if view.treat_flash:
             self._lamp(screen, (self.treat_rect.x + 16, self.treat_rect.centery), GREEN, 9)
+
+    def _yolo_error_button(self, screen, view: MonitorView) -> None:
+        rect = getattr(self, "yolo_err_rect", None)
+        if rect is None or rect.w < 8:
+            return
+        text = "ошибка YOLO %d" % max(0, int(view.yolo_errors))
+        self._button(screen, rect, text, None, rect.collidepoint(self._mouse()), key="O")
 
     def _lidar_reset_button(self, screen) -> None:
         import pygame
