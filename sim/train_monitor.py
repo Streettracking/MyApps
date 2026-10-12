@@ -4840,16 +4840,16 @@ class TrainMonitor:
         if y + pad + row + pad > panel.bottom:
             return y
         if view.dan_mode == "familiarity":
-            lines = [
+            raw = [
                 format_familiar("сессия", view.session_time, view.session_novelty),
                 format_familiar("всего", view.total_time, view.total_novelty),
             ]
         else:
-            lines = [
+            raw = [
                 format_lifetime(view.total_pam, view.total_ppl1, view.lifetime_known),
                 format_session_counts(view.n_pam, view.n_ppl1, view.session_time, self._sound_label()),
             ]
-        lines.append(
+        raw.append(
             format_metrics_line(
                 view.session_sep,
                 view.session_acc,
@@ -4860,6 +4860,14 @@ class TrainMonitor:
                 bool(view.session_labeled or view.total_labeled),
             )
         )
+        wrap_w = max(8, panel.w - 16)
+        lines = []
+        for line in raw:
+            if line.startswith("метки "):
+                parts = self._wrap_words(self.font_sm, line, wrap_w)
+                lines.extend((part, True) for part in parts)
+            else:
+                lines.append((line, False))
         n = 0
         used = pad + row + pad
         while n < len(lines) and y + used + row <= panel.bottom:
@@ -4876,11 +4884,14 @@ class TrainMonitor:
         self._paint_line(screen, panel, title_y, "progress-title", title)
         cursor = title_y + row
         for index in range(n):
-            line = lines[index]
+            line, plain = lines[index]
             line_y = cursor
 
-            def paint(line=line, line_y=line_y) -> None:
-                self._progress_line(screen, line, panel.x + 8, line_y, limit=limit)
+            def paint(line=line, line_y=line_y, plain=plain) -> None:
+                if plain:
+                    screen.blit(self.font_sm.render(line, True, LABEL), (panel.x + 8, line_y))
+                else:
+                    self._progress_line(screen, line, panel.x + 8, line_y, limit=limit)
 
             self._paint_line(screen, panel, line_y, "progress-%d" % index, paint)
             cursor += row
