@@ -913,7 +913,7 @@ class TrainMonitor:
         height = max(MENU_H + footer_h + 96, int(height))
         footer_y = height - footer_h
         area_h = max(96, footer_y - MENU_H)
-        placed = layout_dock(self.dock, 12, MENU_H, WIN_W - 24, area_h)
+        placed = layout_dock(self.dock, 12, MENU_H, self._layout_span(), area_h)
         self._dock_blocks = placed["blocks"]
         self._dock_splitters = placed["splitters"]
         self._dock_leaves = {leaf.block: leaf for leaf in _iter_leaves(self.dock)}
@@ -2345,6 +2345,15 @@ class TrainMonitor:
         logical = (int(getattr(self, "scroll_x", 0)) + right_px) / max(float(scale), 1e-6)
         return max(1, min(WIN_W, int(logical)))
 
+    def _layout_span(self) -> int:
+        """Dock width. Below 1440 the window shows ``ww / 0.75`` logical pixels, not 1920."""
+        ww, _wh = self._view_size()
+        scale, _lw, _lh, _cw, _ch = fit_window(ww, _wh)
+        visible = int(round(float(ww) / max(float(scale), 1e-6)))
+        if visible >= WIN_W - 2:
+            return WIN_W - 24
+        return max(640, visible - 24)
+
     def _canvas_height(self, fit_h: int, scale: float, wh: int, footer_h: int) -> int:
         """Match the client when every block still has room above the footer.
 
@@ -2366,7 +2375,7 @@ class TrainMonitor:
         area_h = int(height) - int(footer_h) - MENU_H
         if area_h < 96:
             return False
-        placed = layout_dock(self.dock, 12, MENU_H, WIN_W - 24, area_h)
+        placed = layout_dock(self.dock, 12, MENU_H, self._layout_span(), area_h)
         blocks = placed["blocks"]
         for leaf in _iter_leaves(self.dock):
             if not leaf.visible:
@@ -2484,12 +2493,14 @@ class TrainMonitor:
         title_w = max(self.font.size("recognition training")[0], self.font.size(title)[0])
         lamp_w = 14 + self.font_sm.size("борт")[0]
         min_help = self.doggibot_rect.right + 12 + title_w + 18 + lamp_w + 8
-        variants = ((True, False), (False, False), (False, True))
-        chosen = variants[-1]
+        variants = ((True, False, False), (False, False, False), (False, True, False), (False, True, True))
+        chosen = (False, True)
         placed = None
-        for show_label, short in variants:
-            items = self._header_items(short)
-            total = sum(ww for _name, ww in items) + 8 * (len(items) - 1)
+        fallback = None
+        for show_label, short, tight in variants:
+            gap_b = 4 if tight else 8
+            items = self._tight_header_items() if tight else self._header_items(short)
+            total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
             switch_right = limit - margin
             switch = pygame.Rect(switch_right - switch_w, (MENU_H - switch_h) // 2, switch_w, switch_h)
             if show_label:
@@ -2507,22 +2518,26 @@ class TrainMonitor:
                 bar = pygame.Rect(pin.x, 0, 0, 0)
                 header_limit = pin.x - 8
             header_x = max(min_help + 36, header_limit - total)
-            buttons = self._header_row(items, header_x, header_limit)
+            buttons = self._header_row(items, header_x, header_limit, gap_b, exact=tight)
             help_rect = pygame.Rect(buttons["go2"].x - 36, 4, 28, 24)
             stop = bar.x - 4 if bar.w >= 8 else pin.x - 4
             fits = (
-                total <= header_limit - header_x  # buttons at full width, not squeezed
+                total <= header_limit - header_x
                 and switch.right <= limit - 4
                 and pin.x >= help_rect.right + 4
                 and buttons["kin"].right <= stop
                 and (bar.w < 8 or bar.x >= buttons["kin"].right + 4)
                 and help_rect.x >= min_help
             )
-            placed = (pin, label, switch, buttons, help_rect, bar)
-            chosen = (show_label, short)
+            snapshot = ((pin, label, switch, buttons, help_rect, bar), (show_label, short))
+            if not tight:
+                fallback = snapshot
             if fits:
+                placed = snapshot
                 break
-        pin, label, switch, buttons, help_rect, bar = placed
+        if placed is None:
+            placed = fallback
+        (pin, label, switch, buttons, help_rect, bar), chosen = placed
         self.pin_rect = pin
         self.theme_label_rect = label
         self.theme_switch_rect = switch
@@ -2583,21 +2598,44 @@ class TrainMonitor:
         badge = 28 if key else 8
         return max(72, self.font_sm.size(text)[0] + pad + badge)
 
-    def _header_row(self, items, x: int, limit: int) -> dict:
+    def _go2_need(self, word: str, captions: bool, gap: int) -> int:
+        title = self.font_sm.size(word)[0]
+        if not captions:
+            return 12 + 10 + 6 + title + 8
+        server = self.font_tiny.size("сервер")[0]
+        panel = self.font_tiny.size("панель")[0]
+        return 12 + 10 + 4 + server + gap + 10 + 4 + panel + gap + title + 8
+
+    def _tight_header_items(self) -> list:
+        """Complete captions. No button is narrower than the glyphs it draws."""
+
+        def face(text: str, lamp: bool) -> int:
+            left = 32 if lamp else 12
+            return left + self.font_sm.size(text)[0] + 4
+
+        return [
+            ("go2", self._go2_need("УПР", True, 4)),
+            ("brain", face("МОЗГ", True)),
+            ("teacher", max(48, face("УЧ", True))),
+            ("record", face("ЗАПИСЬ · 00000", True)),
+            ("neg", face("НЕГ · 0000", False)),
+            ("kin", face("СОР · 0000", False)),
+        ]
+
+    def _header_row(self, items, x: int, limit: int, gap: int = 8, exact: bool = False) -> dict:
         import pygame
 
-        gap_b = 8
-        total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
+        total = sum(ww for _name, ww in items) + gap * (len(items) - 1)
         avail = max(1, limit - x)
-        scale = min(1.0, avail / float(max(total, 1)))
+        scale = 1.0 if exact else min(1.0, avail / float(max(total, 1)))
         out = {}
         cursor = x
         for name, ww in items:
-            rw = max(48, int(ww * scale))
-            if cursor + rw > limit:
+            rw = int(ww) if exact else max(48, int(ww * scale))
+            if cursor + rw > limit and not exact:
                 rw = max(32, limit - cursor)
             out[name] = pygame.Rect(cursor, 4, max(1, rw), 24)
-            cursor += rw + gap_b
+            cursor += rw + gap
         return out
 
     def _place_header_chrome(self):
@@ -3266,7 +3304,12 @@ class TrainMonitor:
             if self.journal_rect is not None:
                 self.log_rows = max(3, (self.journal_rect.h - 34) // 16)
         elif view.learner == "mb":
-            self._draw_mb(screen, view, pygame.Rect(body.x + 4, body.y + 4, body.w - 8, body.h - 8))
+            reserve = self._stop_reserve_h()
+            main_h = max(40, body.h - 8 - reserve)
+            main = pygame.Rect(body.x + 4, body.y + 4, max(1, body.w - 8), main_h)
+            self._draw_mb(screen, view, main)
+            footer = pygame.Rect(body.x + 4, main.bottom, max(1, body.w - 8), max(1, body.bottom - 4 - main.bottom))
+            self._draw_stop_row(screen, view, footer, footer.y)
         else:
             self._draw_hebb(screen, view, pygame.Rect(body.x + 4, body.y + 4, body.w - 8, body.h - 8))
 
@@ -3757,6 +3800,22 @@ class TrainMonitor:
         title = self.font_sm.size("УПР" if short else "УПРАВЛЕНИЕ")[0]
         return 12 + 10 + 4 + server + 10 + 10 + 4 + panel + 8 + title + 12
 
+    def _go2_plan(self, avail: int) -> tuple:
+        """Longest complete title that fits, captions included when they fit."""
+        options = []
+        for word in ("УПРАВЛЕНИЕ", "УПР"):
+            for captions in (True, False):
+                gaps = (10, 6, 4) if captions else (4,)
+                for gap in gaps:
+                    need = self._go2_need(word, captions, gap)
+                    if need <= avail:
+                        options.append((captions, len(word), gap, word))
+        if not options:
+            return False, "УПР", 4
+        options.sort(reverse=True)
+        captions, _length, gap, word = options[0]
+        return captions, word, gap
+
     def _go2_button(self, screen) -> None:
         missing = bool(getattr(self, "go2_missing", False))
         self._button(
@@ -3770,24 +3829,30 @@ class TrainMonitor:
             self.go2_server_lamp = (0, 0)
             self.go2_panel_lamp = (0, 0)
             return
+        captions, word, gap = self._go2_plan(self.go2_rect.w)
         server_on = bool(getattr(self, "go2_server_open", False))
         panel_on = bool(self.go2_open) and not missing
         ink = INK_DIM if missing else LABEL
-        x = self.go2_rect.x + 14
+        x = self.go2_rect.x + 12
         cy = self.go2_rect.centery
-        self.go2_server_lamp = (x, cy)
+        self.go2_server_lamp = (x + 5, cy)
         self._lamp(screen, self.go2_server_lamp, PEACH if server_on else LAMP_OFF, 5)
-        server = self.font_tiny.render("сервер", True, ink)
-        screen.blit(server, (x + 8, cy - server.get_height() // 2))
-        x = x + 8 + server.get_width() + 12
-        self.go2_panel_lamp = (x, cy)
-        self._lamp(screen, self.go2_panel_lamp, PEACH if panel_on else LAMP_OFF, 5)
-        panel = self.font_tiny.render("панель", True, ink)
-        screen.blit(panel, (x + 8, cy - panel.get_height() // 2))
-        x = x + 8 + panel.get_width() + 8
-        word = "УПР" if getattr(self, "_header_short", False) else "УПРАВЛЕНИЕ"
+        if captions:
+            server = self.font_tiny.render("сервер", True, ink)
+            screen.blit(server, (x + 10 + 4, cy - server.get_height() // 2))
+            x = x + 10 + 4 + server.get_width() + gap
+            self.go2_panel_lamp = (x + 5, cy)
+            self._lamp(screen, self.go2_panel_lamp, PEACH if panel_on else LAMP_OFF, 5)
+            panel = self.font_tiny.render("панель", True, ink)
+            screen.blit(panel, (x + 10 + 4, cy - panel.get_height() // 2))
+            x = x + 10 + 4 + panel.get_width() + gap
+        else:
+            self.go2_panel_lamp = self.go2_server_lamp
+            x = x + 10 + 6
         label = self.font_sm.render(word, True, INK_DIM if missing else VALUE)
-        self._blit_clipped(screen, label, (x, cy - label.get_height() // 2), self.go2_rect)
+        # The plan width includes this word, so it is blitted whole.
+        if x + label.get_width() <= self.go2_rect.right:
+            screen.blit(label, (x, cy - label.get_height() // 2))
 
     def _brain_button(self, screen, view: MonitorView) -> None:
         if view.learner != "mb":
@@ -4568,7 +4633,9 @@ class TrainMonitor:
         row = max(10, self._brain_row_h() // 2)
         if y + row > panel.bottom:
             return y
-        track = pygame.Rect(panel.x + 8, y + row // 2 - 1, max(1, panel.w - 16), 3)
+        right = min(panel.right - 8, self._visible_right() - 8)
+        track_w = max(1, right - (panel.x + 8))
+        track = pygame.Rect(panel.x + 8, y + row // 2 - 1, track_w, 3)
         share = (value - STOP_BOX_H_MIN) / max(1e-6, STOP_BOX_H_MAX - STOP_BOX_H_MIN)
 
         def paint_track() -> None:
@@ -4613,7 +4680,8 @@ class TrainMonitor:
         if y + row > panel.bottom:
             return y
         band = pygame.Rect(panel.x, y, panel.w, row)
-        track = pygame.Rect(panel.x + 8, band.centery - 3, max(1, panel.w - 16), 6)
+        right = min(panel.right - 8, self._visible_right() - 8)
+        track = pygame.Rect(panel.x + 8, band.centery - 3, max(1, right - (panel.x + 8)), 6)
 
         def paint_track() -> None:
             pygame.draw.rect(screen, INSET, track, border_radius=3)
@@ -4634,7 +4702,10 @@ class TrainMonitor:
         if nxt is None:
             return y
         self.lead_slider_rect = track
-        return self._draw_stop_row(screen, view, panel, nxt)
+        return nxt
+
+    def _stop_reserve_h(self) -> int:
+        return self._brain_row_h() + max(14, self._brain_row_h() // 2) + 6
 
     def _progress_line(self, screen, line: str, x: int, y: int, limit=None) -> None:
         if line.startswith("метки "):
