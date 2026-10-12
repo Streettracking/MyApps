@@ -30,8 +30,10 @@ class Journal:
         line = "%s  %s" % (stamp, text)
         self.lines.append(line)
         del self.lines[:-200]
+        if self.path is None:
+            return line
         try:
-            path = self.path if self.path is not None else journal_path()
+            path = self.path
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
@@ -41,9 +43,10 @@ class Journal:
 
 
 def journal_of(session) -> Journal:
+    # Memory only unless the trainer loop installed a file journal (tests never write to APPDATA).
     j = getattr(session, "journal", None)
     if j is None:
-        j = Journal()
+        j = Journal(None)
         session.journal = j
     return j
 

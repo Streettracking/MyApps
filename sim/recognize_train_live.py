@@ -1430,6 +1430,10 @@ def run_live_gui(
     teacher_state = {"frame": None, "log": "", "log_t": -10.0}
     announced = False
     command_name = "—"
+    from .trainer_journal import Journal, journal_path
+
+    session.journal = Journal(journal_path())
+    session.journal.write("тренер запущен (%s)" % ("борт" if session.onboard else "окно"))
     try:
         while True:
             inp = mon.pump()
