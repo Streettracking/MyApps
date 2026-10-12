@@ -77,6 +77,7 @@ class StimulusSet:
 
     def __init__(self) -> None:
         self._items: list[Stimulus] = []
+        self.muted = False
 
     def attach(self, stimulus: Stimulus) -> None:
         name = stimulus.name
@@ -99,7 +100,12 @@ class StimulusSet:
         skip_l: str | None = None,
         skip_r: str | None = None,
     ) -> tuple[str | None, str | None]:
-        """Sum every attached source, then turn the sign into PAM or PPL1."""
+        """Sum every attached source, then turn the sign into PAM or PPL1.
+
+        ``muted`` drops every source. The gates do not advance.
+        """
+        if self.muted:
+            return None, None
         left = 0.0
         right = 0.0
         for item in self._items:

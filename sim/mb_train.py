@@ -115,6 +115,9 @@ class MbTrainer:
         self.teacher_ppl1_l = 0
         self.teacher_ppl1_r = 0
         self.reinforce = ""
+        # Mutes every stimulus and freezes KC→MBON. Independent of teacher weight.
+        self.reinforcement_off = False
+        self.object_drives: list = []
         # Empty until the recognition app plugs a source in. Saving weights
         # does not write this list.
         self.stimuli = StimulusSet()
@@ -220,9 +223,14 @@ class MbTrainer:
         _fwd_r, right = self._drive(self.brain_r, self._half(feat, "R"), None)
         return float(left + right)
 
+    def set_reinforcement_off(self, off: bool) -> None:
+        """Mute every stimulus and freeze plasticity. Teacher weight is separate."""
+        self.reinforcement_off = bool(off)
+        self.stimuli.muted = self.reinforcement_off
+
     def teach(self, fwd: MBForward, kind: str | None, t: float) -> None:
         """Apply a DAN. ``kind`` is pam / ppl1 / None. Never a dog/no-dog label."""
-        if not self.learn:
+        if not self.learn or self.reinforcement_off:
             return
         if self.dan == "teacher":
             if kind in ("pam", "ppl1"):
@@ -262,8 +270,9 @@ class MbTrainer:
         Depressed synapses move back toward their birth weight. A Kenyon cell
         that fired with no dopamine on that side gains a little. ``r_l`` and
         ``r_r`` stay the approach-minus-avoidance drives ``forward`` stored.
+        Reinforcement off freezes this too.
         """
-        if not self.learn:
+        if not self.learn or self.reinforcement_off:
             return
         if self.last_fwd is not None:
             self.brain.recover(self.last_fwd.kc, bool(dopamine_l))
@@ -285,6 +294,8 @@ class MbTrainer:
         """
         if learning is None:
             learning = self.learn
+        if self.reinforcement_off:
+            return None, None
         kind_l, kind_r = self.stimuli.reinforcement(float(now), bool(learning), skip_l, skip_r)
         if (kind_l or kind_r) and self.learn:
             self.teach_sides(kind_l, kind_r, float(now))
@@ -295,7 +306,7 @@ class MbTrainer:
 
         The counters below are not written into ``mb_train_state.npz``.
         """
-        if not self.learn or self.dan != "teacher":
+        if not self.learn or self.dan != "teacher" or self.reinforcement_off:
             return False
         fired = False
         if kind_l in ("pam", "ppl1") and self.last_fwd is not None:

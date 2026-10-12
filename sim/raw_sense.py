@@ -14,6 +14,11 @@ import numpy as np
 N_AZ = 8
 FOV = np.deg2rad(110.0)
 SEE_M = 3.2
+# One body in the field. The neutral cube uses this same angular size.
+BODY_RADIUS = 0.28
+# Blue conspecific body, and the brown cube that is not one.
+CONSPECIFIC_COLOR = (0.45, 0.62, 0.95)
+CONTROL_COLOR = (0.55, 0.38, 0.16)
 N_RAW = 72  # body RGB 24 + floor RGB 24 + motion 8 + lidar near 8 + closing 8
 
 OFF_BODY = 0
@@ -64,6 +69,7 @@ def add_recog_camera_only_arg(parser) -> None:
 class SenseHit:
     dog: bool
     distractor: bool
+    control: bool = False
 
 
 def _wrap(angle: float) -> float:
@@ -114,6 +120,7 @@ def render_view(agent, world, include_agents: bool = True) -> tuple[np.ndarray, 
     feat = np.zeros(N_RAW, dtype=np.float32)
     dog = False
     distractor = False
+    control = False
     yaw = float(agent.yaw)
     svx, svy = float(getattr(agent, "vx", 0.0)), float(getattr(agent, "vy", 0.0))
 
@@ -134,13 +141,33 @@ def render_view(agent, world, include_agents: bool = True) -> tuple[np.ndarray, 
                 feat,
                 bx=bx,
                 dist=dist,
-                radius=0.28,
+                radius=BODY_RADIUS,
                 color=color,
                 speed=float(np.hypot(getattr(other, "vx", 0.0), getattr(other, "vy", 0.0))),
                 closing=closing,
                 body=True,
             )
             dog = True
+
+    for cube in getattr(world, "controls", []):
+        dx, dy = cube.x - agent.x, cube.y - agent.y
+        dist = float(np.hypot(dx, dy))
+        bx = bearing_bin(dx, dy, yaw)
+        if bx is None or dist > SEE_M or dist < 1e-3:
+            continue
+        rel_vx, rel_vy = cube.vx - svx, cube.vy - svy
+        closing = -((rel_vx * dx + rel_vy * dy) / dist)
+        _paint_object(
+            feat,
+            bx=bx,
+            dist=dist,
+            radius=float(cube.radius),
+            color=cube.color,
+            speed=float(np.hypot(cube.vx, cube.vy)),
+            closing=closing,
+            body=False,
+        )
+        control = True
 
     for obj in getattr(world, "distractors", []):
         dx, dy = obj.x - agent.x, obj.y - agent.y
@@ -187,7 +214,7 @@ def render_view(agent, world, include_agents: bool = True) -> tuple[np.ndarray, 
         dist = wall_range(agent.x, agent.y, yaw, bi, world.cfg.width, world.cfg.height)
         feat[OFF_LIDAR + bi] = max(feat[OFF_LIDAR + bi], float(np.clip(1.0 - dist / SEE_M, 0.0, 1.0)) * 0.25)
 
-    return feat, SenseHit(dog=dog, distractor=distractor)
+    return feat, SenseHit(dog=dog, distractor=distractor, control=control)
 
 
 def probe_features(kind: str) -> np.ndarray:

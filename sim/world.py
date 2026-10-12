@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .raw_sense import BODY_RADIUS, CONTROL_COLOR
+
 
 def point_in_poly(x: float, y: float, poly: np.ndarray) -> bool:
     # ray casting
@@ -52,6 +54,22 @@ class ArenaConfig:
 
 
 @dataclass
+class ControlCube:
+    """Neutral cube. Same angular size as a conspecific, a different colour.
+
+    The teacher never boxes it. The sensor writes the colour on the ground
+    row, so the pattern is not a conspecific body.
+    """
+
+    x: float
+    y: float
+    vx: float = 0.0
+    vy: float = 0.0
+    radius: float = BODY_RADIUS
+    color: tuple[float, float, float] = CONTROL_COLOR
+
+
+@dataclass
 class Distractor:
     """Moving non-dog blob. No class label is written into the sensor vector."""
 
@@ -87,6 +105,7 @@ class ArenaWorld:
         self.zones = {z.name: z for z in zones}
         self.agents = agents
         self.distractors: list[Distractor] = []
+        self.controls: list[ControlCube] = []
         self.t = 0.0
         self._zone_vel = {
             "A": np.array([cfg.zone_speed, 0.1 * cfg.zone_speed]),
@@ -203,7 +222,7 @@ class ArenaWorld:
 
     def _move_distractors(self) -> None:
         dt = self.cfg.dt
-        for obj in self.distractors:
+        for obj in list(self.distractors) + list(self.controls):
             obj.x += obj.vx * dt
             obj.y += obj.vy * dt
             if obj.x < 0.3 or obj.x > self.cfg.width - 0.3:

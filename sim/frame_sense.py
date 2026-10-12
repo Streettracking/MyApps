@@ -207,7 +207,7 @@ def sim_previews(agent, world, trail=None) -> tuple[np.ndarray, np.ndarray]:
     cam[horizon:] = (48, 44, 38)
     cam[horizon - 1 : horizon + 1] = (70, 78, 88)
 
-    def paint(obj_x, obj_y, radius, color, body: bool) -> None:
+    def paint(obj_x, obj_y, radius, color, body: bool, cube: bool = False) -> None:
         dx, dy = obj_x - agent.x, obj_y - agent.y
         dist = float(np.hypot(dx, dy))
         bx = bearing_bin(dx, dy, float(agent.yaw))
@@ -217,7 +217,11 @@ def sim_previews(agent, world, trail=None) -> tuple[np.ndarray, np.ndarray]:
         # Sector 0 is ego-right. Paint it on the right of an unmirrored frame.
         cx = int((N_AZ - 1 - bx + 0.5) * col_w)
         half = max(6, int(col_w * (0.55 + radius / max(dist, 0.4))))
-        if body:
+        if cube:
+            side = max(2 * half, 12)
+            top = max(0, horizon - side // 2)
+            bot = min(ch, top + side)
+        elif body:
             top = int(horizon * 0.25)
             bot = horizon - 4
         else:
@@ -231,6 +235,9 @@ def sim_previews(agent, world, trail=None) -> tuple[np.ndarray, np.ndarray]:
         if other.agent_id == agent.agent_id:
             continue
         paint(other.x, other.y, 0.28, other.color, True)
+    for cube in getattr(world, "controls", []):
+        rgb = tuple(int(c * 255) for c in cube.color)
+        paint(cube.x, cube.y, cube.radius, rgb, False, cube=True)
     for obj in world.distractors:
         rgb = tuple(int(c * 255) for c in obj.color)
         paint(obj.x, obj.y, obj.radius, rgb, False)
@@ -257,7 +264,7 @@ def sim_previews(agent, world, trail=None) -> tuple[np.ndarray, np.ndarray]:
             if 1 <= px < side - 1 and 1 <= py < side - 1:
                 dim = tuple(max(28, int(c) // 3) for c in color)
                 lid[py - 1 : py + 2, px - 1 : px + 2] = dim
-    for other in list(world.agents) + list(world.distractors):
+    for other in list(world.agents) + list(getattr(world, "controls", [])) + list(world.distractors):
         if getattr(other, "agent_id", None) == agent.agent_id:
             continue
         dx, dy = other.x - agent.x, other.y - agent.y
