@@ -330,6 +330,31 @@ def fit_window(ww: int, wh: int) -> tuple:
     return scale, WIN_W, logical_h, content_w, content_h
 
 
+def dock_span(ww: int, dpi: float = 1.0) -> int:
+    """Logical dock width whose right edge is the last visible pixel.
+
+    ``ww`` is the width pygame reports. On a Windows laptop that can be DIPs
+    while the framebuffer is 125% or 150% wider; ``dpi`` is that ratio and is
+    1 when the reported width is already in pixels. The span uses the same
+    scale the presenter uses, so the panels reach the window edge.
+
+    Below 1024 the 1920 canvas stays and the window scrolls. At 1440 and
+    wider, with no extra scale, the span stays ``WIN_W - 24``.
+    """
+    dpi = max(1.0, float(dpi))
+    reported = max(1, int(ww))
+    if reported < 1024:
+        return WIN_W - 24
+    pixels = max(1, int(round(reported * dpi)))
+    if dpi <= 1.0 and pixels >= MIN_CONTENT_W:
+        return WIN_W - 24
+    _scale, _lw, _lh, content_w, _ch = fit_window(pixels, max(pixels, 1))
+    present = content_w / float(WIN_W)
+    right = int(round(float(pixels) / max(present, 1e-6)))
+    span = right - 12
+    return max(640, min(WIN_W - 12, span))
+
+
 def font_px(requested: int, scale: float) -> int:
     """Logical font size whose on-screen size is at least ``MIN_FONT_PX``."""
     import math
@@ -2363,14 +2388,51 @@ class TrainMonitor:
         """Dock width. From 1024 up to 1440 the window shows ``ww / 0.75``, not 1920.
 
         Narrower clients keep the 1920 canvas and scroll, so readout columns
-        stay wide enough for their fixed slots.
+        stay wide enough for their fixed slots. A framebuffer that is 125% or
+        150% larger than the reported width is the width the dock fills.
         """
         ww, _wh = self._view_size()
-        if ww >= MIN_CONTENT_W or ww < 1024:
-            return WIN_W - 24
-        scale, _lw, _lh, _cw, _ch = fit_window(ww, _wh)
-        visible = int(round(float(ww) / max(float(scale), 1e-6)))
-        return max(640, min(WIN_W - 24, visible - 24))
+        return dock_span(ww, self._window_dpi(ww))
+
+    def _window_dpi(self, reported_w: int) -> float:
+        """1 unless this width is still in points and the framebuffer is larger."""
+        from .win_dpi import dpi_ratio
+
+        surface = self._surface_size()
+        points = self._point_size()
+        if surface is None or points is None:
+            return 1.0
+        ratio = dpi_ratio(points[0], surface[0])
+        if ratio <= 1.0:
+            return 1.0
+        # The view size follows the surface. Multiplying that width again
+        # would count the scale twice; only the point size still needs it.
+        if abs(int(reported_w) - int(points[0])) <= 2 and int(surface[0]) > int(points[0]):
+            return ratio
+        return 1.0
+
+    def _surface_size(self):
+        win = getattr(self, "window", None)
+        if win is None:
+            return None
+        try:
+            w, h = win.get_size()
+        except Exception:
+            return None
+        if int(w) < 64 or int(h) < 64:
+            return None
+        return int(w), int(h)
+
+    def _point_size(self):
+        try:
+            import pygame
+
+            w, h = pygame.display.get_window_size()
+        except Exception:
+            return None
+        if int(w) < 64 or int(h) < 64:
+            return None
+        return int(w), int(h)
 
     def _canvas_height(self, fit_h: int, scale: float, wh: int, footer_h: int) -> int:
         """Match the client when every block still has room above the footer.

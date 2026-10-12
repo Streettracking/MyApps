@@ -10,10 +10,30 @@ from __future__ import annotations
 SPI_GETWORKAREA = 0x0030
 
 
+def dpi_ratio(reported: int, framebuffer: int) -> float:
+    """Framebuffer pixels per reported window pixel.
+
+    1 when the sizes match, or when the ratio is not a Windows UI scale
+    (125% or 150%, with room up to 175%). A size that is already in pixels
+    must not be multiplied by the system DPI again.
+    """
+    reported = int(reported)
+    framebuffer = int(framebuffer)
+    if reported < 64 or framebuffer < 64:
+        return 1.0
+    ratio = framebuffer / float(reported)
+    if ratio < 1.2 or ratio > 1.8:
+        return 1.0
+    return ratio
+
+
 def enable_dpi_awareness() -> None:
     """Per-monitor DPI, before the first window. A miss falls back to system DPI."""
     import os
 
+    # SDL reads this at init. Per-monitor v2 keeps the window size and the
+    # framebuffer in the same pixels, which is what the dock width uses.
+    os.environ.setdefault("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2")
     if os.name != "nt":
         return
     try:

@@ -397,6 +397,34 @@ class ClientChromeTests(unittest.TestCase):
         self.assertIn("enable_dpi_awareness()", monitor)
         self.assertLess(monitor.index("enable_dpi_awareness()"), monitor.index("pygame.init()"))
         self.assertIn("WINDOWSIZECHANGED", monitor)
+
+    def test_dock_span_fills_the_visible_width_at_windows_dpi(self):
+        from sim.train_monitor import MIN_CONTENT_W, WIN_W, dock_span, fit_window, scroll_limits
+        from sim.win_dpi import dpi_ratio
+
+        self.assertEqual(dpi_ratio(1024, 1024), 1.0)
+        self.assertEqual(dpi_ratio(800, 800), 1.0)
+        self.assertAlmostEqual(dpi_ratio(1024, int(round(1024 * 1.25))), 1.25)
+        self.assertAlmostEqual(dpi_ratio(1024, int(round(1024 * 1.5))), 1.5)
+        self.assertEqual(dpi_ratio(1024, 1100), 1.0)
+        self.assertEqual(dpi_ratio(1536, 1024), 1.0)
+
+        # An 800-wide window keeps the 1920 canvas and still scrolls.
+        self.assertEqual(dock_span(800), WIN_W - 24)
+        self.assertEqual(dock_span(800, 1.5), WIN_W - 24)
+        self.assertGreater(scroll_limits(800, 600)[0], 0)
+        self.assertEqual(dock_span(1920), WIN_W - 24)
+        self.assertEqual(dock_span(MIN_CONTENT_W), WIN_W - 24)
+
+        for dpi, ww in ((1.0, 1024), (1.25, 1024), (1.5, 1024), (1.0, 1200)):
+            pixels = int(round(ww * dpi))
+            span = dock_span(ww, dpi)
+            _scale, _lw, _lh, content_w, _ch = fit_window(pixels, 768)
+            present = content_w / float(WIN_W)
+            right = (12 + span) * present
+            self.assertGreaterEqual(span, 640)
+            self.assertLessEqual(span, WIN_W - 12)
+            self.assertAlmostEqual(right, pixels, delta=1.5, msg=(dpi, ww, span, right, pixels))
         self.assertIn("WINDOWMAXIMIZED", monitor)
         self.assertIn("get_surface", monitor)
         self.assertNotIn("from_display_module", monitor)
