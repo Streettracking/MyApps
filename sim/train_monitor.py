@@ -2973,6 +2973,32 @@ class TrainMonitor:
             self._camera_halves(screen, cam_inner, view)
         self._draw_frame_age(screen, host)
         self._draw_record_note(screen, host, view)
+        self._draw_balance(screen, host, view)
+
+    def _draw_balance(self, screen, host, view: MonitorView) -> None:
+        """Share of frames with the kin dog (.128) while learning is on."""
+        import pygame
+
+        from .ui_present import balance_share
+
+        self.balance_rect = pygame.Rect(0, 0, 0, 0)
+        if host is None or host.w < 8 or not bool(getattr(view, "learning_on", False)):
+            return
+        with_dog, without, share = balance_share(getattr(view, "peer_curve", ()), getattr(view, "other_curve", ()))
+        anchor = getattr(self, "record_note_rect", None)
+        if anchor is None or getattr(anchor, "h", 0) < 4:
+            anchor = getattr(self, "frame_age_rect", None)
+        top = host.bottom - 8 if anchor is None or getattr(anchor, "h", 0) < 4 else anchor.top - 4
+        text = "с .128  %d / без  %d" % (with_dog, without)
+        rect = self._chip(screen, host, text, LABEL, top - self.font_sm.get_height() - 6)
+        bar = pygame.Rect(rect.right + 8, rect.centery - 2, 72, 4)
+        if bar.right > host.right - 4:
+            bar.w = max(8, host.right - 4 - bar.x)
+        pygame.draw.rect(screen, LINE, bar, border_radius=2)
+        fill = int(round(bar.w * share))
+        if fill > 0:
+            pygame.draw.rect(screen, PEACH, pygame.Rect(bar.x, bar.y, fill, bar.h), border_radius=2)
+        self.balance_rect = pygame.Rect(rect.x, rect.y, bar.right - rect.x, rect.h)
 
     def _draw_record_note(self, screen, host, view: MonitorView) -> None:
         from .ui_present import record_caption, record_hint

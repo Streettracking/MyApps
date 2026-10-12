@@ -119,3 +119,12 @@ def record_hint(saved, dups) -> str:
     if copies >= 3 or (copies > 0 and kept > 0 and copies >= kept):
         return "сдвиньте камеру"
     return ""
+
+
+def balance_share(peer, other) -> tuple:
+    """``(with_dog, without, fraction)`` from the two readout curves."""
+    with_dog = len(peer or ())
+    without = len(other or ())
+    total = with_dog + without
+    share = (float(with_dog) / float(total)) if total else 0.0
+    return with_dog, without, share
