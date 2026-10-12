@@ -1933,7 +1933,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--onboard", default="", help="Robot IP with the fly brain on port 8090. No local Move and no UDP.")
     p.add_argument("--onboard-port", type=int, default=8090)
     p.add_argument("--kin-label", default=KIN_LABEL_DEFAULT, help="Name of the conspecific in the teacher status line.")
-    p.add_argument("--teacher-x-cap", type=float, default=0.15, help="Hard cap on teacher forward speed, m/s.")
+    p.add_argument("--teacher-x-cap", type=float, default=0.40, help="Hard cap on teacher forward speed, m/s.")
     p.add_argument("--return-auto", type=float, default=0.0, help="Seconds of idle takeover before autonomy returns. 0 stays manual.")
     p.add_argument("--steer", choices=("bilateral", "sectors"), default="bilateral")
     p.add_argument("--overlap", type=float, default=DEFAULT_OVERLAP, help="Shared fraction of the field, 0..0.5. 0 is the hard midline.")
@@ -1982,9 +1982,9 @@ def main(argv: list[str] | None = None) -> int:
     session.teacher_conf = float(args.teacher_conf)
     session.teacher_rate = float(args.teacher_rate)
     session.kin_label = str(args.kin_label or "")
-    from .teacher_lead import TEACHER_X_CAP as _cap
+    from .teacher_lead import TEACHER_X_CAP_MAX as _cap
 
-    session.teacher_x_cap = max(0.0, min(float(args.teacher_x_cap), _cap * 2.0))
+    session.teacher_x_cap = max(0.0, min(float(args.teacher_x_cap), _cap))
     from .go2_control import apply_go2_control_arg
 
     apply_go2_control_arg(session, args)

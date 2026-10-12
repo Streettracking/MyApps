@@ -117,6 +117,23 @@ class LeadOffTest(unittest.TestCase):
         self.assertLess(aim["z"], 0.0)  # image right yaws right
         self.assertEqual(s.teacher_status, "поворот")
 
+    def test_yaw_strong_and_never_stalls_outside_cone(self):
+        from sim.teacher_lead import AIM_CONE_DEG, CAMERA_HFOV_DEG, TEACHER_YAW_MIN_OUT, teacher_yaw
+
+        self.assertAlmostEqual(teacher_yaw(0.45), -1.0)
+        self.assertAlmostEqual(teacher_yaw(-0.45), 1.0)
+        edge = AIM_CONE_DEG / CAMERA_HFOV_DEG + 0.005
+        self.assertLessEqual(teacher_yaw(edge), -TEACHER_YAW_MIN_OUT)
+        self.assertGreaterEqual(teacher_yaw(-edge), TEACHER_YAW_MIN_OUT)
+        self.assertEqual(teacher_yaw(0.02), 0.0)
+        self.assertLessEqual(teacher_yaw(0.03), -0.15)
+        x, z, st = approach_velocity(box(0.95), None, 0.45)
+        self.assertEqual((x, st), (0.0, "turn"))
+        self.assertAlmostEqual(z, -1.0)
+        x, z, st = approach_velocity(box(0.55), None, 0.45)
+        self.assertEqual(st, "walk")
+        self.assertAlmostEqual(x, 0.40)
+
     def test_near_stands(self):
         x, z, st = approach_velocity(box(0.5, h=0.6), None, 0.45)
         self.assertEqual((x, z, st), (0.0, 0.0, "near"))

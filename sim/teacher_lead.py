@@ -34,7 +34,13 @@ AIM_CONE_DEG = 15.0
 STOP_BOX_H_DEFAULT = 0.45
 STOP_BOX_H_MIN = 0.15
 STOP_BOX_H_MAX = 0.90
-TEACHER_X_CAP = 0.15
+TEACHER_X_CAP = 0.40
+TEACHER_X_CAP_MAX = 0.40
+TEACHER_YAW_MAX = 1.0
+TEACHER_YAW_GAIN = 4.0
+TEACHER_YAW_MIN_OUT = 0.35
+TEACHER_YAW_MIN = 0.15
+YAW_DEADBAND_DEG = 3.0
 
 
 def clamp_weight(weight: float) -> float:
@@ -608,6 +614,22 @@ def best_box(boxes, conf_min: float = 0.5):
     return chosen
 
 
+def teacher_yaw(offset: float) -> float:
+    """Strong proportional turn, ±1 rad/s. Outside the ±15° cone never below the minimum.
+
+    Image right (positive offset) yaws right (negative z). Inside a ~3° deadband
+    no yaw, so the walk does not wobble.
+    """
+    off = float(offset)
+    bearing = abs(box_bearing_deg(0.5 + off))
+    if bearing <= YAW_DEADBAND_DEG:
+        return 0.0
+    mag = min(TEACHER_YAW_MAX, max(TEACHER_YAW_MIN, TEACHER_YAW_GAIN * abs(off)))
+    if bearing > AIM_CONE_DEG + 1e-9:
+        mag = max(mag, TEACHER_YAW_MIN_OUT)
+    return -mag if off > 0.0 else mag
+
+
 def approach_velocity(box, forward_m, stop_h: float = STOP_BOX_H_DEFAULT, x_cap: float = TEACHER_X_CAP):
     """``(x, z, state)``: turn first, walk inside the cone, stand when the box is tall.
 
@@ -621,12 +643,7 @@ def approach_velocity(box, forward_m, stop_h: float = STOP_BOX_H_DEFAULT, x_cap:
     cx = 0.5 * (x0 + x1)
     height = abs(y1 - y0)
     offset = cx - 0.5
-    if abs(offset) <= CENTER_BAND:
-        yaw = 0.0
-    else:
-        span = 0.5 - CENTER_BAND
-        excess = offset - (CENTER_BAND if offset > 0.0 else -CENTER_BAND)
-        yaw = clamp_velocity(0.0, -excess / span * Z_MAX)[1]
+    yaw = teacher_yaw(offset)
     if height >= clamp_stop_h(stop_h):
         return 0.0, 0.0, "near"
     if abs(box_bearing_deg(cx)) > AIM_CONE_DEG + 1e-9:
