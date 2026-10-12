@@ -5,8 +5,10 @@ Motion: UDP JSON to the local command server, or, with ``--onboard``,
 buttons to the fly brain already running on the dog.
 
 Learning is KC→MBON. T is PAM, X is PPL1. D and N only pick a monitor curve.
-Autonomy (A) lets that same readout search and approach. Arrows do not take
-over: M or the ПЕРЕХВАТ button does, and A is the only way back.
+Autonomy (A) lets that same readout search and approach. On the dog, the
+first arrow key pauses that brain and takes the stick; the dog moves while
+the key is held and stops when it is released. A is the way back. M still
+toggles the same grab.
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ DEFAULT_UDP_HOST = "127.0.0.1"
 DEFAULT_UDP_PORT = 5451
 
 LIVE_KEYS = (
-    "A авто  M перехват  стрелки/стик  K руль  Y учитель  H рамки  J мозг  F11 экран  "
+    "A авто  стрелки перехват  M  стик  K руль  Y учитель  H рамки  J мозг  F11 экран  "
     "U запись  O ошибка YOLO  T/X  P  G  V/C  Space E-STOP  -/+  B D/N R S L"
 )
 
@@ -641,6 +643,7 @@ def _apply_live_keys(session: LiveSession, inp, onboard: OnboardLink | None) -> 
                 onboard.pause()
                 onboard.post("takeover")
             session._log("перехват: ручное, автономия сама не вернётся")
+    _grab_arrows(session, inp, onboard)
     if inp.autonomy_toggle and not inp.estop:
         if session.learner_kind != "mb" and not session.onboard:
             session._log("автономия только у грибовидного тела")
@@ -676,6 +679,33 @@ def _apply_live_keys(session: LiveSession, inp, onboard: OnboardLink | None) -> 
     from .run_marker import apply_marker_input
 
     apply_marker_input(session, inp, onboard)
+
+
+def _stick_status(session, onboard) -> dict:
+    """Latest onboard body, or the mirrored remote when no body has arrived."""
+    status = getattr(onboard, "status", None) if onboard is not None else None
+    if isinstance(status, dict) and status:
+        return status
+    remote = getattr(session, "remote", None)
+    return remote if isinstance(remote, dict) else {}
+
+
+def _grab_arrows(session, inp, onboard) -> None:
+    """First arrow on the dog pauses the brain. Holding the key does not release it.
+
+    E-STOP stays latched: a key that is still down does not send another takeover.
+    """
+    if onboard is None or not getattr(inp, "arrow_down", False) or inp.estop:
+        return
+    status = _stick_status(session, onboard)
+    if status.get("mode") == "estop":
+        return
+    if bool(status.get("took_over")) and status.get("mode") == "manual":
+        return
+    session.pilot.takeover()
+    onboard.pause()
+    onboard.post("takeover")
+    session._log("перехват: ручное, автономия сама не вернётся")
 
 
 def _mirror_remote(session: LiveSession, status: dict) -> None:
@@ -1051,11 +1081,14 @@ def _drive_onboard(session: LiveSession, onboard: OnboardLink, inp, state: dict,
         session._log("RecoveryStand")
     autonomy = bool(session.remote.get("autonomy"))
     grabbed = bool(session.remote.get("took_over")) and session.remote.get("mode") == "manual"
-    if inp.focused and grabbed and not autonomy:
+    # arrow_down covers a KEYDOWN that arrived while get_focused() was still false.
+    keys_live = bool(inp.focused or getattr(inp, "arrow_down", False))
+    if keys_live and grabbed and not autonomy:
         ax = float(inp.steer_x)
         az = float(inp.steer_z)
         if abs(ax) + abs(az) > 0:
-            if now - state["manual"] >= 0.10:
+            # The first nonzero frame is not rate-limited, so the press itself moves.
+            if (not state.get("axes")) or (now - state["manual"] >= 0.10):
                 x, z = clamp_velocity(0.4 * ax, az if az else 0.0)
                 if az > 0:
                     z = 1.0

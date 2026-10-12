@@ -272,6 +272,7 @@ class MonitorInput:
     yolo_error: bool = False
     doggibot: bool = False
     takeover: bool = False
+    arrow_down: bool = False
     treat_down: bool = False
     punish_down: bool = False
     focused: bool = True
@@ -1932,10 +1933,17 @@ class TrainMonitor:
         pending_full = False
         trust_surface = False
         note_restore = False
+        arrow_event = False
+        arrows = (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 inp.quit = True
+            elif event.type == pygame.KEYUP and event.key in arrows:
+                # Key-up still counts: a release has to zero the axes this frame.
+                arrow_event = True
             elif event.type == pygame.KEYDOWN:
+                if event.key in arrows:
+                    arrow_event = True
                 if event.key == pygame.K_ESCAPE:
                     if self.help_id:
                         self.help_id = None
@@ -2060,23 +2068,25 @@ class TrainMonitor:
         elif pending_size is not None:
             self._on_resize(pending_size[0], pending_size[1])
         inp.focused = bool(pygame.key.get_focused())
-        if inp.focused:
-            # Up and down are forward and back. Left is positive yaw.
-            # Onboard sends this as op=manual only after takeover.
-            # WASD stays on its own keys: A is autonomy, S saves, D labels.
+        # get_focused() can lag a KEYDOWN the queue already delivered. An arrow
+        # event is enough to read the key; a click never returns before this.
+        # An unfocused window with no arrow event stays at zero.
+        if inp.focused or arrow_event:
             keys = pygame.key.get_pressed()
-            axis_x, axis_y, hat = _joystick_sample()
-            inp.steer_x, inp.steer_z = drive_axes(
-                axis_x,
-                axis_y,
-                hat,
-                up=bool(keys[pygame.K_UP]),
-                down=bool(keys[pygame.K_DOWN]),
-                left=bool(keys[pygame.K_LEFT]),
-                right=bool(keys[pygame.K_RIGHT]),
-            )
-            inp.treat_down = bool(keys[pygame.K_t])
-            inp.punish_down = bool(keys[pygame.K_x])
+            up = bool(keys[pygame.K_UP])
+            down = bool(keys[pygame.K_DOWN])
+            left = bool(keys[pygame.K_LEFT])
+            right = bool(keys[pygame.K_RIGHT])
+            inp.arrow_down = up or down or left or right
+            if inp.focused:
+                # Up and down are forward and back. Left is positive yaw.
+                # WASD stays on its own keys: A is autonomy, S saves, D labels.
+                axis_x, axis_y, hat = _joystick_sample()
+                inp.treat_down = bool(keys[pygame.K_t])
+                inp.punish_down = bool(keys[pygame.K_x])
+            else:
+                axis_x, axis_y, hat = 0.0, 0.0, (0, 0)
+            inp.steer_x, inp.steer_z = drive_axes(axis_x, axis_y, hat, up=up, down=down, left=left, right=right)
         self._sync_cursor()
         return inp
 

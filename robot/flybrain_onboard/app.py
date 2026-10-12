@@ -347,7 +347,13 @@ class BrainLoop:
                 self.mb.save(self.state_path)
                 self._log("сохранено")
             elif op == "manual":
-                if self.driving():
+                # Autonomy keeps the brain's own command. Axes apply only after takeover.
+                if (
+                    self.paused
+                    and self.pilot.took_over
+                    and self.pilot.mode == "manual"
+                    and not self.external_stop
+                ):
                     self.note_manual(float(data.get("x", 0.0)), float(data.get("z", 0.0)), now)
             elif op == "steer":
                 mode = str(data.get("mode", ""))

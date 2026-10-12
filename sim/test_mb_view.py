@@ -617,6 +617,7 @@ class BrainTests(unittest.TestCase):
                 pygame.key.get_pressed = pressed
                 pygame.key.get_focused = focused
             self.assertEqual((held.steer_x, held.steer_z), (1.0, 1.0))
+            self.assertTrue(held.arrow_down)
             self.assertFalse(held.treat_down)
             pygame.key.get_focused = lambda: False
             pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_UP: True})
@@ -626,6 +627,42 @@ class BrainTests(unittest.TestCase):
                 pygame.key.get_pressed = pressed
                 pygame.key.get_focused = focused
             self.assertEqual((idle.steer_x, idle.steer_z), (0.0, 0.0))
+            self.assertFalse(idle.arrow_down)
+            # A click runs its handler and leaves the arrow axes in place.
+            pygame.event.clear()
+            pygame.key.get_focused = lambda: True
+            pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_UP: True, pygame.K_LEFT: True})
+            seen = []
+
+            def _click(_pos, box):
+                seen.append(box)
+                box.teacher_conf = 0.91
+
+            mon._on_primary_down = _click
+            pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(4, 4), button=1))
+            try:
+                clicked = mon.pump()
+            finally:
+                pygame.key.get_pressed = pressed
+                pygame.key.get_focused = focused
+            self.assertEqual(seen[0].teacher_conf, 0.91)
+            self.assertEqual((clicked.steer_x, clicked.steer_z), (1.0, 1.0))
+            self.assertTrue(clicked.arrow_down)
+            # get_focused() can be false while the queue still delivers the arrow.
+            pygame.event.clear()
+            pygame.key.get_focused = lambda: False
+            pygame.key.get_pressed = lambda: defaultdict(bool, {pygame.K_RIGHT: True})
+            pygame.event.post(
+                pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RIGHT, mod=0, unicode="", scancode=0)
+            )
+            try:
+                queued = mon.pump()
+            finally:
+                pygame.key.get_pressed = pressed
+                pygame.key.get_focused = focused
+            self.assertFalse(queued.focused)
+            self.assertTrue(queued.arrow_down)
+            self.assertEqual((queued.steer_x, queued.steer_z), (0.0, -1.0))
         finally:
             pygame.quit()
 

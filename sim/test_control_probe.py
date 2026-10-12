@@ -1272,5 +1272,195 @@ class TakeoverAcceptanceTests(unittest.TestCase):
             server.server_close()
 
 
+class ArrowTakeoverTests(unittest.TestCase):
+    def _ready(self):
+        import tempfile
+        from pathlib import Path
+
+        from robot.flybrain_onboard.app import BrainLoop, serve
+        from robot.flybrain_onboard.drive import SportDrive
+        from sim.mb_train import MbTrainer, default_npz
+        from sim.onboard_link import OnboardLink
+        from sim.recognize_train_live import LiveSession
+
+        loop = BrainLoop(SportDrive(None), MbTrainer(default_npz(), seed=1, overlap=0.4), "/tmp/arrow_takeover.npz")
+        loop.learn = True
+        loop.mb.learn = True
+        server = serve(loop, 0)
+        port = int(server.server_address[1])
+        link = OnboardLink("127.0.0.1", port)
+        link.post("autonomy_on")
+        camera = np.zeros((32, 32, 3), dtype=np.uint8)
+        loop.ingest(camera, camera, loop.last_hb)
+        loop.frames_ok = True
+        loop.last_frame_t = loop.last_hb
+        loop.dist_m = 3.0
+        loop.forward_m = 3.0
+        loop.mb.r_l = 8.0
+        loop.mb.r_r = 0.0
+        moving = loop.tick(loop.last_hb)
+        folder = tempfile.TemporaryDirectory()
+        session = LiveSession(Path(folder.name) / "state.npz", onboard=True)
+        session.status_log_root = Path(folder.name)
+        session.remote = dict(loop.status())
+        return loop, server, link, session, folder, moving
+
+    def test_auto_ignores_manual_and_the_first_arrow_drives_until_release(self):
+        from sim.recognize_train_live import _apply_live_keys, _drive_onboard
+        from sim.train_monitor import MonitorInput
+
+        loop, server, link, session, folder, moving = self._ready()
+        try:
+            self.assertFalse(moving.stop)
+            self.assertEqual(moving.who, "мозг")
+            self.assertNotEqual(moving.phase, "manual")
+            remembered = float(loop.last_manual_t)
+            loop.handle({"op": "manual", "x": 0.4, "z": -1.0}, loop.last_hb)
+            self.assertEqual(loop.last_manual_t, remembered)
+            self.assertEqual((loop.manual_x, loop.manual_z), (0.0, 0.0))
+            stayed = loop.tick(loop.last_hb)
+            self.assertEqual(stayed.who, "мозг")
+            self.assertNotEqual(stayed.phase, "manual")
+            self.assertNotEqual((round(stayed.x, 5), round(stayed.z, 5)), (0.4, -1.0))
+
+            calls = []
+            original = link._request
+
+            def _spy(method, path, payload=None, timeout=0.8):
+                calls.append((method, path, None if payload is None else dict(payload)))
+                return original(method, path, payload, timeout)
+
+            link._request = _spy
+            now = 80.0
+            tele = {"poll": now, "bridge": now, "manual": 0.0, "axes": False, "hb": now}
+            held = MonitorInput(arrow_down=True, steer_x=1.0, steer_z=1.0, focused=True)
+            _apply_live_keys(session, held, link)
+            _drive_onboard(session, link, held, tele, now)
+            paths = [row[1] for row in calls]
+            self.assertNotIn("/move", paths)
+            self.assertTrue(all(row[1] in ("/pause", "/cmd", "/heartbeat", "/status") for row in calls))
+            ops = [(row[1], (row[2] or {}).get("op"), row[2]) for row in calls]
+            pause_at = next(i for i, row in enumerate(ops) if row[0] == "/pause")
+            take_at = next(i for i, row in enumerate(ops) if row[1] == "takeover")
+            manual_at = next(i for i, row in enumerate(ops) if row[1] == "manual")
+            self.assertLess(pause_at, take_at)
+            self.assertLess(take_at, manual_at)
+            self.assertEqual(ops[pause_at][2], {})
+            self.assertEqual(ops[manual_at][2]["x"], 0.4)
+            self.assertEqual(ops[manual_at][2]["z"], 1.0)
+            self.assertTrue(any("перехват" in line for line in session.log))
+            driven = loop.tick(loop.last_hb)
+            self.assertFalse(driven.stop)
+            self.assertEqual(driven.phase, "manual")
+            self.assertEqual(driven.who, "оператор")
+            self.assertEqual((driven.x, driven.z), (0.4, 1.0))
+            body = loop.status()
+            self.assertTrue(body["paused"])
+            self.assertTrue(body["learning_frozen"])
+            self.assertTrue(body["took_over"])
+            self.assertFalse(body["autonomy"])
+            self.assertEqual(body["mode"], "manual")
+
+            left = np.array(loop.mb.brain.kc_mbon_w, copy=True)
+            right = np.array(loop.mb.brain_r.kc_mbon_w, copy=True)
+            before = int(loop.mb.n_ppl1)
+            loop.handle(
+                {"op": "teacher_aim", "x": 0.0, "z": 0.35, "weight": 1.0, "lost": True, "last_l": True},
+                loop.last_hb,
+            )
+            loop.handle({"op": "punish"}, loop.last_hb)
+            blank = np.zeros((8, 8, 3), dtype=np.uint8)
+            loop.ingest(blank, blank, loop.last_hb)
+            loop.tick(loop.last_hb)
+            self.assertEqual(loop.mb.n_ppl1, before)
+            self.assertEqual(loop.mb.teacher_ppl1_l, 0)
+            self.assertFalse(loop.status()["ppl1_event"])
+            np.testing.assert_array_equal(loop.mb.brain.kc_mbon_w, left)
+            np.testing.assert_array_equal(loop.mb.brain_r.kc_mbon_w, right)
+
+            calls.clear()
+            later = now + 0.2
+            _apply_live_keys(session, held, link)
+            _drive_onboard(session, link, held, tele, later)
+            again = [(row[2] or {}).get("op") for row in calls if row[1] == "/cmd"]
+            self.assertNotIn("takeover", again)
+            self.assertNotIn("takeover_off", again)
+            self.assertNotIn("autonomy_on", again)
+            self.assertIn("manual", again)
+            still = loop.tick(loop.last_hb)
+            self.assertEqual((still.x, still.z), (0.4, 1.0))
+            self.assertFalse(still.stop)
+
+            calls.clear()
+            let_go = MonitorInput(focused=True)
+            _apply_live_keys(session, let_go, link)
+            _drive_onboard(session, link, let_go, tele, later + 0.05)
+            zeros = [row for row in calls if row[1] == "/cmd" and (row[2] or {}).get("op") == "manual"]
+            self.assertEqual(len(zeros), 1)
+            self.assertEqual(zeros[0][2]["x"], 0.0)
+            self.assertEqual(zeros[0][2]["z"], 0.0)
+            released_ops = [(row[2] or {}).get("op") for row in calls if row[1] == "/cmd"]
+            self.assertNotIn("autonomy_on", released_ops)
+            self.assertNotIn("resume", released_ops)
+            self.assertNotIn("takeover_off", released_ops)
+            stopped = loop.tick(loop.last_hb)
+            self.assertTrue(stopped.stop)
+            self.assertEqual((stopped.x, stopped.z), (0.0, 0.0))
+            quiet = loop.status()
+            self.assertTrue(quiet["paused"])
+            self.assertTrue(quiet["took_over"])
+            self.assertFalse(quiet["autonomy"])
+            self.assertEqual(quiet["mode"], "manual")
+            self.assertTrue(quiet["learning_frozen"])
+        finally:
+            folder.cleanup()
+            server.shutdown()
+            server.server_close()
+
+    def test_estop_stays_latched_while_the_arrow_is_held(self):
+        from sim.recognize_train_live import _apply_live_keys, _drive_onboard
+        from sim.train_monitor import MonitorInput
+
+        loop, server, link, session, folder, _moving = self._ready()
+        try:
+            now = 90.0
+            tele = {"poll": now, "bridge": now, "manual": 0.0, "axes": False, "hb": now}
+            held = MonitorInput(arrow_down=True, steer_x=1.0, steer_z=0.0, focused=True)
+            _apply_live_keys(session, held, link)
+            _drive_onboard(session, link, held, tele, now)
+            self.assertEqual(loop.status()["mode"], "manual")
+            calls = []
+            original = link._request
+
+            def _spy(method, path, payload=None, timeout=0.8):
+                calls.append((method, path, None if payload is None else dict(payload)))
+                return original(method, path, payload, timeout)
+
+            link._request = _spy
+            hit = MonitorInput(estop=True, arrow_down=True, steer_x=1.0, steer_z=0.0, focused=True)
+            _apply_live_keys(session, hit, link)
+            _drive_onboard(session, link, hit, tele, now + 0.2)
+            ops = [(row[2] or {}).get("op") for row in calls if row[1] == "/cmd"]
+            self.assertIn("estop", ops)
+            self.assertNotIn("takeover", ops)
+            self.assertNotIn("manual", ops)
+            self.assertEqual(loop.status()["mode"], "estop")
+            stopped = loop.tick(loop.last_hb)
+            self.assertTrue(stopped.stop)
+            calls.clear()
+            _apply_live_keys(session, held, link)
+            _drive_onboard(session, link, held, tele, now + 0.4)
+            follow = [(row[2] or {}).get("op") for row in calls if row[1] == "/cmd"]
+            self.assertNotIn("takeover", follow)
+            self.assertNotIn("manual", follow)
+            self.assertEqual(loop.status()["mode"], "estop")
+            self.assertFalse(loop.status()["took_over"])
+            self.assertTrue(loop.tick(loop.last_hb).stop)
+        finally:
+            folder.cleanup()
+            server.shutdown()
+            server.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()
