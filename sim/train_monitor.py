@@ -4197,7 +4197,10 @@ class TrainMonitor:
         if view.record_on and view.record_latch == label:
             self._button(screen, rect, text, None, False, label_color=ESTOP_LABEL, fill=RED, key=key)
             return
-        self._button(screen, rect, text, LAMP_OFF, rect.collidepoint(self._mouse()), key=key)
+        # A lamp shifts the caption by 20px. The 1024 slots are only as wide
+        # as the word plus the pill cap, so the lamp would clip НЕГ and СОР.
+        lamp = None if narrow else LAMP_OFF
+        self._button(screen, rect, text, lamp, rect.collidepoint(self._mouse()), key=key)
 
     def _ensure_audio(self) -> bool:
         if self.audio_ok is not None:
