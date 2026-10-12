@@ -2082,6 +2082,7 @@ class TrainMonitor:
         self._bind_display()
         self._ensure_pin()
         self._last_view = view
+        self._note_driver(view)
         if self.window is not None and not self._minimized:
             ww, wh = self.window.get_size()
             if ww >= 64 and wh >= 64:
@@ -2135,6 +2136,74 @@ class TrainMonitor:
             color = VALUE if role == "command" else LABEL
             screen.blit(font.render(text, True, color), (16, footer + y))
 
+    def _note_driver(self, view: MonitorView) -> None:
+        """Append a journal line when the header driver changes. The session log is not touched."""
+        from .ui_present import driver_journal_line, driver_name
+
+        name = driver_name(view)
+        prev = getattr(self, "_driver_shown", None)
+        if prev is None:
+            self._driver_shown = name
+            self._driver_notes = []
+            return
+        if name == prev:
+            return
+        self._driver_shown = name
+        notes = list(getattr(self, "_driver_notes", ()) or ())
+        notes.append(driver_journal_line(name))
+        self._driver_notes = notes[-40:]
+        self._journal_cache = None
+
+    def _driver_slot(self, view: MonitorView, title_x: int, title_w: int) -> tuple:
+        """``(text, width, left_limit, right_limit)`` for the header plaque."""
+        from .ui_present import driver_banner
+
+        text = driver_banner(view)
+        font = self.font_ind or self.font
+        width = font.size(text)[0] + 28
+        lamp_w = 14 + self.font_sm.size("борт")[0]
+        after_lamp = title_x + int(title_w) + 18 + lamp_w + 8
+        help_x = self.help_bar_rect.x if self.help_bar_rect is not None else after_lamp
+        return text, width, after_lamp, help_x
+
+    def _driver_takes_title(self, view: MonitorView, title_x: int, title_w: int) -> bool:
+        _text, width, after_lamp, help_x = self._driver_slot(view, title_x, title_w)
+        return help_x - after_lamp < width + 8
+
+    def _draw_driver_plaque(self, screen, view: MonitorView, title_x: int, title_w: int, hide_title: bool) -> None:
+        import pygame
+
+        from .ui_present import DRIVER_HUMAN, DRIVER_TEACHER, driver_name
+
+        text, width, after_lamp, help_x = self._driver_slot(view, title_x, title_w)
+        if hide_title:
+            x = title_x
+        else:
+            x = after_lamp
+        right = help_x - 4
+        if x + width > right:
+            width = right - x
+        font = self.font_ind or self.font
+        glyph = font.render(text, True, VALUE)
+        h = min(MENU_H - 8, max(20, glyph.get_height() + 4))
+        rect = pygame.Rect(x, (MENU_H - h) // 2, max(0, width), h)
+        self.driver_rect = rect
+        if rect.w < font.size("ВЕДЁТ:")[0]:
+            self.driver_rect = pygame.Rect(0, 0, 0, 0)
+            return
+        self._card(screen, rect, radius=max(1, h // 2))
+        name = driver_name(view)
+        if name == DRIVER_HUMAN:
+            tone = AMBER
+        elif name == DRIVER_TEACHER:
+            tone = TEACHER
+        elif name == "СМЕШАННО":
+            tone = PEACH
+        else:
+            tone = GREEN
+        self._lamp(screen, (rect.x + 12, rect.centery), tone, 5)
+        self._blit_clipped(screen, glyph, (rect.x + 22, rect.centery - glyph.get_height() // 2), rect)
+
     def _draw_menu_bar(self, screen, view: MonitorView) -> None:
         import pygame
 
@@ -2147,8 +2216,11 @@ class TrainMonitor:
         self._mini_glyph(screen, self.help_bar_rect, "i")
         title = self.font.render(view.title, True, LABEL)
         title_x = self.doggibot_rect.right + 12
-        screen.blit(title, (title_x, (MENU_H - title.get_height()) // 2))
-        self._link_lamp(screen, view, title_x + title.get_width() + 18)
+        hide_title = self._driver_takes_title(view, title_x, title.get_width())
+        if not hide_title:
+            screen.blit(title, (title_x, (MENU_H - title.get_height()) // 2))
+            self._link_lamp(screen, view, title_x + title.get_width() + 18)
+        self._draw_driver_plaque(screen, view, title_x, title.get_width(), hide_title)
         self._go2_button(screen)
         self._brain_button(screen, view)
         self._teacher_button(screen, view)
@@ -3081,7 +3153,9 @@ class TrainMonitor:
         if view.learner == "mb" and self.flash_open:
             log_n = max(3, (journal.h - 34) // 16)
         self.log_rows = int(log_n)
-        lines = tuple(view.log_lines[-log_n:])
+        extra = tuple(getattr(self, "_driver_notes", ()) or ())
+        lines = tuple(view.log_lines) + extra
+        lines = lines[-log_n:]
         key = (int(content.w), int(content.h), lines, theme_name())
         cached = None if no_snap() else self._journal_cache
         if cached is not None and cached[0] == key:
