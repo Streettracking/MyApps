@@ -84,13 +84,14 @@ class MeasureTest(unittest.TestCase):
         self.assertEqual(m.prompt(), "УБЕРИ .128 ИЗ КАДРА")
         for _ in range(4):
             clock.t += 3.0
-            self.assertIsNone(m.tick(None, log))
+            self.assertIsNone(m.tick(None, log, board=(12, 200)))
         self.assertEqual(m.phase()[0], "wait")
-        self.assertEqual(m.prompt(), "жду калибровку борта…")
-        self.assertEqual(logged.count(next(x for x in logged if "жду калибровку" in x)), 1)
+        self.assertEqual(m.prompt(), "борт не готов: калибровка 12/200")
+        self.assertEqual(rm.board_phrase((12, 200)), "калибровка 12/200")
+        self.assertEqual(logged.count(next(x for x in logged if "борт не готов" in x)), 1)
         self.assertEqual(m.bez, [])
 
-        self.assertIsNone(m.tick(0.10, log))
+        self.assertIsNone(m.tick(0.10, log, board=(200, 200)))
         self.assertEqual(m.prompt(), "БЕЗ .128: 15 с")
         clock.t += 7.5
         self.assertEqual(m.prompt(), "БЕЗ .128: 8 с")
@@ -114,7 +115,7 @@ class MeasureTest(unittest.TestCase):
         self.assertTrue(all(STAMP.match(row) for row in logged))
         for needle in (
             "замер ДО: старт убери .128",
-            "замер ДО: жду калибровку борта",
+            "замер ДО: борт не готов: калибровка 12/200",
             "замер ДО: конец убери .128",
             "замер ДО: старт без .128",
             "замер ДО: конец без .128 среднее=15%",
@@ -162,27 +163,101 @@ class MeasureTest(unittest.TestCase):
         clock, log = Clock(), []
         m = rm.Measure(clock)
         m.press("before", log.append)
-        line = run(m, clock, log, None, None)
-        self.assertIsNone(line)
+        for _ in range(6):
+            clock.t += 3.0
+            self.assertIsNone(m.tick(0.9, log.append, board=(4, 200)))
         self.assertTrue(m.running)
         self.assertEqual(m.phase()[0], "wait")
-        self.assertEqual(m.prompt(), "жду калибровку борта…")
+        self.assertEqual(m.prompt(), "борт не готов: калибровка 4/200")
+        self.assertEqual(m.bez, [])
         self.assertNotIn("before", m.results)
 
-    def test_press_turns_learning_and_auto_off_only(self):
+    def test_restores_learn_and_auto_and_reads_board_status(self):
+        """Board calib, not the trainer counter. Learn and auto come back after end or cancel."""
         logs = []
-        session = SimpleNamespace(learn=True, pilot=SimpleNamespace(autonomy=True), onboard=False, _log=logs.append)
+        trainer = SimpleNamespace(calib_progress=lambda: (200, 200), conf=SimpleNamespace(ready=True, percent=90.0))
+        session = SimpleNamespace(
+            learn=True,
+            pilot=SimpleNamespace(autonomy=True),
+            onboard=True,
+            mb=trainer,
+            remote={
+                "calib_n": 40,
+                "calib_total": 200,
+                "confidence": 90.0,
+                "confidence_ready": True,
+                "learning": True,
+                "autonomy": True,
+            },
+            _log=logs.append,
+        )
+        self.assertEqual(rm.board_calib(session), (40, 200))
+        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "калибровка 40/200")
+        self.assertNotEqual(rm.board_calib(session), trainer.calib_progress())
+
         inp = SimpleNamespace(measure_before=True, measure_after=False, pause_learn=False, autonomy_toggle=False)
         rm.drive_measure(session, inp)
         self.assertTrue(inp.pause_learn and inp.autonomy_toggle)
-        session.learn, session.pilot.autonomy = False, False
+        session.remote["learning"] = False
+        session.remote["autonomy"] = False
+        m = session._measure
+        m.tick(0.9, logs.append, rm.board_calib(session))
+        self.assertEqual(m.prompt(), "борт не готов: калибровка 40/200")
+        self.assertEqual(m.phase()[0], "wait")
+        self.assertEqual(m.bez, [])
+
+        session.remote["calib_n"] = 200
+        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "готов")
+        self.assertTrue(rm.board_ready(rm.board_calib(session)))
+
+        # Switch to ПОСЛЕ keeps them off; the saved states stay the ones from before.
         inp = SimpleNamespace(measure_before=False, measure_after=True, pause_learn=False, autonomy_toggle=False)
-        rm.drive_measure(session, inp)  # switch to ПОСЛЕ: training stays off
+        rm.drive_measure(session, inp)
         self.assertFalse(inp.pause_learn or inp.autonomy_toggle)
+        self.assertEqual(m.saved, {"learn": True, "auto": True, "teacher": False})
+
+        # Cancel restores both through the same buttons.
         inp = SimpleNamespace(measure_before=False, measure_after=True, pause_learn=False, autonomy_toggle=False)
-        rm.drive_measure(session, inp)  # cancel
-        self.assertFalse(inp.pause_learn or inp.autonomy_toggle)
+        rm.drive_measure(session, inp)
+        self.assertTrue(inp.pause_learn and inp.autonomy_toggle)
+        self.assertIsNone(m.saved)
         self.assertIn("замер отменён", logs)
+
+        # A finished run asks for the same restore on the next key pass.
+        # Only ОБУЧЕНИЕ was on; АВТО stays off.
+        session.remote["learning"] = True
+        session.remote["autonomy"] = False
+        session._measure = rm.Measure(Clock())
+        inp = SimpleNamespace(measure_before=True, measure_after=False, pause_learn=False, autonomy_toggle=False)
+        rm.drive_measure(session, inp)
+        self.assertTrue(inp.pause_learn)
+        self.assertFalse(inp.autonomy_toggle)
+        session.remote["learning"] = False
+        done = session._measure
+        clock = done.clock
+        line = run(done, clock, logs, 0.10, 0.40)
+        self.assertIsNotNone(line)
+        self.assertTrue(done.pending_restore)
+        inp = SimpleNamespace(measure_before=False, measure_after=False, pause_learn=False, autonomy_toggle=False)
+        rm.drive_measure(session, inp)
+        self.assertTrue(inp.pause_learn)
+        self.assertFalse(inp.autonomy_toggle)
+        self.assertIsNone(done.saved)
+
+        # Simulator: no board status, and the trainer's 3/200 is not what the block shows.
+        session.onboard = False
+        session.remote = {}
+        trainer.calib_progress = lambda: (3, 200)
+        self.assertEqual(rm.board_calib(session), (200, 200))
+        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "готов")
+        view = SimpleNamespace()
+        rm.measure_frame(session, view)
+        self.assertEqual(view.measure_board, "готов")
+        session.onboard = True
+        session.remote = {"calib_n": 7, "calib_total": 200, "confidence_ready": False}
+        rm.measure_frame(session, view)
+        self.assertEqual(view.measure_board, "калибровка 7/200")
+        self.assertNotIn("3/200", view.measure_board)
 
     def test_onboard_value(self):
         s = SimpleNamespace(onboard=True, remote={"confidence": 42.0, "confidence_ready": True})

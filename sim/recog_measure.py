@@ -1,11 +1,14 @@
 """«ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ»: УЗНАЮ without and with the .128 dog in frame.
 
 Press: ОБУЧЕНИЕ and АВТО go off through their usual buttons. The run then
-waits until the board reports calibration ready («УБЕРИ .128 ИЗ КАДРА»; while
-it is not ready the prompt is «жду калибровку борта…» and the clock stays
-put). Then 15 s «БЕЗ .128» (every ready frame's УЗНАЮ is averaged), 5 s
-«ПОСТАВЬ .128 В КАДР» (not averaged), 15 s «С .128». The same button again
-cancels. A measurement never turns training back on.
+waits until board status says calibration is done («УБЕРИ .128 ИЗ КАДРА»;
+while it is not, the prompt is «борт не готов: калибровка X/200» and the
+clock stays put). The measure block shows that board status, «калибровка
+X/200» or «готов», and never the trainer's own 200-frame counter. Then 15 s
+«БЕЗ .128» (every ready frame's УЗНАЮ is averaged), 5 s «ПОСТАВЬ .128 В
+КАДР» (not averaged), 15 s «С .128». The same button again cancels. When the
+run ends or is cancelled, ОБУЧЕНИЕ and АВТО return to the states they had
+before the press.
 
 Each step start, step end, and the averages go to the session log, which the
 trainer journal stamps into journal.log.
@@ -22,6 +25,50 @@ CLEAR = 0.15
 HIGH = 0.50
 
 WHICH = {"before": "ДО", "after": "ПОСЛЕ"}
+
+
+def board_calib(session) -> tuple[int, int] | None:
+    """``(n, total)`` from board status. Never the trainer's own counter.
+
+    A simulator has no separate board, so the measure block reads «готов»
+    and does not paint ``mb.calib_progress``. On the robot, only
+    ``remote["calib_n"]`` counts. A status without that field is not ready.
+    """
+    if not getattr(session, "onboard", False):
+        return (200, 200)
+    remote = getattr(session, "remote", None)
+    if not isinstance(remote, dict) or "calib_n" not in remote:
+        return None
+    try:
+        n = int(remote["calib_n"])
+        total = int(remote.get("calib_total") or 200)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        total = 200
+    return max(0, n), total
+
+
+def board_ready(board) -> bool:
+    if board is None:
+        return False
+    n, total = board
+    return int(total) > 0 and int(n) >= int(total)
+
+
+def board_phrase(board) -> str:
+    """«калибровка X/200» while the board is filling, «готов» when it is done."""
+    if board_ready(board):
+        return "готов"
+    if board is None:
+        return "калибровка —/200"
+    n, total = board
+    return "калибровка %d/%d" % (int(n), int(total))
+
+
+def board_wait(board) -> str:
+    """Why ЗАМЕР ДО / ЗАМЕР ПОСЛЕ is still waiting."""
+    return "борт не готов: " + board_phrase(board)
 
 
 def uznayu_value(session) -> float | None:
@@ -80,6 +127,11 @@ class Measure:
         self.word = ""
         self._mark = ""
         self._saw_unready = False
+        self.board = (200, 200)
+        # learn/auto as they were at the first press of this run. Restored
+        # when the run ends or the same button cancels it.
+        self.saved = None
+        self.pending_restore = False
 
     @property
     def running(self) -> bool:
@@ -90,6 +142,7 @@ class Measure:
         if self.which == which:
             self.which = None
             self.armed = False
+            self.pending_restore = True
             log("замер отменён")
             return False
         if self.which is not None:
@@ -101,6 +154,7 @@ class Measure:
         self.s = []
         self._mark = "wait"
         self._saw_unready = False
+        self.pending_restore = False
         log("замер %s: старт убери .128" % WHICH[which])
         return True
 
@@ -123,7 +177,7 @@ class Measure:
         sec = max(0, int(left + 0.999))
         if name == "wait":
             if self._saw_unready:
-                return "жду калибровку борта…"
+                return board_wait(self.board)
             return "УБЕРИ .128 ИЗ КАДРА"
         if name == "bez":
             return "БЕЗ .128: %d с" % sec
@@ -161,15 +215,20 @@ class Measure:
             if nxt == "done" or nxt == name:
                 break
 
-    def tick(self, value: float | None, log) -> str | None:
-        """Once per frame. Returns the result line when a run finishes."""
+    def tick(self, value: float | None, log, board=(200, 200)) -> str | None:
+        """Once per frame. Returns the result line when a run finishes.
+
+        ``board`` is ``(n, total)`` from board status, or None when the robot
+        has not reported calibration. The trainer's own counter is not read.
+        """
+        self.board = board
         if self.which is None:
             return None
         if not self.armed:
-            if value is None:
+            if not board_ready(board):
                 if not self._saw_unready:
                     self._saw_unready = True
-                    log("замер %s: жду калибровку борта" % WHICH[self.which])
+                    log("замер %s: %s" % (WHICH[self.which], board_wait(board)))
                 return None
             self._arm(log)
         name, _left = self.phase()
@@ -182,6 +241,7 @@ class Measure:
             return None
         which, self.which = self.which, None
         self.armed = False
+        self.pending_restore = True
         res = {"bez": _mean(self.bez), "s": _mean(self.s)}
         self.results[which] = res
         line = "замер %s: без=%s с=%s" % (WHICH[which], _pct_log(res["bez"]), _pct_log(res["s"]))
@@ -215,28 +275,54 @@ def measure_of(session) -> Measure:
     return m
 
 
+def _restore(session, inp, m: Measure) -> None:
+    """Flip ОБУЧЕНИЕ / АВТО back through their buttons when the run let them go."""
+    saved = m.saved
+    m.saved = None
+    m.pending_restore = False
+    if not saved:
+        return
+    from .trainer_journal import _state
+
+    state = _state(session)
+    if bool(state["learn"]) != bool(saved["learn"]):
+        inp.pause_learn = True
+    if bool(state["auto"]) != bool(saved["auto"]):
+        inp.autonomy_toggle = True
+
+
 def drive_measure(session, inp) -> None:
-    """Before the keys: a press turns ОБУЧЕНИЕ / АВТО off through their own buttons."""
+    """Before the keys: a press turns ОБУЧЕНИЕ / АВТО off; the end turns them back."""
     from .trainer_journal import _state
 
     m = measure_of(session)
     log = session._log
+    pressed = bool(getattr(inp, "measure_before", False) or getattr(inp, "measure_after", False))
+    if m.pending_restore and not m.running and not pressed:
+        _restore(session, inp, m)
     for which, flag in (("before", "measure_before"), ("after", "measure_after")):
-        if getattr(inp, flag, False) and m.press(which, log):
-            state = _state(session)
-            if state["learn"]:
-                inp.pause_learn = True
-            if state["auto"]:
-                inp.autonomy_toggle = True
+        if not getattr(inp, flag, False):
+            continue
+        if m.press(which, log):
+            if m.saved is None:
+                m.saved = dict(_state(session))
+                if m.saved["learn"]:
+                    inp.pause_learn = True
+                if m.saved["auto"]:
+                    inp.autonomy_toggle = True
+        elif m.saved is not None and not m.running:
+            _restore(session, inp, m)
 
 
 def measure_frame(session, view) -> None:
     """After the frame: collect, finish, and put the texts on the view."""
     m = measure_of(session)
-    m.tick(uznayu_value(session), session._log)
+    board = board_calib(session)
+    m.tick(uznayu_value(session), session._log, board)
     view.measure_run = m.which or ""
     view.measure_before = m.button_text("before")
     view.measure_after = m.button_text("after")
     view.measure_prompt = m.prompt()
+    view.measure_board = board_phrase(board)
     view.measure_line = m.line()
     view.measure_lines = m.lines()

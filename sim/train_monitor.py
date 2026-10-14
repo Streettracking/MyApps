@@ -271,6 +271,8 @@ class MonitorView:
     measure_after: str = "ЗАМЕР ПОСЛЕ"
     measure_run: str = ""
     measure_prompt: str = ""
+    # Board status only: «калибровка X/200» or «готов». Not the trainer counter.
+    measure_board: str = ""
     measure_line: str = "до: без   — · с   —   после: без   — · с   —"
     measure_lines: tuple = ("до: без   — · с   —   после: без   — · с   —",)
     record_saved: int = 0
@@ -3387,6 +3389,9 @@ class TrainMonitor:
         if not line:
             parts = tuple(getattr(view, "measure_lines", ()) or ())
             line = "   ".join(part for part in parts if part)
+        board = str(getattr(view, "measure_board", "") or "")
+        if board:
+            line = (board + "   " + line).strip()
         if not line:
             return
         size = 18
