@@ -137,6 +137,9 @@ class RecognizeTrainSim:
 
     def _log(self, text: str) -> None:
         self.log.append(f"{self.world.t:6.1f}s  {text}")
+        from .trainer_journal import mirror_log
+
+        mirror_log(self, text)
 
     def _record_metric(self) -> None:
         if self.mb is not None:
@@ -838,6 +841,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
     from .frame_record import encode_camera_jpeg, note_operator, weak_label_now
     from .recognize_train_live import _drive_teacher, _learning_now
 
+    from .trainer_journal import install_journal, journal_frame
+
+    install_journal(session, "сим")
     teacher_state = {"frame": None, "log": "", "log_t": -10.0}
     sim_frame = 0
     # Learning always starts off in the window, whatever the saved state says.
@@ -883,6 +889,7 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
         if not rec.enabled:
             marks.latched = None
         _apply_pilot_keys(session, inp, float(session.world.t))
+        journal_frame(session, inp)
         if inp.reset:
             session.reset()
         if inp.lidar_reset:

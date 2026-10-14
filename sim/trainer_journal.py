@@ -42,6 +42,76 @@ class Journal:
         return line
 
 
+def stamp_now(now: float | None = None) -> str:
+    now = time.time() if now is None else float(now)
+    return time.strftime("%H:%M:%S", time.localtime(now)) + ".%03d" % int((now % 1.0) * 1000)
+
+
+def install_journal(session, where: str) -> Journal:
+    """File journal for a real trainer loop (sim or robot). Every line is flushed."""
+    j = Journal(journal_path())
+    session.journal = j
+    j.write("тренер запущен (%s)" % where)
+    return j
+
+
+def mirror_log(session, text: str) -> None:
+    """session._log text: also into journal.log and, stamped, into trainer.log (stdout)."""
+    j = getattr(session, "journal", None)
+    if j is None or j.path is None:
+        return
+    j.write("· " + str(text))
+    try:
+        print("%s  %s" % (stamp_now(), text), flush=True)
+    except Exception:
+        pass
+
+
+def _pct(conf) -> str:
+    if conf is None:
+        return "—"
+    if not getattr(conf, "ready", False):
+        return "калибровка"
+    return "%3.0f%%%s" % (float(getattr(conf, "percent", 0.0)), " ✓" if getattr(conf, "recognized", False) else "")
+
+
+def uznayu_line(session) -> str | None:
+    """«УЗНАЮ» joint and per eye, from the dog's status or the local brain."""
+    if getattr(session, "onboard", False):
+        r = getattr(session, "remote", None) or {}
+        if "confidence" not in r:
+            return None
+
+        def one(key, ready, rec):
+            if not r.get(ready, True):
+                return "калибровка"
+            return "%3.0f%%%s" % (float(r.get(key) or 0.0), " ✓" if r.get(rec) else "")
+
+        return "УЗНАЮ %s  L %s  R %s" % (
+            one("confidence", "confidence_ready", "recognized"),
+            one("confidence_L", "confidence_L_ready", "recognized_L"),
+            one("confidence_R", "confidence_R_ready", "recognized_R"),
+        )
+    mb = getattr(session, "mb", None)
+    if mb is None:
+        return None
+    return "УЗНАЮ %s  L %s  R %s" % (_pct(getattr(mb, "conf", None)), _pct(getattr(mb, "conf_l", None)), _pct(getattr(mb, "conf_r", None)))
+
+
+def _pam_total(session) -> int | None:
+    if getattr(session, "onboard", False):
+        r = getattr(session, "remote", None) or {}
+        for key in ("n_pam_total", "pam_count", "n_pam"):
+            if r.get(key) is not None:
+                try:
+                    return int(r[key])
+                except (TypeError, ValueError):
+                    return None
+        return None
+    mb = getattr(session, "mb", None)
+    return None if mb is None else int(getattr(mb, "n_pam", 0))
+
+
 def journal_of(session) -> Journal:
     # Memory only unless the trainer loop installed a file journal (tests never write to APPDATA).
     j = getattr(session, "journal", None)
@@ -113,16 +183,34 @@ def journal_frame(session, inp) -> None:
     if arrows and not getattr(session, "_j_arrows", False):
         j.write("стрелки x=%+.0f z=%+.0f" % (float(inp.steer_x), float(inp.steer_z)))
     session._j_arrows = arrows
-    focus_halt = bool(getattr(session, "_teacher_halt", False)) and not bool(getattr(inp, "focused", True))
-    try:
-        from .recognize_train_live import effective_focus
+    focus_lost = not bool(getattr(inp, "focused", True))
+    if focus_lost:
+        try:
+            from .recognize_train_live import effective_focus
 
-        focus_halt = focus_halt and not effective_focus(session, inp)
-    except Exception:
-        pass
-    if focus_halt != bool(getattr(session, "_j_focus", False)):
-        j.write("фокус потерян: учитель стоит" if focus_halt else "фокус вернулся")
-    session._j_focus = focus_halt
+            focus_lost = not effective_focus(session, inp)
+        except Exception:
+            pass
+    if focus_lost != bool(getattr(session, "_j_focus", False)):
+        j.write("фокус потерян: стоп" if focus_lost else "фокус вернулся")
+    session._j_focus = focus_lost
+    pilot = getattr(session, "pilot", None)
+    mode = str(getattr(pilot, "mode", "") or "")
+    if mode and mode != getattr(session, "_j_mode", None) and getattr(session, "_j_mode", None) is not None:
+        j.write("режим: %s" % mode)
+    session._j_mode = mode
+    now = float(j.clock())
+    if now - float(getattr(session, "_j_uz_t", -1e9)) >= 1.0:
+        session._j_uz_t = now
+        line = uznayu_line(session)
+        if line:
+            j.write(line)
+    pam = _pam_total(session)
+    last_pam = getattr(session, "_j_pam", None)
+    if pam is not None and last_pam is not None and pam > last_pam:
+        j.write("PAM +%d, всего %d" % (pam - last_pam, pam))
+    if pam is not None:
+        session._j_pam = pam
     state = _state(session)
     prev = getattr(session, "_j_state", None)
     if prev is not None:

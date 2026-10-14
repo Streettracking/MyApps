@@ -345,6 +345,9 @@ class LiveSession:
 
     def _log(self, text: str) -> None:
         self.log.append(f"{self.now():6.1f}s  {text}")
+        from .trainer_journal import mirror_log
+
+        mirror_log(self, text)
 
     def _record_metric(self) -> None:
         if self.mb is not None:
@@ -1473,10 +1476,9 @@ def run_live_gui(
     teacher_state = {"frame": None, "log": "", "log_t": -10.0}
     announced = False
     command_name = "—"
-    from .trainer_journal import Journal, journal_path
+    from .trainer_journal import install_journal
 
-    session.journal = Journal(journal_path())
-    session.journal.write("тренер запущен (%s)" % ("борт" if session.onboard else "окно"))
+    install_journal(session, "борт" if session.onboard else "робот")
     try:
         while True:
             inp = mon.pump()
