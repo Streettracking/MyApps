@@ -272,7 +272,8 @@ class MonitorView:
     measure_after: str = "С .128"
     measure_run: str = ""
     measure_prompt: str = ""
-    # Board status only: «калибровка X/200» or «готов». Not the trainer counter.
+    # Board status: «калибровка n/need», or «борт: готов» / «борт: не готов».
+    # Not the trainer's 200-frame counter.
     measure_board: str = ""
     measure_line: str = "без    — · с    — · разница    —"
     measure_lines: tuple = ("без    — · с    — · разница    —",)

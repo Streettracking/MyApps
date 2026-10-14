@@ -185,6 +185,8 @@ class MeasureTest(unittest.TestCase):
             remote={
                 "calib_n": 40,
                 "calib_total": 200,
+                "confidence_calib_n": 12,
+                "confidence_calib_need": 80,
                 "confidence": 90.0,
                 "confidence_ready": True,
                 "learning": True,
@@ -192,8 +194,9 @@ class MeasureTest(unittest.TestCase):
             },
             _log=logs.append,
         )
-        self.assertEqual(rm.board_calib(session), (40, 200))
-        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "калибровка 40/200")
+        self.assertEqual(rm.board_calib(session), ("window", 12, 80, False))
+        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "калибровка 12/80")
+        self.assertNotIn("40/200", rm.board_phrase(rm.board_calib(session)))
         self.assertNotEqual(rm.board_calib(session), trainer.calib_progress())
 
         inp = SimpleNamespace(measure_before=True, measure_after=False, pause_learn=False, autonomy_toggle=False)
@@ -202,10 +205,11 @@ class MeasureTest(unittest.TestCase):
         m = session._measure
         self.assertFalse(m.running)
         self.assertIsNone(m.saved)
-        self.assertEqual(m.prompt(), "борт не готов: калибровка 40/200")
+        self.assertEqual(m.prompt(), "борт не готов: калибровка 12/80")
 
-        session.remote["calib_n"] = 200
-        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "готов")
+        session.remote["confidence_calib_n"] = 80
+        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "калибровка 80/80")
+        self.assertTrue(rm.board_ready(rm.board_calib(session)))
         inp = SimpleNamespace(measure_before=True, measure_after=False, pause_learn=False, autonomy_toggle=False)
         rm.drive_measure(session, inp)
         self.assertTrue(inp.pause_learn and inp.autonomy_toggle)
@@ -231,7 +235,7 @@ class MeasureTest(unittest.TestCase):
         # Only ОБУЧЕНИЕ was on; АВТО stays off.
         session.remote["learning"] = True
         session.remote["autonomy"] = False
-        session.remote["calib_n"] = 200
+        session.remote["confidence_calib_n"] = 80
         session._measure = rm.Measure(Clock())
         inp = SimpleNamespace(measure_before=True, measure_after=False, pause_learn=False, autonomy_toggle=False)
         rm.drive_measure(session, inp)
@@ -251,20 +255,55 @@ class MeasureTest(unittest.TestCase):
         self.assertIsNone(done.saved)
 
         session.onboard = False
-        session.remote = {}
+        session.remote = {"calib_n": 3, "calib_total": 200}
         trainer.calib_progress = lambda: (3, 200)
-        self.assertEqual(rm.board_calib(session), (200, 200))
-        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "готов")
+        self.assertEqual(rm.board_calib(session), ("flag", True))
+        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "борт: готов")
         view = SimpleNamespace()
         rm.measure_frame(session, view)
-        self.assertEqual(view.measure_board, "готов")
+        self.assertEqual(view.measure_board, "борт: готов")
+        self.assertNotIn("3/200", view.measure_board)
         self.assertEqual(view.measure_before, "БЕЗ .128")
         self.assertEqual(view.measure_after, "С .128")
         session.onboard = True
         session.remote = {"calib_n": 7, "calib_total": 200, "confidence_ready": False}
         rm.measure_frame(session, view)
-        self.assertEqual(view.measure_board, "калибровка 7/200")
+        self.assertEqual(view.measure_board, "борт: не готов")
+        self.assertNotIn("7/200", view.measure_board)
         self.assertNotIn("3/200", view.measure_board)
+        inp = SimpleNamespace(measure_before=True, measure_after=False, pause_learn=False, autonomy_toggle=False)
+        session._measure = rm.Measure(Clock())
+        session.remote["learning"] = True
+        session.remote["autonomy"] = False
+        rm.drive_measure(session, inp)
+        self.assertTrue(inp.pause_learn)
+        self.assertTrue(session._measure.running)
+
+    def test_eyes_must_fill_and_old_board_does_not_block(self):
+        session = SimpleNamespace(
+            onboard=True,
+            mb=SimpleNamespace(calib_progress=lambda: (1, 200)),
+            remote={
+                "calib_n": 1,
+                "confidence_calib_n_L": 5,
+                "confidence_calib_need_L": 20,
+                "confidence_calib_n_R": 20,
+                "confidence_calib_need_R": 20,
+                "confidence_ready": True,
+            },
+            _log=lambda _text: None,
+        )
+        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "калибровка 5/20")
+        self.assertFalse(rm.board_ready(rm.board_calib(session)))
+        session.remote["confidence_calib_n_L"] = 20
+        self.assertEqual(rm.board_calib(session), ("window", 20, 20, True))
+        self.assertTrue(rm.board_ready(rm.board_calib(session)))
+
+        session.remote = {"confidence_ready": False, "calib_n": 4, "calib_total": 200}
+        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "борт: не готов")
+        self.assertTrue(rm.board_ready(rm.board_calib(session)))
+        session.remote["confidence_ready"] = True
+        self.assertEqual(rm.board_phrase(rm.board_calib(session)), "борт: готов")
 
     def test_onboard_value(self):
         s = SimpleNamespace(onboard=True, remote={"confidence": 42.0, "confidence_ready": True})

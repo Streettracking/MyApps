@@ -11,8 +11,14 @@ without storing it and starts its own 15 s.
 The strip keeps only the latest value of each side:
 «без X% · с Y% · разница Z». A new measurement replaces that side.
 Each finished result is written to the session log, which the trainer
-journal stamps into journal.log. The block shows board calibration
-(«калибровка X/200» or «готов»), never the trainer's own 200-frame counter.
+journal stamps into journal.log.
+
+Board status never shows the trainer's own 200-frame counter. When the
+board sends confidence_calib_n / confidence_calib_need (and the _L / _R
+pairs), the strip shows «калибровка n/need» and БЕЗ / С start only once
+every reported window is full. A board without those keys shows
+«борт: готов» or «борт: не готов» from confidence_ready and does not
+block the buttons.
 """
 
 from __future__ import annotations
@@ -26,43 +32,97 @@ WHICH = {"bez": "без .128", "s": "с .128"}
 BUTTON = {"bez": "БЕЗ .128", "s": "С .128"}
 
 
-def board_calib(session) -> tuple[int, int] | None:
-    """``(n, total)`` from board status. Never the trainer's own counter.
-
-    A simulator has no separate board, so the measure block reads «готов»
-    and does not paint ``mb.calib_progress``. On the robot, only
-    ``remote["calib_n"]`` counts. A status without that field is not ready.
-    """
-    if not getattr(session, "onboard", False):
-        return (200, 200)
-    remote = getattr(session, "remote", None)
-    if not isinstance(remote, dict) or "calib_n" not in remote:
+def _window_pair(remote, suffix: str):
+    """``(n, need)`` for one confidence window, or None when that pair is absent."""
+    n_key = "confidence_calib_n" + suffix
+    need_key = "confidence_calib_need" + suffix
+    if n_key not in remote or need_key not in remote:
         return None
     try:
-        n = int(remote["calib_n"])
-        total = int(remote.get("calib_total") or 200)
+        n = int(remote[n_key])
+        need = int(remote[need_key])
     except (TypeError, ValueError):
         return None
-    if total <= 0:
-        total = 200
-    return max(0, n), total
+    if need <= 0:
+        return None
+    return max(0, n), need
+
+
+def _confidence_ready(session, remote) -> bool:
+    if isinstance(remote, dict) and "confidence_ready" in remote:
+        return bool(remote.get("confidence_ready"))
+    conf = getattr(getattr(session, "mb", None), "conf", None)
+    if conf is not None and hasattr(conf, "ready"):
+        return bool(conf.ready)
+    return not bool(getattr(session, "onboard", False))
+
+
+def board_calib(session):
+    """Board status for the measure strip. Never the trainer's 200 counter.
+
+    A confidence window (``confidence_calib_n`` / ``confidence_calib_need``,
+    plus ``_L`` / ``_R`` when the board sends them) is
+    ``("window", n, need, full)``. ``n/need`` is the window that is furthest
+    from full; ``full`` is true only when every reported window is filled.
+    Without those keys the result is ``("flag", ready)`` from
+    ``confidence_ready``, and the buttons are not gated on it.
+    ``calib_n`` is the trainer counter and is ignored. A direct ``(n, need)``
+    tuple is the same window, for tests.
+    """
+    remote = getattr(session, "remote", None)
+    remote = remote if isinstance(remote, dict) else {}
+    if getattr(session, "onboard", False):
+        pairs = []
+        for suffix in ("", "_L", "_R"):
+            pair = _window_pair(remote, suffix)
+            if pair is not None:
+                pairs.append((suffix, pair[0], pair[1]))
+        if pairs:
+            incomplete = [item for item in pairs if item[1] < item[2]]
+            if incomplete:
+                _suffix, n, need = min(incomplete, key=lambda item: (item[1] / item[2], item[1]))
+                return ("window", n, need, False)
+            for suffix in ("", "_L", "_R"):
+                for item in pairs:
+                    if item[0] == suffix:
+                        return ("window", item[1], item[2], True)
+    return ("flag", _confidence_ready(session, remote))
+
+
+def _as_window(board):
+    """``(n, need, full)`` when ``board`` is a confidence window, else None."""
+    if isinstance(board, tuple) and len(board) == 2:
+        n, need = board
+        try:
+            n, need = int(n), int(need)
+        except (TypeError, ValueError):
+            return None
+        if need <= 0:
+            return None
+        return n, need, n >= need
+    if isinstance(board, tuple) and len(board) == 4 and board[0] == "window":
+        return int(board[1]), int(board[2]), bool(board[3])
+    return None
 
 
 def board_ready(board) -> bool:
-    if board is None:
-        return False
-    n, total = board
-    return int(total) > 0 and int(n) >= int(total)
+    """Buttons run unless a reported confidence window is still filling."""
+    window = _as_window(board)
+    if window is None:
+        return True
+    _n, _need, full = window
+    return full
 
 
 def board_phrase(board) -> str:
-    """«калибровка X/200» while the board is filling, «готов» when it is done."""
-    if board_ready(board):
-        return "готов"
-    if board is None:
-        return "калибровка —/200"
-    n, total = board
-    return "калибровка %d/%d" % (int(n), int(total))
+    """«калибровка n/need» for a window, else «борт: готов» / «борт: не готов»."""
+    window = _as_window(board)
+    if window is not None:
+        n, need, _full = window
+        return "калибровка %d/%d" % (n, need)
+    if isinstance(board, tuple) and len(board) >= 2 and board[0] == "flag":
+        return "борт: готов" if board[1] else "борт: не готов"
+    return "борт: не готов"
 
 
 def board_wait(board) -> str:
