@@ -173,6 +173,8 @@ class MonitorInput:
     record_toggle: bool = False
     yolo_error: bool = False
     doggibot: bool = False
+    measure_before: bool = False
+    measure_after: bool = False
     takeover: bool = False
     treat_down: bool = False
     punish_down: bool = False
@@ -263,6 +265,11 @@ class MonitorView:
     reset_ok: bool = True
     record_on: bool = False
     yolo_errors: int = -1
+    # «ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ» (recog_measure): button captions, running one, two result lines.
+    measure_before: str = "ЗАМЕР ДО"
+    measure_after: str = "ЗАМЕР ПОСЛЕ"
+    measure_run: str = ""
+    measure_lines: tuple = ("до:    без    — · с    —", "после: без    — · с    —")
     record_saved: int = 0
     record_bytes: int = 0
     record_idle: bool = False
@@ -992,6 +999,9 @@ class TrainMonitor:
                 ("yolo_err", self._keyed_button_width(("ошибка YOLO 000",), "O", False)),
                 ("neg_btn", self._keyed_button_width(("НЕГАТИВ · 00000",), "N", True)),
                 ("kin_btn", self._keyed_button_width(("СОРОДИЧ · 00000",), "D", True)),
+                ("meas_before", self._measure_button_width()),
+                ("meas_after", self._measure_button_width()),
+                ("meas_info", self._measure_info_width()),
             ]
             gap_b = 8
             total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
@@ -1010,7 +1020,7 @@ class TrainMonitor:
             placed_row = self._wrap_rows(items, inner.x, inner.y, estop_rect.x - gap_b, inner.bottom, row_h, gap_b)
             placed_row["estop"] = estop_rect
         else:
-            placed_row = {name: self._zero() for name in ("neg_btn", "kin_btn", "learn", "auto", "take", "steer", "treat", "punish", "yolo_err", "estop")}
+            placed_row = {name: self._zero() for name in ("neg_btn", "kin_btn", "learn", "auto", "take", "steer", "treat", "punish", "yolo_err", "meas_before", "meas_after", "meas_info", "estop")}
         self.learn_rect = placed_row["learn"]
         self.auto_rect = placed_row["auto"]
         self.take_rect = placed_row["take"]
@@ -1020,6 +1030,9 @@ class TrainMonitor:
         self.punish_rect = placed_row.get("punish") or self._zero()
         self.neg_btn_rect = placed_row.get("neg_btn") or self._zero()
         self.kin_btn_rect = placed_row.get("kin_btn") or self._zero()
+        self.meas_before_rect = placed_row.get("meas_before") or self._zero()
+        self.meas_after_rect = placed_row.get("meas_after") or self._zero()
+        self.meas_info_rect = placed_row.get("meas_info") or self._zero()
         self.estop_rect = placed_row["estop"]
 
         robot = block("robot")
@@ -1840,6 +1853,10 @@ class TrainMonitor:
                 inp.recalibrate = True
         elif self.lidar_fresh_rect.collidepoint(pos):
             inp.lidar_toggle = True
+        elif getattr(self, "meas_before_rect", None) is not None and self.meas_before_rect.w >= 8 and self.meas_before_rect.collidepoint(pos):
+            inp.measure_before = True
+        elif getattr(self, "meas_after_rect", None) is not None and self.meas_after_rect.w >= 8 and self.meas_after_rect.collidepoint(pos):
+            inp.measure_after = True
         elif self.learn_rect.collidepoint(pos):
             inp.pause_learn = True
         elif self.auto_rect.collidepoint(pos):
@@ -3219,6 +3236,42 @@ class TrainMonitor:
             return left + label_w + 12
         return left + label_w + self._badge_gap() + self._key_badge_width(key) + 6
 
+    def _measure_button_width(self) -> int:
+        """Widest of the idle caption and the countdowns, mono cells for the text."""
+        from .tabnum import cell_px
+
+        return 12 + cell_px(13) * len("поставь .128: 00 с") + 12
+
+    def _measure_info_width(self) -> int:
+        from .tabnum import cell_px
+
+        return 4 + cell_px(12) * len("после: без 0.00 · с 0.00") + 4
+
+    def _measure_buttons(self, screen, view: MonitorView) -> None:
+        """«ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ»: peach while running, countdown in mono cells; two result lines."""
+        from .tabnum import blit_cells, cell_px, load_font
+
+        mouse = self._mouse()
+        for which, rect, text in (
+            ("before", getattr(self, "meas_before_rect", None), view.measure_before),
+            ("after", getattr(self, "meas_after_rect", None), view.measure_after),
+        ):
+            if rect is None or rect.w < 8 or rect.h < 8:
+                continue
+            run = view.measure_run == which
+            self._button(screen, rect, "", None, rect.collidepoint(mouse), fill=PEACH if run else None)
+            font = load_font(13)
+            w = cell_px(13) * len(text)
+            blit_cells(screen, text, rect.centerx - w // 2, rect.centery - font.get_height() // 2, ESTOP_LABEL if run else VALUE, size=13)
+        info = getattr(self, "meas_info_rect", None)
+        if info is None or info.w < 8 or info.h < 8:
+            return
+        font = load_font(12)
+        h = font.get_height()
+        top = info.centery - h - 1
+        for i, line in enumerate(view.measure_lines[:2]):
+            blit_cells(screen, line, info.x + 4, top + i * (h + 2), LABEL, size=12)
+
     def _estop_min_width(self) -> int:
         """E-STOP stays at least 160 wide, and its centered caption clears the key."""
         if self.font_sm is None:
@@ -3486,6 +3539,7 @@ class TrainMonitor:
         self._latch_button(screen, view, "neg_btn", "no_dog", "НЕГАТИВ", "НЕГАТИВ", "N", header=False)
         self._latch_button(screen, view, "kin_btn", "dog", "СОРОДИЧ", "СОРОДИЧ", "D", header=False)
         self._mode_buttons(screen, view)
+        self._measure_buttons(screen, view)
         if view.learner == "mb":
             self._treat_button(screen, view, self._mouse())
             self._punish_button(screen, view)

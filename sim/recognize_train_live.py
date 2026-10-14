@@ -1605,6 +1605,9 @@ def run_live_gui(
                 announced = True
             if not error:
                 announced = False
+            from .recog_measure import drive_measure, measure_frame
+
+            drive_measure(session, inp)
             _apply_live_keys(session, inp, onboard)
             if onboard is not None:
                 if not tele.get("learn_off_sent") and onboard.ok and onboard.status:
@@ -1692,6 +1695,7 @@ def run_live_gui(
                     session._log("ошибка YOLO не сохранена: %s" % exc)
             view = _live_view(session, camera, disp_lidar, error, link, inp.focused, command_name, onboard)
             view.yolo_errors = yolo_err.count if session.learner_kind == "mb" else -1
+            measure_frame(session, view)
             view.recal_ok = onboard_supports(session, "recalibrate")
             view.restart_ok = onboard_supports(session, "restart")
             view.reset_ok = onboard_supports(session, "reset_weights")

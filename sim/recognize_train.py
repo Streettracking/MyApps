@@ -888,6 +888,9 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
             session._log(("%s: запись кадров %s" % (locked, rec.stats()[3])) if locked else "негатив/сородич выключен, запись остановлена")
         if not rec.enabled:
             marks.latched = None
+        from .recog_measure import drive_measure, measure_frame
+
+        drive_measure(session, inp)
         _apply_pilot_keys(session, inp, float(session.world.t))
         journal_frame(session, inp)
         if inp.reset:
@@ -950,6 +953,7 @@ def _run_gui(session, mon, shot, seconds, rec, marks):
             except Exception:
                 jpeg = b""
         _drive_teacher(session, jpeg or None, sim_frame, teacher_state, bool(teach), None)
+        measure_frame(session, view)
         view.teacher_boxes = list(getattr(session, "teacher_boxes", ()) or ())
         view.yolo_state = str(getattr(session, "yolo_state", "") or "")
         view.teacher_counts = str(getattr(session, "teacher_counts", "") or "")
