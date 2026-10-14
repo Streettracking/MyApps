@@ -265,11 +265,14 @@ class MonitorView:
     reset_ok: bool = True
     record_on: bool = False
     yolo_errors: int = -1
-    # «ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ» (recog_measure): button captions, running one, two result lines.
+    # «ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ» (recog_measure): captions stay put, the running
+    # one is measure_run, the step text is measure_prompt, one result line.
     measure_before: str = "ЗАМЕР ДО"
     measure_after: str = "ЗАМЕР ПОСЛЕ"
     measure_run: str = ""
-    measure_lines: tuple = ("до:    без    — · с    —", "после: без    — · с    —")
+    measure_prompt: str = ""
+    measure_line: str = "до: без   — · с   —   после: без   — · с   —"
+    measure_lines: tuple = ("до: без   — · с   —   после: без   — · с   —",)
     record_saved: int = 0
     record_bytes: int = 0
     record_idle: bool = False
@@ -908,6 +911,7 @@ class TrainMonitor:
         self.scroll_y = 0
         self._scroll_drag = None
         self.cam_inner = None
+        self.measure_prompt_rect = self._zero()
         self.lid_inner = None
         self.journal_rect = None
         self.log_rows = 5
@@ -989,6 +993,8 @@ class TrainMonitor:
             estop_h = min(inner.h, max(row_h + 16, CONTROLS_BUTTON_H))
             # Mode toggles come first: a short card keeps the first lines and
             # drops the rest, so ОБУЧЕНИЕ / АВТО / ПЕРЕХВАТ stay on screen.
+            # «ЗАМЕР» is not in this wrap. Its two buttons and the result line
+            # sit on the camera, so they cannot push a row off the card.
             items = [
                 ("learn", self._keyed_button_width(("ОБУЧЕНИЕ: ВКЛ", "ОБУЧЕНИЕ: ВЫКЛ"), "P", True)),
                 ("auto", self._keyed_button_width(("АВТО: ВКЛ", "АВТО: ВЫКЛ"), "A", True)),
@@ -999,9 +1005,6 @@ class TrainMonitor:
                 ("yolo_err", self._keyed_button_width(("ошибка YOLO 000",), "O", False)),
                 ("neg_btn", self._keyed_button_width(("НЕГАТИВ · 00000",), "N", True)),
                 ("kin_btn", self._keyed_button_width(("СОРОДИЧ · 00000",), "D", True)),
-                ("meas_before", self._measure_button_width()),
-                ("meas_after", self._measure_button_width()),
-                ("meas_info", self._measure_info_width()),
             ]
             gap_b = 8
             total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
@@ -1020,7 +1023,7 @@ class TrainMonitor:
             placed_row = self._wrap_rows(items, inner.x, inner.y, estop_rect.x - gap_b, inner.bottom, row_h, gap_b)
             placed_row["estop"] = estop_rect
         else:
-            placed_row = {name: self._zero() for name in ("neg_btn", "kin_btn", "learn", "auto", "take", "steer", "treat", "punish", "yolo_err", "meas_before", "meas_after", "meas_info", "estop")}
+            placed_row = {name: self._zero() for name in ("neg_btn", "kin_btn", "learn", "auto", "take", "steer", "treat", "punish", "yolo_err", "estop")}
         self.learn_rect = placed_row["learn"]
         self.auto_rect = placed_row["auto"]
         self.take_rect = placed_row["take"]
@@ -1442,6 +1445,7 @@ class TrainMonitor:
         self.font_tiny = _ui_font(font_px(11, scale))
         self.font_big = _ui_font(font_px(26, scale))
         self.font_ind = _ui_font(font_px(18, scale))
+        self.font_prompt = _ui_font(font_px(36, scale))
 
     def _sync_canvas(self, ww: int, wh: int) -> None:
         import pygame
@@ -2162,6 +2166,7 @@ class TrainMonitor:
         self._menu_rule = None
         self._menu_switch_rect = None
         self.cam_inner = None
+        self.measure_prompt_rect = self._zero()
         self.lid_inner = None
         self.show_stand = bool(view.onboard)
         self._draw_menu_bar(screen, view)
@@ -3093,6 +3098,64 @@ class TrainMonitor:
         self._draw_frame_age(screen, host)
         self._draw_record_note(screen, host, view)
         self._draw_balance(screen, host, view)
+        self._draw_measure_prompt(screen, host, view)
+
+    def _draw_measure_prompt(self, screen, host, view: MonitorView) -> None:
+        """Guided «ЗАМЕР» on the camera: prompt, two buttons, one result line.
+
+        The buttons dock stays one card tall. Putting the block here keeps
+        «ЗАМЕР ПОСЛЕ» and the result from wrapping onto a row the card clips.
+        """
+        import pygame
+
+        self.measure_prompt_rect = self._zero()
+        self.meas_before_rect = self._zero()
+        self.meas_after_rect = self._zero()
+        self.meas_info_rect = self._zero()
+        if host is None or host.w < 40 or host.h < 36:
+            return
+        text = str(getattr(view, "measure_prompt", "") or "")
+        # Eye plaques own the top 36px of the picture. The block starts under them.
+        y = host.y + 40
+        if y >= host.bottom - 28:
+            y = host.y
+        if text:
+            font = getattr(self, "font_prompt", None) or self.font_big
+            glyph = font.render(text, True, VALUE)
+            guard = 0
+            while glyph.get_width() > host.w - 96 and guard < 6:
+                font = _ui_font(max(22, font.get_height() - 4))
+                glyph = font.render(text, True, VALUE)
+                guard += 1
+            height = min(max(28, host.h // 3), glyph.get_height() + 16)
+            rect = pygame.Rect(host.x, y, host.w, height)
+            pygame.draw.rect(screen, INSET, rect)
+            pygame.draw.rect(screen, PEACH, pygame.Rect(rect.x, rect.y, 6, rect.h))
+            screen.blit(glyph, (rect.x + 16, rect.centery - glyph.get_height() // 2))
+            hint = self.font_sm.render("отмена", True, VALUE)
+            hint_x = rect.right - hint.get_width() - 12
+            if hint_x > rect.x + 16 + glyph.get_width() + 8:
+                screen.blit(hint, (hint_x, rect.centery - hint.get_height() // 2))
+            self.measure_prompt_rect = rect
+            y = rect.bottom + 4
+        gap = 8
+        each = self._measure_button_width()
+        avail = host.w - 16
+        if each * 2 + gap > avail:
+            each = max(8, (avail - gap) // 2)
+        btn_h = 32
+        if y + btn_h > host.bottom:
+            btn_h = max(0, host.bottom - y)
+        self.meas_before_rect = pygame.Rect(host.x + 8, y, min(each, avail), btn_h)
+        self.meas_after_rect = pygame.Rect(host.x + 8 + min(each, avail) + gap, y, min(each, max(0, avail - each - gap)), btn_h)
+        info_y = self.meas_before_rect.bottom + 4
+        info_h = 22
+        if info_y + info_h > host.bottom:
+            info_h = max(0, host.bottom - info_y)
+        self.meas_info_rect = pygame.Rect(host.x + 8, info_y, max(0, host.w - 16), info_h)
+        if self.meas_info_rect.h >= 8:
+            pygame.draw.rect(screen, INSET, self.meas_info_rect)
+        self._measure_buttons(screen, view)
 
     def _draw_balance(self, screen, host, view: MonitorView) -> None:
         """Share of frames with the kin dog (.128) while learning is on."""
@@ -3237,40 +3300,44 @@ class TrainMonitor:
         return left + label_w + self._badge_gap() + self._key_badge_width(key) + 6
 
     def _measure_button_width(self) -> int:
-        """Widest of the idle caption and the countdowns, mono cells for the text."""
-        from .tabnum import cell_px
-
-        return 12 + cell_px(13) * len("поставь .128: 00 с") + 12
-
-    def _measure_info_width(self) -> int:
-        from .tabnum import cell_px
-
-        return 4 + cell_px(12) * len("после: без 0.00 · с 0.00") + 4
+        """«ЗАМЕР ПОСЛЕ» plus the peach lamp. The countdown lives on the prompt."""
+        return self._keyed_button_width(("ЗАМЕР ПОСЛЕ", "ЗАМЕР ДО"), "", True)
 
     def _measure_buttons(self, screen, view: MonitorView) -> None:
-        """«ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ»: peach while running, countdown in mono cells; two result lines."""
+        """«ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ» side by side. The running one lights its lamp peach."""
         from .tabnum import blit_cells, cell_px, load_font
 
         mouse = self._mouse()
         for which, rect, text in (
-            ("before", getattr(self, "meas_before_rect", None), view.measure_before),
-            ("after", getattr(self, "meas_after_rect", None), view.measure_after),
+            ("before", getattr(self, "meas_before_rect", None), view.measure_before or "ЗАМЕР ДО"),
+            ("after", getattr(self, "meas_after_rect", None), view.measure_after or "ЗАМЕР ПОСЛЕ"),
         ):
             if rect is None or rect.w < 8 or rect.h < 8:
                 continue
             run = view.measure_run == which
-            self._button(screen, rect, "", None, rect.collidepoint(mouse), fill=PEACH if run else None)
-            font = load_font(13)
-            w = cell_px(13) * len(text)
-            blit_cells(screen, text, rect.centerx - w // 2, rect.centery - font.get_height() // 2, ESTOP_LABEL if run else VALUE, size=13)
+            self._button(
+                screen,
+                rect,
+                text,
+                PEACH if run else LAMP_OFF,
+                rect.collidepoint(mouse),
+                label_color=VALUE,
+            )
         info = getattr(self, "meas_info_rect", None)
         if info is None or info.w < 8 or info.h < 8:
             return
-        font = load_font(12)
-        h = font.get_height()
-        top = info.centery - h - 1
-        for i, line in enumerate(view.measure_lines[:2]):
-            blit_cells(screen, line, info.x + 4, top + i * (h + 2), LABEL, size=12)
+        line = getattr(view, "measure_line", "") or ""
+        if not line:
+            parts = tuple(getattr(view, "measure_lines", ()) or ())
+            line = "   ".join(part for part in parts if part)
+        if not line:
+            return
+        size = 18
+        while size > 12 and cell_px(size) * len(line) > info.w - 8:
+            size -= 1
+        font = load_font(size)
+        y = info.centery - font.get_height() // 2
+        blit_cells(screen, line, info.x + 4, y, LABEL, size=size)
 
     def _estop_min_width(self) -> int:
         """E-STOP stays at least 160 wide, and its centered caption clears the key."""
@@ -3539,7 +3606,6 @@ class TrainMonitor:
         self._latch_button(screen, view, "neg_btn", "no_dog", "НЕГАТИВ", "НЕГАТИВ", "N", header=False)
         self._latch_button(screen, view, "kin_btn", "dog", "СОРОДИЧ", "СОРОДИЧ", "D", header=False)
         self._mode_buttons(screen, view)
-        self._measure_buttons(screen, view)
         if view.learner == "mb":
             self._treat_button(screen, view, self._mouse())
             self._punish_button(screen, view)
