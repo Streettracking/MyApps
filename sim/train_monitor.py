@@ -943,6 +943,94 @@ class TrainMonitor:
 
         return pygame.Rect(0, 0, 0, 0)
 
+    def _layout_cards(self, area_h: int, card_h: int | None = None):
+        """Dock layout. ``card_h`` raises both bottom cards together for one call."""
+        from . import dock_layout as dock
+
+        saved = (dock.CONTROLS_H, dock.ROBOT_H)
+        try:
+            if card_h is not None:
+                dock.CONTROLS_H = int(card_h)
+                dock.ROBOT_H = int(card_h)
+            return layout_dock(self.dock, 12, MENU_H, self._layout_span(), area_h)
+        finally:
+            dock.CONTROLS_H, dock.ROBOT_H = saved
+
+    def _third_mode_row_h(self) -> int:
+        """Card tall enough for three 27px mode lines and the 6px wrap gap."""
+        from . import dock_layout as dock
+
+        return dock.HEADER + (27 * 3 + 6 * 2) + dock.CARD_PAD_BOTTOM
+
+    def _mode_buttons_need_room(self, controls_box) -> bool:
+        import pygame
+
+        rect = pygame.Rect(*controls_box)
+        if rect.h < 80:
+            return False
+        return self._mode_row_clipped(self._place_mode_buttons(rect))
+
+    def _mode_row_clipped(self, placed_row) -> bool:
+        for name in ("learn", "auto", "take", "steer", "treat", "punish", "yolo_err", "neg_btn", "kin_btn", "estop"):
+            rect = placed_row.get(name)
+            if rect is None or rect.w < 8 or rect.h < 20:
+                return True
+        return False
+
+    def _place_mode_buttons(self, controls, squeeze: bool = False) -> dict:
+        """ОБУЧЕНИЕ … СОРОДИЧ, with E-STOP pinned to the right.
+
+        «ЗАМЕР» is not in this wrap. Its buttons and the result sit on the camera.
+        ``squeeze`` drops the 160px E-STOP floor so the last mode caption fits.
+        """
+        import pygame
+
+        names = ("learn", "auto", "take", "steer", "treat", "punish", "yolo_err", "neg_btn", "kin_btn", "estop")
+        blank = {name: self._zero() for name in names}
+        leaf = (getattr(self, "_dock_leaves", None) or {}).get("controls")
+        if leaf is not None and (not leaf.visible or leaf.collapsed):
+            return blank
+        if controls.w <= 8:
+            return blank
+        got = dock_content((controls.x, controls.y, controls.w, controls.h), False)
+        if got is None:
+            return blank
+        inner = pygame.Rect(*got)
+        if inner.h < 24:
+            return blank
+        row_h = min(44, inner.h)
+        estop_h = min(inner.h, max(row_h + 16, CONTROLS_BUTTON_H))
+        specs = (
+            ("learn", ("ОБУЧЕНИЕ: ВКЛ", "ОБУЧЕНИЕ: ВЫКЛ"), "P", True),
+            ("auto", ("АВТО: ВКЛ", "АВТО: ВЫКЛ"), "A", True),
+            ("take", ("ПЕРЕХВАТ: ВКЛ", "ПЕРЕХВАТ: ВЫКЛ"), "M", True),
+            ("steer", ("БИЛАТЕРАЛЬНО", "СЕКТОРЫ"), "K", False),
+            ("treat", ("ЛАКОМСТВО",), "T", True),
+            ("punish", ("ОШИБКА", "ошибка · стоп"), "X", False),
+            ("yolo_err", ("ошибка YOLO 000",), "O", False),
+            ("neg_btn", ("НЕГАТИВ · 00000",), "N", True),
+            ("kin_btn", ("СОРОДИЧ · 00000",), "D", True),
+        )
+        gap_b = 8
+        items = [
+            (name, self._keyed_button_width(labels, key, lamp))
+            for name, labels, key, lamp in specs
+        ]
+        total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
+        estop_floor = self._estop_caption_width() if squeeze else self._estop_min_width()
+        preferred = min(260, max(estop_floor, inner.w // 4))
+        spare = inner.w - gap_b - total
+        if spare >= preferred:
+            estop_w = preferred
+        elif spare >= estop_floor:
+            estop_w = spare
+        else:
+            estop_w = estop_floor
+        estop_rect = pygame.Rect(inner.right - estop_w, inner.y, estop_w, max(estop_h, inner.h))
+        placed_row = self._wrap_rows(items, inner.x, inner.y, estop_rect.x - gap_b, inner.bottom, row_h, gap_b)
+        placed_row["estop"] = estop_rect
+        return placed_row
+
     def _apply_layout(self, height: int = WIN_H) -> None:
         import pygame
 
@@ -950,7 +1038,13 @@ class TrainMonitor:
         height = max(MENU_H + footer_h + 96, int(height))
         footer_y = height - footer_h
         area_h = max(96, footer_y - MENU_H)
-        placed = layout_dock(self.dock, 12, MENU_H, self._layout_span(), area_h)
+        placed = self._layout_cards(area_h)
+        # At 1024 and 1440 the mode captions are wider (the 13px font floor)
+        # and the last of them fall off a two-line card. A third line is
+        # only asked for when that happens, so a 1920 canvas keeps its 16:9.
+        controls_box = placed["blocks"].get("controls")
+        if controls_box is not None and self._mode_buttons_need_room(controls_box):
+            placed = self._layout_cards(area_h, self._third_mode_row_h())
         self._dock_blocks = placed["blocks"]
         self._dock_splitters = placed["splitters"]
         self._dock_leaves = {leaf.block: leaf for leaf in _iter_leaves(self.dock)}
@@ -982,48 +1076,11 @@ class TrainMonitor:
                 cursor += rw + gap_b
             return out
 
-        leaf = self._dock_leaves.get("controls")
-        inner = None
-        if controls.w > 8 and leaf is not None and leaf.visible and not leaf.collapsed:
-            got = dock_content((controls.x, controls.y, controls.w, controls.h), False)
-            if got is not None:
-                inner = pygame.Rect(*got)
-        if inner is not None and inner.h >= 24:
-            row_h = min(44, inner.h)
-            estop_h = min(inner.h, max(row_h + 16, CONTROLS_BUTTON_H))
-            # Mode toggles come first: a short card keeps the first lines and
-            # drops the rest, so ОБУЧЕНИЕ / АВТО / ПЕРЕХВАТ stay on screen.
-            # «ЗАМЕР» is not in this wrap. Its two buttons and the result line
-            # sit on the camera, so they cannot push a row off the card.
-            items = [
-                ("learn", self._keyed_button_width(("ОБУЧЕНИЕ: ВКЛ", "ОБУЧЕНИЕ: ВЫКЛ"), "P", True)),
-                ("auto", self._keyed_button_width(("АВТО: ВКЛ", "АВТО: ВЫКЛ"), "A", True)),
-                ("take", self._keyed_button_width(("ПЕРЕХВАТ: ВКЛ", "ПЕРЕХВАТ: ВЫКЛ"), "M", True)),
-                ("steer", self._keyed_button_width(("БИЛАТЕРАЛЬНО", "СЕКТОРЫ"), "K", False)),
-                ("treat", self._keyed_button_width(("ЛАКОМСТВО",), "T", True)),
-                ("punish", self._keyed_button_width(("ОШИБКА", "ошибка · стоп"), "X", False)),
-                ("yolo_err", self._keyed_button_width(("ошибка YOLO 000",), "O", False)),
-                ("neg_btn", self._keyed_button_width(("НЕГАТИВ · 00000",), "N", True)),
-                ("kin_btn", self._keyed_button_width(("СОРОДИЧ · 00000",), "D", True)),
-            ]
-            gap_b = 8
-            total = sum(ww for _name, ww in items) + gap_b * (len(items) - 1)
-            estop_floor = self._estop_min_width()
-            preferred = min(260, max(estop_floor, inner.w // 4))
-            spare = inner.w - gap_b - total
-            if spare >= preferred:
-                estop_w = preferred
-            elif spare >= estop_floor:
-                estop_w = spare
-            else:
-                estop_w = estop_floor
-            # E-STOP is pinned to the right edge for the full card height.
-            # The other buttons wrap onto more lines before it, never under it.
-            estop_rect = pygame.Rect(inner.right - estop_w, inner.y, estop_w, max(estop_h, inner.h))
-            placed_row = self._wrap_rows(items, inner.x, inner.y, estop_rect.x - gap_b, inner.bottom, row_h, gap_b)
-            placed_row["estop"] = estop_rect
-        else:
-            placed_row = {name: self._zero() for name in ("neg_btn", "kin_btn", "learn", "auto", "take", "steer", "treat", "punish", "yolo_err", "estop")}
+        placed_row = self._place_mode_buttons(controls)
+        if self._mode_row_clipped(placed_row):
+            # «СОРОДИЧ» is a few pixels past the 160px E-STOP floor at 1024.
+            # The caption still clears its key; the mode buttons keep their gap.
+            placed_row = self._place_mode_buttons(controls, squeeze=True)
         self.learn_rect = placed_row["learn"]
         self.auto_rect = placed_row["auto"]
         self.take_rect = placed_row["take"]
@@ -3339,14 +3396,18 @@ class TrainMonitor:
         y = info.centery - font.get_height() // 2
         blit_cells(screen, line, info.x + 4, y, LABEL, size=size)
 
-    def _estop_min_width(self) -> int:
-        """E-STOP stays at least 160 wide, and its centered caption clears the key."""
+    def _estop_caption_width(self) -> int:
+        """Width whose centered «E-STOP» still clears the key plaque by the badge gap."""
         if self.font_sm is None:
             return 160
         label = self.font_sm.size("E-STOP")[0]
         badge = self._key_badge_width("E")
         gap = self._badge_gap()
-        return max(160, label + 2 * badge + 12 + 2 * gap)
+        return label + 2 * badge + 12 + 2 * gap
+
+    def _estop_min_width(self) -> int:
+        """E-STOP stays at least 160 wide, and its centered caption clears the key."""
+        return max(160, self._estop_caption_width())
 
     def _place_robot_row(self, inner) -> None:
         """Stand, lie, and recovery stay on the first line. Lidar reset wraps whole."""

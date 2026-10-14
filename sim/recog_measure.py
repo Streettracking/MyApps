@@ -1,7 +1,7 @@
 """«ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ»: УЗНАЮ without and with the .128 dog in frame.
 
 Press: ОБУЧЕНИЕ and АВТО go off through their usual buttons. The run then
-waits until the board reports calibration ready («Убери .128 из кадра»; while
+waits until the board reports calibration ready («УБЕРИ .128 ИЗ КАДРА»; while
 it is not ready the prompt is «жду калибровку борта…» and the clock stays
 put). Then 15 s «БЕЗ .128» (every ready frame's УЗНАЮ is averaged), 5 s
 «ПОСТАВЬ .128 В КАДР» (not averaged), 15 s «С .128». The same button again
@@ -124,7 +124,7 @@ class Measure:
         if name == "wait":
             if self._saw_unready:
                 return "жду калибровку борта…"
-            return "Убери .128 из кадра"
+            return "УБЕРИ .128 ИЗ КАДРА"
         if name == "bez":
             return "БЕЗ .128: %d с" % sec
         if name == "place":

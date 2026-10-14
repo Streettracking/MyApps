@@ -44,7 +44,7 @@ class MeasureTest(unittest.TestCase):
         clock, log = Clock(), []
         m = rm.Measure(clock)
         self.assertTrue(m.press("before", log.append))
-        self.assertEqual(m.prompt(), "Убери .128 из кадра")
+        self.assertEqual(m.prompt(), "УБЕРИ .128 ИЗ КАДРА")
         self.assertEqual(m.button_text("before"), "ЗАМЕР ДО")
         self.assertEqual(m.button_text("after"), "ЗАМЕР ПОСЛЕ")
         m.tick(0.10, log.append)
@@ -81,7 +81,7 @@ class MeasureTest(unittest.TestCase):
 
         m = rm.Measure(clock)
         self.assertTrue(m.press("before", log))
-        self.assertEqual(m.prompt(), "Убери .128 из кадра")
+        self.assertEqual(m.prompt(), "УБЕРИ .128 ИЗ КАДРА")
         for _ in range(4):
             clock.t += 3.0
             self.assertIsNone(m.tick(None, log))
@@ -219,6 +219,9 @@ class MeasureLayoutTest(unittest.TestCase):
             "steer_rect",
             "treat_rect",
             "punish_rect",
+            "yolo_err_rect",
+            "neg_btn_rect",
+            "kin_btn_rect",
             "estop_rect",
         )
         robot = (
