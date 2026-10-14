@@ -23,6 +23,10 @@ DEFAULT_URL = "http://127.0.0.1:8091"
 DEFAULT_CONF = 0.5
 DEFAULT_RATE = 2.0
 AREA_MIN = 0.20
+# PAM needs a sure box held on consecutive fresh YOLO answers. A stale
+# answer (no new frame came back) never pays PAM again.
+PAM_CONF = 0.60
+PAM_HOLD = 3
 TEACHER_KEY = "Y"
 BOXES_KEY = "H"
 FULLSCREEN_KEY = "F11"
@@ -310,6 +314,12 @@ class TeacherRuntime:
         # Teacher slider above zero with learning off: keep boxes, teach nothing.
         self.lead = False
         self.boxes_t: float | None = None
+        # PAM gate: conf >= pam_conf, box centre in the eye on pam_hold fresh
+        # answers in a row. pam_hold <= 0 turns the gate off (old behaviour).
+        self.pam_conf = PAM_CONF
+        self.pam_hold = PAM_HOLD
+        self._fresh = False
+        self._streak = {"L": 0, "R": 0}
 
     def close(self) -> None:
         self._stop = True
@@ -351,6 +361,8 @@ class TeacherRuntime:
         self.boxes = []
         self._teach_boxes = []
         self.answered = False
+        self._streak = {"L": 0, "R": 0}
+        self._fresh = False
         with self._lock:
             self._pending = None
             self._result = None
@@ -408,6 +420,9 @@ class TeacherRuntime:
             center_only=True,
         )
         want_l, want_r = dan_for_eyes(hit_l, hit_r, recognized_l, recognized_r)
+        want_l = self._pam_gate("L", want_l)
+        want_r = self._pam_gate("R", want_r)
+        self._fresh = False
         kind_l, kind_r = self.gate.filter(now, want_l, want_r)
         self._count(kind_l, kind_r)
         self._note_skips(
@@ -454,6 +469,20 @@ class TeacherRuntime:
             self._skip_at[side] = float(now)
             self.skip_n += 1
 
+    def _pam_gate(self, side: str, want: str | None) -> str | None:
+        """PAM only on a fresh answer after ``pam_hold`` sure hits in a row."""
+        if want != "pam" or int(self.pam_hold) <= 0:
+            return want
+        if not self._fresh or self._streak.get(side, 0) < int(self.pam_hold):
+            return None
+        return want
+
+    def _note_streak(self, overlap: float) -> None:
+        sure_l, sure_r = hemisphere_hits(self._teach_boxes, overlap, conf_min=max(self.conf, self.pam_conf), center_only=True)
+        self._streak["L"] = self._streak["L"] + 1 if sure_l else 0
+        self._streak["R"] = self._streak["R"] + 1 if sure_r else 0
+        self._fresh = True
+
     def _count(self, kind_l: str | None, kind_r: str | None) -> None:
         if kind_l == "pam":
             self.pam_l += 1
@@ -481,10 +510,13 @@ class TeacherRuntime:
             self.answered = False
             self._teach_boxes = []
             self.boxes = []
+            self._streak = {"L": 0, "R": 0}
+            self._fresh = False
             return
         self.service_down = False
         self.answered = True
         self._teach_boxes = annotate_boxes(boxes, overlap, self.conf)
+        self._note_streak(overlap)
         if self.boxes_hidden and not self.on:
             self.boxes = []
         else:

@@ -100,6 +100,7 @@ class ChannelTests(unittest.TestCase):
         try:
             runtime = TeacherRuntime("http://127.0.0.1:%d" % port, conf=0.5, rate=2.0)
             runtime.on = True
+            runtime.pam_hold = 0  # channel test: one frame; the gate is in PamGateTests
             self.assertTrue(runtime.wants_frame(True))
             self.assertFalse(runtime.wants_frame(False))
             runtime.offer_frame(b"\xff\xd8\xff")
@@ -263,7 +264,65 @@ def _ready(boxes=()):
     runtime.service_down = False
     runtime._teach_boxes = list(boxes)
     runtime.boxes = list(boxes)
+    runtime.pam_hold = 0  # old single-frame rule; PamGateTests cover the gate
     return runtime
+
+
+def _live(conf_rate=2.0):
+    runtime = TeacherRuntime(conf=0.5, rate=conf_rate)
+    runtime.on = True
+    runtime._learning = True
+    return runtime
+
+
+def _answer(runtime, boxes):
+    runtime._result = (runtime._gen, list(boxes), None)
+
+
+class PamGateTests(unittest.TestCase):
+    DOG = DetBox(0.04, 0.2, 0.22, 0.8, 0.93)
+
+    def test_pam_needs_hold_fresh_answers(self):
+        rt = _live()
+        t = 0.0
+        out = []
+        for _ in range(3):
+            _answer(rt, [self.DOG])
+            out.append(rt.collect(t, 0.4, False, False, True, False))
+            t += 1.0
+        self.assertEqual(out, [(None, None), (None, None), ("pam", None)])
+        self.assertEqual(rt.pam_l, 1)
+
+    def test_stale_answer_never_pays_pam_again(self):
+        rt = _live()
+        for i in range(3):
+            _answer(rt, [self.DOG])
+            rt.collect(float(i), 0.4, False, False, True, False)
+        self.assertEqual(rt.pam_l, 1)
+        for i in range(10):
+            # no new YOLO answer: the old box must not keep paying
+            self.assertEqual(rt.collect(10.0 + i, 0.4, False, False, True, False), (None, None))
+        self.assertEqual(rt.pam_l, 1)
+
+    def test_weak_box_or_gap_resets_hold(self):
+        rt = _live()
+        weak = DetBox(0.04, 0.2, 0.22, 0.8, 0.55)
+        seq = [[self.DOG], [self.DOG], [weak], [self.DOG], [self.DOG], []]
+        for i, boxes in enumerate(seq):
+            _answer(rt, boxes)
+            rt.collect(float(i), 0.4, False, False, True, False)
+        self.assertEqual(rt.pam_l, 0)
+        _answer(rt, [self.DOG])
+        self.assertEqual(rt.collect(9.0, 0.4, False, False, True, False), (None, None))
+
+    def test_dead_service_resets_hold(self):
+        rt = _live()
+        for i in range(2):
+            _answer(rt, [self.DOG])
+            rt.collect(float(i), 0.4, False, False, True, False)
+        rt._result = (rt._gen, None, None)
+        rt.collect(2.0, 0.4, False, False, True, False)
+        self.assertEqual(rt._streak["L"], 0)
 
 
 class PunishTests(unittest.TestCase):
