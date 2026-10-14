@@ -1,0 +1,75 @@
+# Control episode: peers present, but each agent blinds conspecific channels locally.
+# Same zones/stimuli as room_v1; only sense_conspecifics differs.
+# Used on PC for blind_vs_sighted_delta analysis.
+
+episode:
+  id: "room_v1_multi_blind_peers_001"
+  mode: multi_blind_peers
+  duration_s: 1200
+  seed: 42
+  map_frame: arena
+
+connectome:
+  artifact: artifacts/connectome_mb_v1.npz
+  manifest: artifacts/manifest.json
+  snapshot: FAFB-783
+  citation: "Dorkenwald et al. Nature 2024; Schlegel et al. Nature 2024; Codex FAFB v783"
+  plasticity:
+    eta: 0.01
+    r_min: -1.0
+    r_max: 1.0
+    r_collision: -0.5
+    r_fall: -1.0
+
+arena:
+  zones:
+    - name: A
+      reward: -1.0
+      polygon: [[1.0, 1.0], [2.2, 1.0], [2.2, 2.2], [1.0, 2.2]]
+    - name: B
+      reward: 1.0
+      polygon: [[4.0, 3.0], [5.2, 3.0], [5.2, 4.2], [4.0, 4.2]]
+  stimuli:
+    - name: cue_A
+      kind: apriltag
+      zone: A
+      code: "10"
+    - name: cue_B
+      kind: apriltag
+      zone: B
+      code: "20"
+  fence:
+    polygon: [[0.0, 0.0], [6.0, 0.0], [6.0, 5.0], [0.0, 5.0]]
+
+agents:
+  - id: go2_1
+    apriltag_id: 1
+    start_pose: {x: 0.8, y: 2.5, yaw: 0.0}
+    sense_conspecifics: false
+    graph_override: null
+  - id: go2_2
+    apriltag_id: 2
+    start_pose: {x: 0.8, y: 1.5, yaw: 0.0}
+    sense_conspecifics: false
+    graph_override: null
+  - id: go2_3
+    apriltag_id: 3
+    start_pose: {x: 0.8, y: 3.5, yaw: 0.0}
+    sense_conspecifics: false
+    graph_override: null
+
+safety:
+  max_speed_mps: 0.6
+  robot_clearance_m: 0.8
+  e_stop_topic: /arena/e_stop
+
+analysis:
+  telemetry_hz: 10
+  snapshot_weights_every_s: 60
+  metrics:
+    - PI
+    - time_in_zones
+    - peer_exposure
+    - weight_drift
+    - blind_vs_sighted_delta
+    - flywire_vs_random

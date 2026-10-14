@@ -1,0 +1,130 @@
+"""Presentation-only labels for the trainer window.
+
+The brain panel already says who leads (``lead_plaque`` / teacher weight).
+The header repeats that, and names the operator when the stick is theirs.
+Nothing here changes a command, a weight, or the onboard link.
+"""
+
+from __future__ import annotations
+
+DRIVER_FLY = "МУХА"
+DRIVER_TEACHER = "УЧИТЕЛЬ"
+DRIVER_HUMAN = "ЧЕЛОВЕК"
+DRIVER_MIX = "СМЕШАННО"
+
+
+def _text(view, name: str) -> str:
+    return str(getattr(view, name, "") or "")
+
+
+def operator_has_stick(view) -> bool:
+    """Arrow keys, ПЕРЕХВАТ, or manual control. E-STOP is not a driver."""
+    mode = _text(view, "pilot_mode")
+    who = _text(view, "pilot_who")
+    phase = _text(view, "pilot_phase")
+    command = _text(view, "last_command").strip()
+    arrows = bool(command) and command not in ("—", "стоп")
+    if mode == "СТОП":
+        return False
+    if "ПЕРЕХВАТ" in mode:
+        return True
+    if mode.startswith("РУЧНОЕ") or phase == "manual" or who == "оператор":
+        return True
+    if arrows and not bool(getattr(view, "autonomy_on", False)):
+        return True
+    return False
+
+
+def driver_name(view) -> str:
+    """``МУХА`` / ``УЧИТЕЛЬ`` / ``СМЕШАННО`` from the brain plaque, or ``ЧЕЛОВЕК``."""
+    if operator_has_stick(view):
+        return DRIVER_HUMAN
+    plaque = _text(view, "lead_plaque")
+    if "смешан" in plaque:
+        return DRIVER_MIX
+    if "учитель" in plaque:
+        return DRIVER_TEACHER
+    if "муха" in plaque:
+        return DRIVER_FLY
+    try:
+        weight = float(getattr(view, "teacher_weight", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        weight = 0.0
+    if weight >= 0.995:
+        return DRIVER_TEACHER
+    if weight > 0.005:
+        return DRIVER_MIX
+    return DRIVER_FLY
+
+
+def driver_banner(view) -> str:
+    return "ВЕДЁТ: %s" % driver_name(view)
+
+
+def driver_journal_line(name: str) -> str:
+    return "ведёт: %s" % name
+
+
+def known_weights_name(state_path) -> str:
+    """YOLO file the trainer already resolved, else the brain state file name."""
+    import os
+    from pathlib import Path
+
+    yolo = os.environ.get("RECOGNIZER_YOLO_WEIGHTS", "").strip()
+    if yolo:
+        path = Path(yolo)
+        if path.is_file():
+            return path.name
+    if state_path:
+        name = Path(str(state_path)).name
+        if name and name not in (".", ".."):
+            return name
+    return ""
+
+
+def weights_caption(name: str) -> str:
+    text = str(name or "").strip()
+    return "веса: %s" % text if text else "веса: ?"
+
+
+FRAME_STALE_S = 0.5
+
+
+def frame_age_caption(age_s, fps, stale_s: float = FRAME_STALE_S) -> tuple:
+    """``(text, stale)``. A missing clock or an old frame is «камера стоит»."""
+    try:
+        age = None if age_s is None else float(age_s)
+    except (TypeError, ValueError):
+        age = None
+    if age is None or age > float(stale_s):
+        return "камера стоит", True
+    try:
+        rate = 0 if fps is None else max(0, int(round(float(fps))))
+    except (TypeError, ValueError):
+        rate = 0
+    return "кадр %.1f с · %d fps" % (age, rate), False
+
+
+def record_caption(saved, dups) -> str:
+    return "%d кадров · %d дублей" % (int(saved or 0), int(dups or 0))
+
+
+def record_hint(saved, dups) -> str:
+    """Ask to move the camera once duplicates pile up."""
+    try:
+        kept = int(saved or 0)
+        copies = int(dups or 0)
+    except (TypeError, ValueError):
+        return ""
+    if copies >= 3 or (copies > 0 and kept > 0 and copies >= kept):
+        return "сдвиньте камеру"
+    return ""
+
+
+def balance_share(peer, other) -> tuple:
+    """``(with_dog, without, fraction)`` from the two readout curves."""
+    with_dog = len(peer or ())
+    without = len(other or ())
+    total = with_dog + without
+    share = (float(with_dog) / float(total)) if total else 0.0
+    return with_dog, without, share

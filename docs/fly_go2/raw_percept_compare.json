@@ -1,0 +1,336 @@
+{
+  "seconds": 60.0,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "conditions": {
+    "fixed": {
+      "mean": {
+        "mean_PI": 0.9825887051837906,
+        "plastic_updates": 571.4,
+        "weight_drift": 221.1097381591797,
+        "diff_l2": 385.26199819627027,
+        "learned_dog_l2": 385.26199819627027,
+        "learned_dist_l2": 0.0,
+        "approach_dog": 0.8124008228034088,
+        "approach_dist": null,
+        "frac_reward_with_dog": 1.0,
+        "frac_reward_with_dist": 0.0
+      },
+      "runs": [
+        {
+          "seed": 0,
+          "mean_PI": 0.981515694350346,
+          "diff_l2": 291.33969276580166,
+          "learned_dog_l2": 291.33969276580166,
+          "learned_dist_l2": 0.0,
+          "approach_dog": 0.5,
+          "approach_dist": null,
+          "frac_reward_with_dog": 1.0,
+          "frac_reward_with_dist": 0.0,
+          "plastic_updates": 568.0,
+          "weight_drift": 213.771484375
+        },
+        {
+          "seed": 1,
+          "mean_PI": 0.9832435495547935,
+          "diff_l2": 332.0456454838702,
+          "learned_dog_l2": 332.0456454838702,
+          "learned_dist_l2": 0.0,
+          "approach_dog": 0.6463414634146342,
+          "approach_dist": null,
+          "frac_reward_with_dog": 1.0,
+          "frac_reward_with_dist": 0.0,
+          "plastic_updates": 572.6666666666666,
+          "weight_drift": 218.70560709635416
+        },
+        {
+          "seed": 2,
+          "mean_PI": 0.9818840408618458,
+          "diff_l2": 411.13740677409436,
+          "learned_dog_l2": 411.13740677409436,
+          "learned_dist_l2": 0.0,
+          "approach_dog": 1.0,
+          "approach_dist": null,
+          "frac_reward_with_dog": 1.0,
+          "frac_reward_with_dist": 0.0,
+          "plastic_updates": 574.0,
+          "weight_drift": 225.21868387858072
+        },
+        {
+          "seed": 3,
+          "mean_PI": 0.9833630250056431,
+          "diff_l2": 446.1034509185315,
+          "learned_dog_l2": 446.1034509185315,
+          "learned_dist_l2": 0.0,
+          "approach_dog": 0.9156626506024096,
+          "approach_dist": null,
+          "frac_reward_with_dog": 1.0,
+          "frac_reward_with_dist": 0.0,
+          "plastic_updates": 572.3333333333334,
+          "weight_drift": 222.1743621826172
+        },
+        {
+          "seed": 4,
+          "mean_PI": 0.9829372161463249,
+          "diff_l2": 445.6837950390536,
+          "learned_dog_l2": 445.6837950390536,
+          "learned_dist_l2": 0.0,
+          "approach_dog": 1.0,
+          "approach_dist": null,
+          "frac_reward_with_dog": 1.0,
+          "frac_reward_with_dist": 0.0,
+          "plastic_updates": 570.0,
+          "weight_drift": 225.67855326334634
+        }
+      ]
+    },
+    "raw": {
+      "mean": {
+        "mean_PI": 0.9810954285333802,
+        "plastic_updates": 479.4666666666666,
+        "weight_drift": 178.67471469243367,
+        "diff_l2": 68.00973197916348,
+        "learned_dog_l2": 195.58508926112637,
+        "learned_dist_l2": 176.95835867023146,
+        "approach_dog": 0.8186329039812646,
+        "approach_dist": 0.8035714285714286,
+        "frac_reward_with_dog": 0.6746395759091127,
+        "frac_reward_with_dist": 0.3684870825853818
+      },
+      "runs": [
+        {
+          "seed": 0,
+          "mean_PI": 0.9830610837994325,
+          "diff_l2": 43.462166077613425,
+          "learned_dog_l2": 240.24009280313737,
+          "learned_dist_l2": 276.19115090796555,
+          "approach_dog": null,
+          "approach_dist": 1.0,
+          "frac_reward_with_dog": 0.5969626168224299,
+          "frac_reward_with_dist": 0.3282710280373832,
+          "plastic_updates": 570.6666666666666,
+          "weight_drift": 214.30460611979166
+        },
+        {
+          "seed": 1,
+          "mean_PI": 0.9816176297640773,
+          "diff_l2": 66.89196693260362,
+          "learned_dog_l2": 220.13673544814446,
+          "learned_dist_l2": 237.32173361596423,
+          "approach_dog": 0.8,
+          "approach_dist": 1.0,
+          "frac_reward_with_dog": 0.5807398708162067,
+          "frac_reward_with_dist": 0.24310041103934232,
+          "plastic_updates": 567.6666666666666,
+          "weight_drift": 207.75549825032553
+        },
+        {
+          "seed": 2,
+          "mean_PI": 0.9814446467146268,
+          "diff_l2": 85.48398473843952,
+          "learned_dog_l2": 169.69534921847983,
+          "learned_dist_l2": 155.30859685742823,
+          "approach_dog": 0.875,
+          "approach_dist": 0.5,
+          "frac_reward_with_dog": 0.6073232323232324,
+          "frac_reward_with_dist": 0.413510101010101,
+          "plastic_updates": 528.0,
+          "weight_drift": 187.35194396972656
+        },
+        {
+          "seed": 3,
+          "mean_PI": 0.9833923958065848,
+          "diff_l2": 64.14982903392514,
+          "learned_dog_l2": 143.58214680029099,
+          "learned_dist_l2": 91.02231378181189,
+          "approach_dog": 0.8852459016393442,
+          "approach_dist": null,
+          "frac_reward_with_dog": 0.8256721595836947,
+          "frac_reward_with_dist": 0.32870771899392887,
+          "plastic_updates": 384.3333333333333,
+          "weight_drift": 143.07729736963907
+        },
+        {
+          "seed": 4,
+          "mean_PI": 0.9759613865821795,
+          "diff_l2": 80.06071311323564,
+          "learned_dog_l2": 204.27112203557928,
+          "learned_dist_l2": 124.94799818798738,
+          "approach_dog": 0.7142857142857143,
+          "approach_dist": 0.7142857142857143,
+          "frac_reward_with_dog": 0.7625,
+          "frac_reward_with_dist": 0.5288461538461539,
+          "plastic_updates": 346.6666666666667,
+          "weight_drift": 140.88422775268555
+        }
+      ]
+    },
+    "blind": {
+      "mean": {
+        "mean_PI": 0.8524147912043712,
+        "plastic_updates": 460.19999999999993,
+        "weight_drift": 157.60850235621132,
+        "diff_l2": 105.67694106576812,
+        "learned_dog_l2": 105.67694106576812,
+        "learned_dist_l2": 0.0,
+        "approach_dog": null,
+        "approach_dist": null,
+        "frac_reward_with_dog": 0.0,
+        "frac_reward_with_dist": 0.0
+      },
+      "runs": [
+        {
+          "seed": 0,
+          "mean_PI": 0.9829372161329943,
+          "diff_l2": 97.30935565545111,
+          "learned_dog_l2": 97.30935565545111,
+          "learned_dist_l2": 0.0,
+          "approach_dog": null,
+          "approach_dist": null,
+          "frac_reward_with_dog": 0.0,
+          "frac_reward_with_dist": 0.0,
+          "plastic_updates": 569.6666666666666,
+          "weight_drift": 202.29368591308594
+        },
+        {
+          "seed": 1,
+          "mean_PI": 0.9815497981842559,
+          "diff_l2": 146.0242567470131,
+          "learned_dog_l2": 146.0242567470131,
+          "learned_dist_l2": 0.0,
+          "approach_dog": null,
+          "approach_dist": null,
+          "frac_reward_with_dog": 0.0,
+          "frac_reward_with_dist": 0.0,
+          "plastic_updates": 567.0,
+          "weight_drift": 199.35722859700522
+        },
+        {
+          "seed": 2,
+          "mean_PI": 0.9821428399875165,
+          "diff_l2": 155.51691966133095,
+          "learned_dog_l2": 155.51691966133095,
+          "learned_dist_l2": 0.0,
+          "approach_dog": null,
+          "approach_dist": null,
+          "frac_reward_with_dog": 0.0,
+          "frac_reward_with_dist": 0.0,
+          "plastic_updates": 572.6666666666666,
+          "weight_drift": 190.87755839029947
+        },
+        {
+          "seed": 3,
+          "mean_PI": 0.3333334227942579,
+          "diff_l2": 30.766607045643553,
+          "learned_dog_l2": 30.766607045643553,
+          "learned_dist_l2": 0.0,
+          "approach_dog": null,
+          "approach_dist": null,
+          "frac_reward_with_dog": 0.0,
+          "frac_reward_with_dist": 0.0,
+          "plastic_updates": 200.33333333333334,
+          "weight_drift": 63.71885792414347
+        },
+        {
+          "seed": 4,
+          "mean_PI": 0.9821106789228314,
+          "diff_l2": 98.76756621940179,
+          "learned_dog_l2": 98.76756621940179,
+          "learned_dist_l2": 0.0,
+          "approach_dog": null,
+          "approach_dist": null,
+          "frac_reward_with_dog": 0.0,
+          "frac_reward_with_dist": 0.0,
+          "plastic_updates": 391.3333333333333,
+          "weight_drift": 131.79518095652261
+        }
+      ]
+    },
+    "raw_blind": {
+      "mean": {
+        "mean_PI": 0.9828971781057575,
+        "plastic_updates": 490.3333333333333,
+        "weight_drift": 183.62119000752767,
+        "diff_l2": 74.53363663817306,
+        "learned_dog_l2": 134.2113204174058,
+        "learned_dist_l2": 149.28548058642428,
+        "approach_dog": null,
+        "approach_dist": 0.8667143558482909,
+        "frac_reward_with_dog": 0.0,
+        "frac_reward_with_dist": 0.39512709852077404
+      },
+      "runs": [
+        {
+          "seed": 0,
+          "mean_PI": 0.9826517794631581,
+          "diff_l2": 95.21081506976611,
+          "learned_dog_l2": 170.07270656286235,
+          "learned_dist_l2": 262.4847886752098,
+          "approach_dog": null,
+          "approach_dist": 0.927536231884058,
+          "frac_reward_with_dog": 0.0,
+          "frac_reward_with_dist": 0.31103286384976525,
+          "plastic_updates": 568.0,
+          "weight_drift": 220.12620544433594
+        },
+        {
+          "seed": 1,
+          "mean_PI": 0.982046660569528,
+          "diff_l2": 89.12463033144003,
+          "learned_dog_l2": 162.9267713867855,
+          "learned_dist_l2": 217.27155291792346,
+          "approach_dog": null,
+          "approach_dist": 0.8679245283018868,
+          "frac_reward_with_dog": 0.0,
+          "frac_reward_with_dist": 0.268009768009768,
+          "plastic_updates": 546.0,
+          "weight_drift": 207.4663848876953
+        },
+        {
+          "seed": 2,
+          "mean_PI": 0.9830917699342562,
+          "diff_l2": 83.42900465761353,
+          "learned_dog_l2": 122.62084764851197,
+          "learned_dist_l2": 139.7452950960276,
+          "approach_dog": null,
+          "approach_dist": 0.8028169014084507,
+          "frac_reward_with_dog": 0.0,
+          "frac_reward_with_dist": 0.47181008902077154,
+          "plastic_updates": 561.6666666666666,
+          "weight_drift": 199.16547648111978
+        },
+        {
+          "seed": 3,
+          "mean_PI": 0.9833923958165797,
+          "diff_l2": 40.871644399787435,
+          "learned_dog_l2": 93.35520236735245,
+          "learned_dist_l2": 68.78418008453524,
+          "approach_dog": null,
+          "approach_dist": 1.0,
+          "frac_reward_with_dog": 0.0,
+          "frac_reward_with_dist": 0.3847487001733102,
+          "plastic_updates": 384.6666666666667,
+          "weight_drift": 142.52785857518515
+        },
+        {
+          "seed": 4,
+          "mean_PI": 0.9833032847452655,
+          "diff_l2": 64.03208873225822,
+          "learned_dog_l2": 122.08107412151679,
+          "learned_dist_l2": 58.14158615842533,
+          "approach_dog": null,
+          "approach_dist": 0.7352941176470589,
+          "frac_reward_with_dog": 0.0,
+          "frac_reward_with_dist": 0.5400340715502555,
+          "plastic_updates": 391.3333333333333,
+          "weight_drift": 148.82002464930216
+        }
+      ]
+    }
+  }
+}
