@@ -265,16 +265,17 @@ class MonitorView:
     reset_ok: bool = True
     record_on: bool = False
     yolo_errors: int = -1
-    # «ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ» (recog_measure): captions stay put, the running
-    # one is measure_run, the step text is measure_prompt, one result line.
-    measure_before: str = "ЗАМЕР ДО"
-    measure_after: str = "ЗАМЕР ПОСЛЕ"
+    # «БЕЗ .128» / «С .128» (recog_measure). The running side is measure_run
+    # ("bez" / "s"); its caption and measure_prompt both count down. One line
+    # holds only the latest value of each side.
+    measure_before: str = "БЕЗ .128"
+    measure_after: str = "С .128"
     measure_run: str = ""
     measure_prompt: str = ""
     # Board status only: «калибровка X/200» or «готов». Not the trainer counter.
     measure_board: str = ""
-    measure_line: str = "до: без   — · с   —   после: без   — · с   —"
-    measure_lines: tuple = ("до: без   — · с   —   после: без   — · с   —",)
+    measure_line: str = "без    — · с    — · разница    —"
+    measure_lines: tuple = ("без    — · с    — · разница    —",)
     record_saved: int = 0
     record_bytes: int = 0
     record_idle: bool = False
@@ -3160,10 +3161,10 @@ class TrainMonitor:
         self._draw_measure_prompt(screen, host, view)
 
     def _draw_measure_prompt(self, screen, host, view: MonitorView) -> None:
-        """Guided «ЗАМЕР» on the camera: prompt, two buttons, one result line.
+        """«БЕЗ .128» / «С .128» on the camera: prompt, two buttons, one result line.
 
         The buttons dock stays one card tall. Putting the block here keeps
-        «ЗАМЕР ПОСЛЕ» and the result from wrapping onto a row the card clips.
+        both buttons and the result from wrapping onto a row the card clips.
         """
         import pygame
 
@@ -3191,10 +3192,11 @@ class TrainMonitor:
             pygame.draw.rect(screen, INSET, rect)
             pygame.draw.rect(screen, PEACH, pygame.Rect(rect.x, rect.y, 6, rect.h))
             screen.blit(glyph, (rect.x + 16, rect.centery - glyph.get_height() // 2))
-            hint = self.font_sm.render("отмена", True, VALUE)
-            hint_x = rect.right - hint.get_width() - 12
-            if hint_x > rect.x + 16 + glyph.get_width() + 8:
-                screen.blit(hint, (hint_x, rect.centery - hint.get_height() // 2))
+            if getattr(view, "measure_run", ""):
+                hint = self.font_sm.render("отмена", True, VALUE)
+                hint_x = rect.right - hint.get_width() - 12
+                if hint_x > rect.x + 16 + glyph.get_width() + 8:
+                    screen.blit(hint, (hint_x, rect.centery - hint.get_height() // 2))
             self.measure_prompt_rect = rect
             y = rect.bottom + 4
         gap = 8
@@ -3359,17 +3361,17 @@ class TrainMonitor:
         return left + label_w + self._badge_gap() + self._key_badge_width(key) + 6
 
     def _measure_button_width(self) -> int:
-        """«ЗАМЕР ПОСЛЕ» plus the peach lamp. The countdown lives on the prompt."""
-        return self._keyed_button_width(("ЗАМЕР ПОСЛЕ", "ЗАМЕР ДО"), "", True)
+        """Countdown caption plus the peach lamp. Both buttons share that width."""
+        return self._keyed_button_width(("БЕЗ .128  15 с", "С .128  15 с"), "", True)
 
     def _measure_buttons(self, screen, view: MonitorView) -> None:
-        """«ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ» side by side. The running one lights its lamp peach."""
+        """«БЕЗ .128» / «С .128» side by side. The running one lights its lamp peach."""
         from .tabnum import blit_cells, cell_px, load_font
 
         mouse = self._mouse()
         for which, rect, text in (
-            ("before", getattr(self, "meas_before_rect", None), view.measure_before or "ЗАМЕР ДО"),
-            ("after", getattr(self, "meas_after_rect", None), view.measure_after or "ЗАМЕР ПОСЛЕ"),
+            ("bez", getattr(self, "meas_before_rect", None), view.measure_before or "БЕЗ .128"),
+            ("s", getattr(self, "meas_after_rect", None), view.measure_after or "С .128"),
         ):
             if rect is None or rect.w < 8 or rect.h < 8:
                 continue

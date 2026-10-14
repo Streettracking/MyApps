@@ -1,17 +1,18 @@
-"""«ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ»: УЗНАЮ without and with the .128 dog in frame.
+"""«БЕЗ .128» / «С .128»: two independent 15 s averages of УЗНАЮ.
 
-Press: ОБУЧЕНИЕ and АВТО go off through their usual buttons. The run then
-waits until board status says calibration is done («УБЕРИ .128 ИЗ КАДРА»;
-while it is not, the prompt is «борт не готов: калибровка X/200» and the
-clock stays put). The measure block shows that board status, «калибровка
-X/200» or «готов», and never the trainer's own 200-frame counter. Then 15 s
-«БЕЗ .128» (every ready frame's УЗНАЮ is averaged), 5 s «ПОСТАВЬ .128 В
-КАДР» (not averaged), 15 s «С .128». The same button again cancels. When the
-run ends or is cancelled, ОБУЧЕНИЕ and АВТО return to the states they had
-before the press.
+The user places the dog and presses when ready. There is no pause and no
+automatic step between the buttons. A press while board status is not
+calibrated shows «борт не готов: калибровка X/200» and does not start.
+Otherwise ОБУЧЕНИЕ and АВТО go off for the 15 s, the lit button and the
+prompt count down, and both return to the states they had before the press.
+The same button again cancels. The other button cancels the current run
+without storing it and starts its own 15 s.
 
-Each step start, step end, and the averages go to the session log, which the
-trainer journal stamps into journal.log.
+The strip keeps only the latest value of each side:
+«без X% · с Y% · разница Z». A new measurement replaces that side.
+Each finished result is written to the session log, which the trainer
+journal stamps into journal.log. The block shows board calibration
+(«калибровка X/200» or «готов»), never the trainer's own 200-frame counter.
 """
 
 from __future__ import annotations
@@ -19,12 +20,10 @@ from __future__ import annotations
 import time
 
 PHASE_S = 15.0
-PLACE_S = 5.0
-# «узнаёт»: с is clearly above без. «выучил фон»: both sit high.
-CLEAR = 0.15
-HIGH = 0.50
 
-WHICH = {"before": "ДО", "after": "ПОСЛЕ"}
+# Input flags stay measure_before / measure_after. The run id is the side.
+WHICH = {"bez": "без .128", "s": "с .128"}
+BUTTON = {"bez": "БЕЗ .128", "s": "С .128"}
 
 
 def board_calib(session) -> tuple[int, int] | None:
@@ -67,7 +66,7 @@ def board_phrase(board) -> str:
 
 
 def board_wait(board) -> str:
-    """Why ЗАМЕР ДО / ЗАМЕР ПОСЛЕ is still waiting."""
+    """Why a press did not start."""
     return "борт не готов: " + board_phrase(board)
 
 
@@ -91,43 +90,44 @@ def _mean(xs):
     return sum(xs) / len(xs) if xs else None
 
 
+def _points(v):
+    if v is None:
+        return None
+    return int(round(100.0 * float(v)))
+
+
 def _pct(v) -> str:
     """Monospace percent cell: `` 10%``, ``100%``, or ``   —``."""
-    if v is None:
+    n = _points(v)
+    if n is None:
         return "   —"
-    return "%3d%%" % int(round(100.0 * float(v)))
+    return "%3d%%" % n
 
 
 def _pct_log(v) -> str:
-    if v is None:
+    n = _points(v)
+    if n is None:
         return "—"
-    return "%d%%" % int(round(100.0 * float(v)))
+    return "%d%%" % n
 
 
-def verdict(bez, s) -> str:
-    """«узнаёт» when с is clearly above без, «выучил фон» when both are high."""
-    if bez is None or s is None:
-        return ""
-    if float(bez) >= HIGH and float(s) >= HIGH:
-        return "выучил фон"
-    if float(s) - float(bez) > CLEAR:
-        return "узнаёт"
-    return "нет разницы"
+def _delta(bez, s) -> str:
+    """Signed percentage points, с minus без. ``   —`` until both sides exist."""
+    b, a = _points(bez), _points(s)
+    if b is None or a is None:
+        return "   —"
+    return "%+d%%" % (a - b)
 
 
 class Measure:
     def __init__(self, clock=time.monotonic):
         self.clock = clock
-        self.which: str | None = None  # "before" / "after" while running
+        self.which: str | None = None  # "bez" / "s" while that button is running
         self.t0 = 0.0
-        self.armed = False
-        self.bez: list[float] = []
-        self.s: list[float] = []
-        self.results: dict[str, dict] = {}
-        self.word = ""
-        self._mark = ""
-        self._saw_unready = False
-        self.board = (200, 200)
+        self.samples: list[float] = []
+        # Latest finished average of each side. A new run replaces only its side.
+        self.latest: dict[str, float | None] = {}
+        self.blocked = ""
         # learn/auto as they were at the first press of this run. Restored
         # when the run ends or the same button cancels it.
         self.saved = None
@@ -137,132 +137,86 @@ class Measure:
     def running(self) -> bool:
         return self.which is not None
 
-    def press(self, which: str, log) -> bool:
-        """Returns True when a run starts (caller turns ОБУЧЕНИЕ/АВТО off)."""
+    def seconds_left(self) -> int:
+        if self.which is None:
+            return 0
+        left = PHASE_S - (float(self.clock()) - self.t0)
+        return max(0, int(left + 0.999))
+
+    def press(self, which: str, log, board=(200, 200)) -> str:
+        """"start", "switch", "cancel", or "blocked".
+
+        "start" is the first press of an idle ready board: the caller turns
+        ОБУЧЕНИЕ and АВТО off. "switch" replaces the other running side and
+        leaves them off. "cancel" is the same button again. "blocked" does
+        not start and does not touch ОБУЧЕНИЕ / АВТО.
+        """
+        self.board = board
         if self.which == which:
             self.which = None
-            self.armed = False
+            self.samples = []
+            self.blocked = ""
             self.pending_restore = True
             log("замер отменён")
-            return False
-        if self.which is not None:
+            return "cancel"
+        if not board_ready(board):
+            if self.which is None:
+                self.blocked = board_wait(board)
+                log("замер %s: %s" % (WHICH[which], self.blocked))
+            return "blocked"
+        self.blocked = ""
+        switching = self.which is not None
+        if switching:
             log("замер отменён")
         self.which = which
-        self.t0 = 0.0
-        self.armed = False
-        self.bez = []
-        self.s = []
-        self._mark = "wait"
-        self._saw_unready = False
+        self.t0 = float(self.clock())
+        self.samples = []
         self.pending_restore = False
-        log("замер %s: старт убери .128" % WHICH[which])
-        return True
-
-    def phase(self) -> tuple[str, float]:
-        """("wait"|"bez"|"place"|"s"|"done"|"idle", seconds left in that phase)."""
-        if self.which is None:
-            return "idle", 0.0
-        if not self.armed:
-            return "wait", 0.0
-        el = float(self.clock()) - self.t0
-        for name, end in (("bez", PHASE_S), ("place", PHASE_S + PLACE_S), ("s", 2 * PHASE_S + PLACE_S)):
-            if el < end:
-                return name, end - el
-        return "done", 0.0
+        log("замер %s: старт" % WHICH[which])
+        return "switch" if switching else "start"
 
     def prompt(self) -> str:
-        if self.which is None:
-            return ""
-        name, left = self.phase()
-        sec = max(0, int(left + 0.999))
-        if name == "wait":
-            if self._saw_unready:
-                return board_wait(self.board)
-            return "УБЕРИ .128 ИЗ КАДРА"
-        if name == "bez":
-            return "БЕЗ .128: %d с" % sec
-        if name == "place":
-            return "ПОСТАВЬ .128 В КАДР: %d с" % sec
-        if name == "s":
-            return "С .128: %d с" % sec
-        return ""
-
-    def _arm(self, log) -> None:
-        self.armed = True
-        self.t0 = float(self.clock())
-        self._mark = "bez"
-        log("замер %s: конец убери .128" % WHICH[self.which])
-        log("замер %s: старт без .128" % WHICH[self.which])
-
-    def _cross(self, name: str, log) -> None:
-        """Log the end of the phase we left and the start of the one we entered."""
-        order = ("bez", "place", "s", "done")
-        if name == self._mark or self._mark not in order:
-            return
-        while self._mark != name:
-            if self._mark == "bez":
-                log("замер %s: конец без .128 среднее=%s" % (WHICH[self.which], _pct_log(_mean(self.bez))))
-            elif self._mark == "place":
-                log("замер %s: конец поставь .128" % WHICH[self.which])
-            elif self._mark == "s":
-                log("замер %s: конец с .128 среднее=%s" % (WHICH[self.which], _pct_log(_mean(self.s))))
-            nxt = order[order.index(self._mark) + 1]
-            self._mark = nxt
-            if nxt == "place":
-                log("замер %s: старт поставь .128" % WHICH[self.which])
-            elif nxt == "s":
-                log("замер %s: старт с .128" % WHICH[self.which])
-            if nxt == "done" or nxt == name:
-                break
+        if self.which == "bez":
+            return "БЕЗ .128: %d с" % self.seconds_left()
+        if self.which == "s":
+            return "С .128: %d с" % self.seconds_left()
+        return self.blocked
 
     def tick(self, value: float | None, log, board=(200, 200)) -> str | None:
-        """Once per frame. Returns the result line when a run finishes.
+        """Once per frame. Returns the journal result when a run finishes.
 
         ``board`` is ``(n, total)`` from board status, or None when the robot
         has not reported calibration. The trainer's own counter is not read.
+        A run that already started keeps averaging if the board later drops.
         """
         self.board = board
+        if self.blocked and board_ready(board):
+            self.blocked = ""
         if self.which is None:
             return None
-        if not self.armed:
-            if not board_ready(board):
-                if not self._saw_unready:
-                    self._saw_unready = True
-                    log("замер %s: %s" % (WHICH[self.which], board_wait(board)))
-                return None
-            self._arm(log)
-        name, _left = self.phase()
-        self._cross(name, log)
-        if name == "bez" and value is not None:
-            self.bez.append(float(value))
-        elif name == "s" and value is not None:
-            self.s.append(float(value))
-        if name != "done":
+        if value is not None:
+            self.samples.append(float(value))
+        if float(self.clock()) - self.t0 < PHASE_S:
             return None
         which, self.which = self.which, None
-        self.armed = False
+        mean = _mean(self.samples)
+        self.samples = []
+        self.latest[which] = mean
         self.pending_restore = True
-        res = {"bez": _mean(self.bez), "s": _mean(self.s)}
-        self.results[which] = res
-        line = "замер %s: без=%s с=%s" % (WHICH[which], _pct_log(res["bez"]), _pct_log(res["s"]))
+        line = "замер %s: %s  %s" % (WHICH[which], _pct_log(mean), self.line())
         log(line)
-        self.word = verdict(res["bez"], res["s"])
-        if self.word:
-            log(self.word)
         return line
 
     def button_text(self, which: str) -> str:
-        return "ЗАМЕР " + WHICH[which]
+        label = BUTTON[which]
+        if self.which == which:
+            return "%s  %d с" % (label, self.seconds_left())
+        return label
 
     def line(self) -> str:
-        parts = []
-        for which, word in (("before", "до"), ("after", "после")):
-            r = self.results.get(which, {})
-            parts.append("%s: без %s · с %s" % (word, _pct(r.get("bez")), _pct(r.get("s"))))
-        text = "   ".join(parts)
-        if self.word:
-            text += "   " + self.word
-        return text
+        bez = self.latest.get("bez")
+        s = self.latest.get("s")
+        return "без %s · с %s · разница %s" % (_pct(bez), _pct(s), _delta(bez, s))
 
     def lines(self) -> tuple[str, ...]:
         return (self.line(),)
@@ -300,17 +254,18 @@ def drive_measure(session, inp) -> None:
     pressed = bool(getattr(inp, "measure_before", False) or getattr(inp, "measure_after", False))
     if m.pending_restore and not m.running and not pressed:
         _restore(session, inp, m)
-    for which, flag in (("before", "measure_before"), ("after", "measure_after")):
+    board = board_calib(session)
+    for which, flag in (("bez", "measure_before"), ("s", "measure_after")):
         if not getattr(inp, flag, False):
             continue
-        if m.press(which, log):
-            if m.saved is None:
-                m.saved = dict(_state(session))
-                if m.saved["learn"]:
-                    inp.pause_learn = True
-                if m.saved["auto"]:
-                    inp.autonomy_toggle = True
-        elif m.saved is not None and not m.running:
+        action = m.press(which, log, board)
+        if action == "start" and m.saved is None:
+            m.saved = dict(_state(session))
+            if m.saved["learn"]:
+                inp.pause_learn = True
+            if m.saved["auto"]:
+                inp.autonomy_toggle = True
+        elif action == "cancel" and m.saved is not None and not m.running:
             _restore(session, inp, m)
 
 
@@ -320,8 +275,8 @@ def measure_frame(session, view) -> None:
     board = board_calib(session)
     m.tick(uznayu_value(session), session._log, board)
     view.measure_run = m.which or ""
-    view.measure_before = m.button_text("before")
-    view.measure_after = m.button_text("after")
+    view.measure_before = m.button_text("bez")
+    view.measure_after = m.button_text("s")
     view.measure_prompt = m.prompt()
     view.measure_board = board_phrase(board)
     view.measure_line = m.line()

@@ -1,8 +1,10 @@
-"""«ЗАМЕР ДО» / «ЗАМЕР ПОСЛЕ»: calibration wait, phases, cancel, verdict, layout."""
+"""«БЕЗ .128» / «С .128»: 15 s average, cancel, board gate, latest line, layout."""
 
 import os
 import re
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -22,56 +24,53 @@ class Clock:
         return self.t
 
 
-def run(m, clock, log, bez, s, step=0.5):
-    """Drive one whole measurement. ``bez`` during the wait arms the clock."""
+def finish(m, clock, log, value, step=0.5):
+    """Run the open measurement to its 15 s result. No pause is inserted."""
     line = None
-    end = clock.t + 2 * rm.PHASE_S + rm.PLACE_S + 2.0
+    end = clock.t + rm.PHASE_S + 1.0
     while clock.t < end and line is None and m.running:
-        name, _ = m.phase()
-        if name in ("wait", "bez"):
-            value = bez
-        elif name == "place":
-            value = 99.0
-        else:
-            value = s
-        line = m.tick(value, log.append)
-        clock.t += step
+        line = m.tick(value, log, board=(200, 200))
+        if line is None:
+            clock.t += step
     return line
 
 
 class MeasureTest(unittest.TestCase):
-    def test_phases_and_result(self):
+    def test_fifteen_seconds_and_latest_line(self):
         clock, log = Clock(), []
         m = rm.Measure(clock)
-        self.assertTrue(m.press("before", log.append))
-        self.assertEqual(m.prompt(), "УБЕРИ .128 ИЗ КАДРА")
-        self.assertEqual(m.button_text("before"), "ЗАМЕР ДО")
-        self.assertEqual(m.button_text("after"), "ЗАМЕР ПОСЛЕ")
-        m.tick(0.10, log.append)
-        self.assertEqual(m.phase()[0], "bez")
+        self.assertEqual(m.press("bez", log.append), "start")
         self.assertEqual(m.prompt(), "БЕЗ .128: 15 с")
-        clock.t += 15.0
-        self.assertEqual(m.phase()[0], "place")
-        self.assertEqual(m.prompt(), "ПОСТАВЬ .128 В КАДР: 5 с")
-        clock.t += 5.0
-        self.assertEqual(m.prompt(), "С .128: 15 с")
-        clock.t = 100.0
-        m2 = rm.Measure(clock)
-        m2.press("before", log.append)
-        line = run(m2, clock, log, 0.10, 0.40)
-        self.assertEqual(line, "замер ДО: без=10% с=40%")
-        self.assertIn("узнаёт", log)
-        self.assertFalse(m2.running)
-        self.assertEqual(
-            m2.line(),
-            "до: без %s · с %s   после: без %s · с %s   узнаёт"
-            % (rm._pct(0.10), rm._pct(0.40), rm._pct(None), rm._pct(None)),
-        )
-        self.assertEqual(len(rm._pct(0.10)), len(rm._pct(None)))
-        self.assertNotIn("99", "".join(log))
+        self.assertEqual(m.button_text("bez"), "БЕЗ .128  15 с")
+        self.assertEqual(m.button_text("s"), "С .128")
+        m.tick(0.10, log.append)
+        clock.t += 3.0
+        self.assertEqual(m.prompt(), "БЕЗ .128: 12 с")
+        self.assertEqual(m.button_text("bez"), "БЕЗ .128  12 с")
+        line = finish(m, clock, log.append, 0.10)
+        self.assertEqual(line, "замер без .128: 10%  без  10% · с    — · разница    —")
+        self.assertFalse(m.running)
+        self.assertEqual(m.prompt(), "")
+        self.assertEqual(m.line(), "без  10% · с    — · разница    —")
+        self.assertNotIn("узнаёт", "".join(log))
+        self.assertNotIn("ПОСТАВЬ", "".join(log))
+        self.assertFalse(hasattr(rm, "PLACE_S"))
 
-    def test_step_sequence_fake_clock(self):
-        """Wait for calibration, then без / пауза / с, with stamped journal lines."""
+        self.assertEqual(m.press("s", log.append), "start")
+        self.assertEqual(m.prompt(), "С .128: 15 с")
+        line = finish(m, clock, log.append, 0.40)
+        self.assertIn("замер с .128: 40%", line)
+        self.assertEqual(m.line(), "без  10% · с  40% · разница +30%")
+
+        # A new «БЕЗ» replaces only that side. The previous «С» stays.
+        self.assertEqual(m.press("bez", log.append), "start")
+        line = finish(m, clock, log.append, 0.20)
+        self.assertEqual(m.line(), "без  20% · с  40% · разница +20%")
+        self.assertNotIn("до:", m.line())
+        self.assertNotIn("после:", m.line())
+        self.assertEqual(len(m.lines()), 1)
+
+    def test_step_is_one_button_with_stamped_journal(self):
         clock = Clock()
         journal = Journal(None, clock=lambda: 1700000000.25)
         logged = []
@@ -80,97 +79,99 @@ class MeasureTest(unittest.TestCase):
             logged.append(journal.write(text))
 
         m = rm.Measure(clock)
-        self.assertTrue(m.press("before", log))
-        self.assertEqual(m.prompt(), "УБЕРИ .128 ИЗ КАДРА")
+        self.assertEqual(m.press("bez", log, board=(12, 200)), "blocked")
+        self.assertEqual(m.prompt(), "борт не готов: калибровка 12/200")
+        self.assertFalse(m.running)
+        self.assertEqual(m.latest, {})
         for _ in range(4):
             clock.t += 3.0
-            self.assertIsNone(m.tick(None, log, board=(12, 200)))
-        self.assertEqual(m.phase()[0], "wait")
+            self.assertIsNone(m.tick(0.9, log, board=(12, 200)))
         self.assertEqual(m.prompt(), "борт не готов: калибровка 12/200")
-        self.assertEqual(rm.board_phrase((12, 200)), "калибровка 12/200")
         self.assertEqual(logged.count(next(x for x in logged if "борт не готов" in x)), 1)
-        self.assertEqual(m.bez, [])
 
-        self.assertIsNone(m.tick(0.10, log, board=(200, 200)))
-        self.assertEqual(m.prompt(), "БЕЗ .128: 15 с")
+        clock.t += 1.0
+        self.assertIsNone(m.tick(0.9, log, board=(200, 200)))
+        self.assertEqual(m.prompt(), "")
+
+        self.assertEqual(m.press("s", log, board=(200, 200)), "start")
+        self.assertEqual(m.prompt(), "С .128: 15 с")
         clock.t += 7.5
-        self.assertEqual(m.prompt(), "БЕЗ .128: 8 с")
-        m.tick(0.20, log)
-        clock.t += 7.5
-        self.assertEqual(m.phase()[0], "place")
-        self.assertTrue(m.prompt().startswith("ПОСТАВЬ .128 В КАДР:"))
-        m.tick(99.0, log)
-        clock.t += 5.0
-        self.assertEqual(m.phase()[0], "s")
-        self.assertTrue(m.prompt().startswith("С .128:"))
+        self.assertEqual(m.prompt(), "С .128: 8 с")
+        self.assertEqual(m.button_text("s"), "С .128  8 с")
         m.tick(0.50, log)
-        clock.t += 15.0
+        clock.t += 7.5
         line = m.tick(0.50, log)
-        self.assertEqual(line, "замер ДО: без=15% с=50%")
+        self.assertIn("замер с .128: 50%", line)
+        self.assertIn("разница", line)
         self.assertEqual(m.prompt(), "")
         self.assertFalse(m.running)
-        self.assertIn("узнаёт", m.line())
 
         texts = [STAMP.sub("", row) for row in logged]
         self.assertTrue(all(STAMP.match(row) for row in logged))
-        for needle in (
-            "замер ДО: старт убери .128",
-            "замер ДО: борт не готов: калибровка 12/200",
-            "замер ДО: конец убери .128",
-            "замер ДО: старт без .128",
-            "замер ДО: конец без .128 среднее=15%",
-            "замер ДО: старт поставь .128",
-            "замер ДО: конец поставь .128",
-            "замер ДО: старт с .128",
-            "замер ДО: конец с .128 среднее=50%",
-            "замер ДО: без=15% с=50%",
-            "узнаёт",
-        ):
-            self.assertIn(needle, texts, needle)
-        self.assertLess(texts.index("замер ДО: старт без .128"), texts.index("замер ДО: старт поставь .128"))
-        self.assertLess(texts.index("замер ДО: конец поставь .128"), texts.index("замер ДО: старт с .128"))
+        self.assertIn("замер без .128: борт не готов: калибровка 12/200", texts)
+        self.assertIn("замер с .128: старт", texts)
+        self.assertTrue(any(row.startswith("замер с .128: 50%") for row in texts))
+        self.assertNotIn("замер отменён", texts)
 
-    def test_cancel_same_button(self):
+    def test_journal_file_gets_the_result(self):
+        clock = Clock()
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "journal.log"
+            journal = Journal(path, clock=lambda: 1700000000.25)
+            m = rm.Measure(clock)
+            m.press("bez", journal.write)
+            clock.t += 15.0
+            m.tick(0.15, journal.write)
+            text = path.read_text(encoding="utf-8")
+        self.assertRegex(text, STAMP.pattern.replace("^", "").replace("  ", "  "))
+        self.assertIn("замер без .128: 15%", text)
+        self.assertTrue(text.strip().splitlines()[-1].endswith("без  15% · с    — · разница    —"))
+
+    def test_cancel_same_button_keeps_the_previous_value(self):
         clock, log = Clock(), []
         m = rm.Measure(clock)
-        m.press("after", log.append)
-        clock.t += 3
-        m.tick(0.2, log.append)
-        self.assertFalse(m.press("after", log.append))
+        m.press("bez", log.append)
+        finish(m, clock, log.append, 0.10)
+        m.press("s", log.append)
+        clock.t += 4.0
+        m.tick(0.99, log.append)
+        self.assertEqual(m.press("s", log.append), "cancel")
         self.assertIn("замер отменён", log)
         self.assertFalse(m.running)
         self.assertEqual(m.prompt(), "")
-        self.assertEqual(m.button_text("after"), "ЗАМЕР ПОСЛЕ")
-        self.assertNotIn("after", m.results)
+        self.assertEqual(m.button_text("s"), "С .128")
+        self.assertEqual(m.line(), "без  10% · с    — · разница    —")
+        self.assertNotIn("99%", "".join(log))
 
-    def test_verdicts(self):
-        for b, a, word in (
-            ((0.10, 0.40), (0.12, 0.60), "узнаёт"),
-            ((0.10, 0.40), (0.60, 0.70), "выучил фон"),
-            ((0.10, 0.40), (0.20, 0.25), "нет разницы"),
-            ((0.10, 0.40), (0.55, 0.90), "выучил фон"),
-        ):
-            clock, log = Clock(), []
-            m = rm.Measure(clock)
-            m.press("before", log.append)
-            run(m, clock, log, *b)
-            m.press("after", log.append)
-            run(m, clock, log, *a)
-            self.assertEqual(log[-1], word, (b, a, log))
-            self.assertIn(word, m.line())
-
-    def test_no_samples_while_calibrating(self):
+    def test_other_button_cancels_without_a_pause(self):
         clock, log = Clock(), []
         m = rm.Measure(clock)
-        m.press("before", log.append)
+        m.press("bez", log.append)
+        finish(m, clock, log.append, 0.10)
+        m.press("bez", log.append)
+        clock.t += 2.0
+        m.tick(0.99, log.append)
+        self.assertEqual(m.press("s", log.append), "switch")
+        self.assertEqual(m.which, "s")
+        self.assertEqual(m.samples, [])
+        self.assertEqual(m.prompt(), "С .128: 15 с")
+        self.assertEqual(m.line(), "без  10% · с    — · разница    —")
+        line = finish(m, clock, log.append, 0.40)
+        self.assertIn("замер с .128: 40%", line)
+        self.assertEqual(m.line(), "без  10% · с  40% · разница +30%")
+        self.assertEqual(log.count("замер отменён"), 1)
+
+    def test_not_ready_does_not_sample(self):
+        clock, log = Clock(), []
+        m = rm.Measure(clock)
+        self.assertEqual(m.press("bez", log.append, board=(4, 200)), "blocked")
         for _ in range(6):
             clock.t += 3.0
             self.assertIsNone(m.tick(0.9, log.append, board=(4, 200)))
-        self.assertTrue(m.running)
-        self.assertEqual(m.phase()[0], "wait")
+        self.assertFalse(m.running)
         self.assertEqual(m.prompt(), "борт не готов: калибровка 4/200")
-        self.assertEqual(m.bez, [])
-        self.assertNotIn("before", m.results)
+        self.assertEqual(m.latest, {})
+        self.assertEqual(m.line(), "без    — · с    — · разница    —")
 
     def test_restores_learn_and_auto_and_reads_board_status(self):
         """Board calib, not the trainer counter. Learn and auto come back after end or cancel."""
@@ -197,26 +198,29 @@ class MeasureTest(unittest.TestCase):
 
         inp = SimpleNamespace(measure_before=True, measure_after=False, pause_learn=False, autonomy_toggle=False)
         rm.drive_measure(session, inp)
-        self.assertTrue(inp.pause_learn and inp.autonomy_toggle)
-        session.remote["learning"] = False
-        session.remote["autonomy"] = False
+        self.assertFalse(inp.pause_learn or inp.autonomy_toggle)
         m = session._measure
-        m.tick(0.9, logs.append, rm.board_calib(session))
+        self.assertFalse(m.running)
+        self.assertIsNone(m.saved)
         self.assertEqual(m.prompt(), "борт не готов: калибровка 40/200")
-        self.assertEqual(m.phase()[0], "wait")
-        self.assertEqual(m.bez, [])
 
         session.remote["calib_n"] = 200
         self.assertEqual(rm.board_phrase(rm.board_calib(session)), "готов")
-        self.assertTrue(rm.board_ready(rm.board_calib(session)))
+        inp = SimpleNamespace(measure_before=True, measure_after=False, pause_learn=False, autonomy_toggle=False)
+        rm.drive_measure(session, inp)
+        self.assertTrue(inp.pause_learn and inp.autonomy_toggle)
+        session.remote["learning"] = False
+        session.remote["autonomy"] = False
+        self.assertEqual(m.saved, {"learn": True, "auto": True, "teacher": False})
+        self.assertEqual(m.which, "bez")
 
-        # Switch to ПОСЛЕ keeps them off; the saved states stay the ones from before.
+        # The other button keeps them off and keeps the original snapshot.
         inp = SimpleNamespace(measure_before=False, measure_after=True, pause_learn=False, autonomy_toggle=False)
         rm.drive_measure(session, inp)
         self.assertFalse(inp.pause_learn or inp.autonomy_toggle)
         self.assertEqual(m.saved, {"learn": True, "auto": True, "teacher": False})
+        self.assertEqual(m.which, "s")
 
-        # Cancel restores both through the same buttons.
         inp = SimpleNamespace(measure_before=False, measure_after=True, pause_learn=False, autonomy_toggle=False)
         rm.drive_measure(session, inp)
         self.assertTrue(inp.pause_learn and inp.autonomy_toggle)
@@ -227,6 +231,7 @@ class MeasureTest(unittest.TestCase):
         # Only ОБУЧЕНИЕ was on; АВТО stays off.
         session.remote["learning"] = True
         session.remote["autonomy"] = False
+        session.remote["calib_n"] = 200
         session._measure = rm.Measure(Clock())
         inp = SimpleNamespace(measure_before=True, measure_after=False, pause_learn=False, autonomy_toggle=False)
         rm.drive_measure(session, inp)
@@ -235,16 +240,16 @@ class MeasureTest(unittest.TestCase):
         session.remote["learning"] = False
         done = session._measure
         clock = done.clock
-        line = run(done, clock, logs, 0.10, 0.40)
+        line = finish(done, clock, logs.append, 0.10)
         self.assertIsNotNone(line)
         self.assertTrue(done.pending_restore)
+        self.assertEqual(done.line(), "без  10% · с    — · разница    —")
         inp = SimpleNamespace(measure_before=False, measure_after=False, pause_learn=False, autonomy_toggle=False)
         rm.drive_measure(session, inp)
         self.assertTrue(inp.pause_learn)
         self.assertFalse(inp.autonomy_toggle)
         self.assertIsNone(done.saved)
 
-        # Simulator: no board status, and the trainer's 3/200 is not what the block shows.
         session.onboard = False
         session.remote = {}
         trainer.calib_progress = lambda: (3, 200)
@@ -253,6 +258,8 @@ class MeasureTest(unittest.TestCase):
         view = SimpleNamespace()
         rm.measure_frame(session, view)
         self.assertEqual(view.measure_board, "готов")
+        self.assertEqual(view.measure_before, "БЕЗ .128")
+        self.assertEqual(view.measure_after, "С .128")
         session.onboard = True
         session.remote = {"calib_n": 7, "calib_total": 200, "confidence_ready": False}
         rm.measure_frame(session, view)
@@ -281,11 +288,12 @@ class MeasureLayoutTest(unittest.TestCase):
             yolo_errors=2,
             yolo_state="смотрит",
             camera=__import__("numpy").zeros((90, 160, 3), dtype="uint8"),
-            measure_run="before",
+            measure_run="bez",
             measure_prompt="БЕЗ .128: 12 с",
-            measure_before="ЗАМЕР ДО",
-            measure_after="ЗАМЕР ПОСЛЕ",
-            measure_line="до: без  10% · с  40%   после: без   — · с   —   узнаёт",
+            measure_before="БЕЗ .128  12 с",
+            measure_after="С .128",
+            measure_board="готов",
+            measure_line="без  18% · с  61% · разница +43%",
         )
         controls = (
             "learn_rect",
@@ -337,6 +345,7 @@ class MeasureLayoutTest(unittest.TestCase):
                     self.assertEqual(mon.meas_before_rect.y, mon.meas_after_rect.y)
                     self.assertLess(mon.meas_before_rect.right, mon.meas_after_rect.x)
                     self.assertGreater(mon.measure_prompt_rect.h, 28, (theme, ww))
+                    self.assertGreaterEqual(mon.meas_before_rect.w, mon.font_sm.size("БЕЗ .128  12 с")[0] + 32, (theme, ww))
         finally:
             apply_theme("light")
             pygame.quit()
