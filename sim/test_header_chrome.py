@@ -69,6 +69,7 @@ class HeaderChromeTests(unittest.TestCase):
             self.assertEqual(theme_name(), "light")
             mon.draw(view)
             self._assert_gaps(mon)
+            self._assert_teacher_in_controls(mon)
             self._assert_switch(mon, on=False)
             self._assert_pin_plate(mon, on=False)
             self._save_header(mon, "/opt/cursor/artifacts/header_theme_light.png")
@@ -175,12 +176,20 @@ class HeaderChromeTests(unittest.TestCase):
             mon.help_bar_rect,
             mon.go2_rect,
             mon.brain_rect,
-            mon.teacher_rect,
             mon.record_rect,
             mon.pin_rect,
             mon.theme_label_rect,
             mon.theme_switch_rect,
         )
+
+    def _assert_teacher_in_controls(self, mon) -> None:
+        from sim.train_monitor import MENU_H
+
+        self.assertGreater(mon.teacher_rect.y, MENU_H)
+        self.assertGreater(mon.teacher_rect.w, 48)
+        self.assertLessEqual(mon.teacher_rect.x, mon.learn_rect.right + 12)
+        self.assertGreaterEqual(mon.teacher_rect.x, mon.learn_rect.right)
+        self.assertEqual(mon.teacher_rect.centery, mon.learn_rect.centery)
 
     def _assert_gaps(self, mon) -> None:
         from sim.train_monitor import MENU_H, WIN_W
@@ -189,7 +198,6 @@ class HeaderChromeTests(unittest.TestCase):
             mon.help_bar_rect,
             mon.go2_rect,
             mon.brain_rect,
-            mon.teacher_rect,
             mon.record_rect,
             mon.pin_rect,
             mon.theme_label_rect,
@@ -228,7 +236,6 @@ class HeaderChromeTests(unittest.TestCase):
             mon.help_bar_rect,
             mon.go2_rect,
             mon.brain_rect,
-            mon.teacher_rect,
             mon.record_rect,
             mon.pin_rect,
             mon.theme_label_rect,

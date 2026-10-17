@@ -442,7 +442,7 @@ def monitor_layout(w: int, h: int) -> dict:
             cursor += rw + gap_b
         return out
 
-    header_items = [("brain", 168), ("teacher", 280), ("record", 250)]
+    header_items = [("brain", 168), ("record", 250)]
     header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
     header_x = w - 16 - header_total
     buttons = place(header_items, header_x, 8, 32, w - 16)
@@ -807,14 +807,13 @@ class TrainMonitor:
 
         self.pin_rect, self.theme_label_rect, self.theme_switch_rect = self._place_header_chrome()
         go2_w = self.font_sm.size("УПРАВЛЕНИЕ")[0] + 60
-        header_items = [("go2", go2_w), ("brain", 168), ("teacher", 280), ("record", 250)]
+        header_items = [("go2", go2_w), ("brain", 168), ("record", 250)]
         header_total = sum(ww for _name, ww in header_items) + 8 * (len(header_items) - 1)
         header_limit = self.pin_rect.x - 12
         header_x = header_limit - header_total
         buttons = row(header_items, header_x, 4, 24, header_limit)
         self.go2_rect = buttons["go2"]
         self.brain_rect = buttons["brain"]
-        self.teacher_rect = buttons["teacher"]
         self.record_rect = buttons["record"]
         self.view_rect = pygame.Rect(8, 4, 52, 24)
         dog_w = self.font_sm.size("DoggiBOT")[0] + 28
@@ -831,6 +830,7 @@ class TrainMonitor:
             placed_row = row(
                 [
                     ("learn", 220),
+                    ("teacher", 280),
                     ("auto", 190),
                     ("take", 180),
                     ("steer", 210),
@@ -843,8 +843,12 @@ class TrainMonitor:
                 inner.right,
             )
         else:
-            placed_row = {name: self._zero() for name in ("learn", "auto", "take", "steer", "treat", "estop")}
+            placed_row = {
+                name: self._zero()
+                for name in ("learn", "teacher", "auto", "take", "steer", "treat", "estop")
+            }
         self.learn_rect = placed_row["learn"]
+        self.teacher_rect = placed_row["teacher"]
         self.auto_rect = placed_row["auto"]
         self.take_rect = placed_row["take"]
         self.steer_rect = placed_row["steer"]
@@ -1547,7 +1551,7 @@ class TrainMonitor:
             inp.steer_toggle = True
         elif self.record_rect.collidepoint(pos):
             inp.record_toggle = True
-        elif self.teacher_rect.collidepoint(pos):
+        elif self.teacher_rect.w >= 48 and self.teacher_rect.collidepoint(pos):
             inp.teacher_toggle = True
         elif self.go2_rect.collidepoint(pos):
             inp.go2_control = True
@@ -1842,7 +1846,6 @@ class TrainMonitor:
         self._link_lamp(screen, view, title_x + title.get_width() + 18)
         self._go2_button(screen)
         self._brain_button(screen, view)
-        self._teacher_button(screen, view)
         self._record_button(screen, view)
         self._draw_header_chrome(screen)
 
@@ -2693,6 +2696,7 @@ class TrainMonitor:
             PEACH if learn_on else LAMP_OFF,
             self.learn_rect.collidepoint(mouse),
         )
+        self._teacher_button(screen, view)
         self._button(
             screen,
             self.auto_rect,
